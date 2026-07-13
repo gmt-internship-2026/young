@@ -1,0 +1,25 @@
+# 추론(윈도우 + NVIDIA + Python 3.11.5) 고정 버전 — 타 PC 재현성 보장 (설치가이드.md 참고)
+#
+# 2026-07-11 라이선스 B안: ultralytics(AGPL-3.0) 제거 —
+#   실행기 = ONNX Runtime(MIT), 포즈 = rtmlib/RTMPose(Apache-2.0)
+#
+# torch / torchvision은 EasyOCR(주민등록증)용 — CUDA 12.8 휠을 install.bat이 별도 설치:
+#   pip install torch==2.11.0+cu128 torchvision==0.26.0+cu128 --index-url https://download.pytorch.org/whl/cu128
+# (맥/리눅스 개발·시험 환경은 기본 인덱스 torch면 된다)
+# onnxruntime-gpu는 CUDA 12 빌드여야 한다 — torch cu128이 등록하는 CUDA 12.8 DLL을 쓴다.
+#   (1.27.0은 CUDA 13 빌드라 cublasLt64_13.dll을 찾지 못해 조용히 CPU 폴백 — 2026-07-10 확인)
+# ⚠ rtmlib이 CPU용 onnxruntime을 의존성으로 끌고 와 GPU판 파일을 덮어쓴다 —
+#   install.bat이 설치 후 GPU판을 복구한다 (수동 설치 시에도 같은 복구 필요)
+onnxruntime-gpu==1.23.2; sys_platform == "win32"    # 배포(윈도우+NVIDIA) — CUDA 12 실행
+onnxruntime==1.23.2; sys_platform != "win32"        # 맥/리눅스 개발·시험 — CPU 실행
+rtmlib==0.0.15                     # RTMPose 포즈 추정 (Apache-2.0) — 사용자 잠금용
+opencv-python==5.0.0.93
+opencv-python-headless==5.0.0.93   # easyocr 의존성 — opencv-python과 반드시 같은 버전 (cv2 충돌 방지)
+numpy==2.2.6
+pyyaml==6.0.3
+fastapi==0.139.0
+uvicorn==0.51.0
+psutil==7.2.2
+easyocr==1.7.2                     # 주민등록증 OCR (ocr.enabled=false면 미사용)
+pyttsx3==2.99                      # 음성 안내 TTS — 윈도우 SAPI (announce.backend=tts) — MPL-2.0: 무수정 사용이라 공개 의무 없음
+mediapipe==0.10.35                 # 제스처 손 랜드마크 (Apache-2.0) — 라이선스 C안 기본 엔진

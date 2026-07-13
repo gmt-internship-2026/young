@@ -1,0 +1,16 @@
+# YOLO 데이터셋 정의 양식 — 라벨링 완료 후 복사해 dataset_v1.yaml로 저장하고 경로를 채운다
+# (라벨 형식: YOLO txt — 라벨링 도구는 회사 협의: labelImg / Roboflow / CVAT 등)
+#
+# 주의(기획서 5.4): train/val은 반드시 "인물 단위"로 나눈다 — 같은 사람이 양쪽에 있으면 안 됨
+
+path: ../gesture_kiosk/data          # 데이터 루트
+train: splits/train/images
+val: splits/val/images
+
+# 신규 스펙에 쓰는 클래스만 우선 학습 (HaGRIDv2 원본 클래스명 유지 — class_map과 호환)
+names:
+  0: fist
+  1: palm
+  2: ok
+  3: point       # 레거시 병행 유지 시
+  4: like        # 레거시 병행 유지 시

@@ -1,0 +1,7 @@
+# 학습 공통 의존성 — torch/torchvision은 OS별 setup 스크립트가 설치한다
+#   윈도우/리눅스(NVIDIA): cu128 인덱스 / 맥(Apple Silicon): 기본 인덱스(MPS)
+ultralytics==8.4.91
+opencv-python==5.0.0.93
+numpy==2.2.6
+pyyaml==6.0.3
+pillow==12.3.0          # idcard 합성 데이터 생성용

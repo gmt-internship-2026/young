@@ -57,10 +57,9 @@ def main():
 
         providers = ort.get_available_providers()
         if "CUDAExecutionProvider" in providers:
-            check("GPU 가속 (onnxruntime CUDA)", True)
+            check("실행 장치", True, "CUDA 가용 PC — 이 CPU판은 CPU로만 실행 (GPU판: feat/think_win_gpu)")
         else:
-            check("GPU 가속", sys.platform == "darwin",
-                  "CPU 실행 — 맥 시험 장비면 정상, 배포(윈도우+NVIDIA) PC라면 onnxruntime-gpu 설치 확인")
+            check("실행 장치 (CPU)", True, "CPU 추론판 — 정상")
     except ImportError:
         pass  # 위 임포트 검사에서 이미 FAIL 처리됨
 

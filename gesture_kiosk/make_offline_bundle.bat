@@ -25,10 +25,7 @@ if not exist venv_bundle ( %PY_CMD% -m venv venv_bundle || exit /b 1 )
 call venv_bundle\Scripts\activate.bat
 python -m pip install --upgrade pip >nul
 
-echo [INFO] torch (CUDA 12.8 — EasyOCR용) 휠 다운로드...
-pip download torch==2.11.0+cu128 torchvision==0.26.0+cu128 ^
-    --index-url https://download.pytorch.org/whl/cu128 -d wheelhouse || exit /b 1
-echo [INFO] requirements 휠 다운로드 (onnxruntime-gpu·rtmlib 포함)...
+echo [INFO] requirements 휠 다운로드 (torch CPU·onnxruntime·rtmlib 포함)...
 pip download -r requirements.txt -d wheelhouse || exit /b 1
 echo [INFO] pip 자체도 담는다 (구버전 pip 대비)
 pip download pip -d wheelhouse

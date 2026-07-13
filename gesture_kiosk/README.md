@@ -4,8 +4,8 @@
 인식해 키오스크 프로그램으로 이벤트를 전달한다. **기획서(기획서.docx)의
 2.3 디렉터리 구조와 4장 코딩 컨벤션을 따른다.**
 
-- 실행 환경: **윈도우 + NVIDIA GPU + Python 3.11.5** (2026-07-10 타깃 변경 — 정부 민원발급기)
-- GPU 없는 PC용 CPU 추론판: **feat/think_win_cpu 브랜치** (같은 코드 — 설치 스택·성능 기준만 다름)
+- 실행 환경: **윈도우 CPU(GPU 불필요) + Python 3.11.5** — CPU 추론판 (정부 민원발급기)
+- GPU 있는 PC용 고성능판: **feat/think_win_gpu 브랜치** (같은 코드 — 설치 스택·성능 기준만 다름)
 - 모델: MediaPipe 손 랜드마크 제스처(Apache-2.0) + RTMPose 포즈(사용자 잠금) —
   **학습 0회, 카피레프트 없는 상용 안전 스택** (2026-07-10 C안: AGPL 계열 HaGRID YOLOv10 제거)
 - 학습(파인튜닝)은 별도 `training/` 폴더 담당 (feat/study 브랜치) — 이 폴더는 추론 전용
@@ -54,7 +54,7 @@ run.bat            :: 실행 — 브라우저 http://localhost:5000
 gesture_kiosk/
 ├─ install.bat / run.bat / make_offline_bundle.bat  # 윈도우 이식·실행 (설치가이드.md)
 ├─ configs/config.yaml      # 모든 설정값의 단일 출처 — 튜닝은 여기서만
-├─ models/weights/          # hand_landmarker.task(제스처) + 구 ONNX(납품 금지) + trt_cache(★PC 전용)
+├─ models/weights/          # hand_landmarker.task(제스처) + 구 ONNX(납품 금지)
 ├─ src/
 │   ├─ capture/camera_stream.py      # USB 카메라 캡처 스레드 (윈도우 MSMF 기본)
 │   ├─ inference/detector_mediapipe.py  # 제스처 검출 기본 엔진 (MediaPipe — Apache-2.0)

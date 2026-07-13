@@ -1,6 +1,6 @@
 # gesture_kiosk 설정 — 모든 튜닝값의 단일 출처 (기획서 4.7 : 코드에 숫자 하드코딩 금지)
 #
-# 2026-07-10 전면 개편 — 타깃: 윈도우 + NVIDIA GPU + Python 3.11.5 (정부 민원발급기)
+# 2026-07-10 전면 개편 — 타깃: 윈도우 CPU(GPU 불필요) + Python 3.11.5 (정부 민원발급기 — CPU 추론판)
 # 동작 체계(신규 스펙): 주먹→펴기 이동(왼손=왼쪽·오른손=오른쪽) / OK=선택·확인 통일 /
 #                       양 손바닥 10초=처음으로. 기존 5.1 초안 동작은 legacy 토글로 유지.
 
@@ -29,10 +29,10 @@ model:
     flip_handedness: true         # 좌/우 라벨 뒤집기 — mediapipe 0.10.35가 문서와 반대로
                                   #   라벨을 내는 것 실측(구글 이슈 #4724). 데모 화면 손 박스의
                                   #   L/R이 실제 손과 뒤집혀 보이면 이 값을 반전할 것
-  device: auto            # auto(CUDA 있으면 사용) | cuda | cpu — onnx 엔진·포즈에 적용
-  use_tensorrt: false     # true면 TensorRT 가속 — 첫 실행 때 이 PC 전용 엔진 캐시 생성 (구 build_engine 대체)
+  device: cpu             # CPU 추론판 고정 — GPU 가속판은 feat/think_win_gpu 브랜치
+  use_tensorrt: false     # CPU판 — TensorRT 사용 불가 (GPU 가속은 feat/think_win_gpu)
   gesture_onnx_path: models/weights/YOLOv10n_gestures.onnx   # (onnx 엔진 전용) HaGRIDv2 제스처
-  pose_mode: balanced     # rtmlib 포즈 크기: lightweight(빠름) | balanced | performance(정확)
+  pose_mode: lightweight  # CPU 기본(30 FPS 확보용) — GPU판 기본은 balanced
   input_size_px: 640
   max_infer_fps: 30       # 추론 루프 FPS 상한 — 초과분은 대기 (GPU 낭비 방지)
                           #   KPI가 30 FPS — 60으로 두면 추론 루프가 캡처 스레드의
@@ -88,7 +88,7 @@ ocr:                        # 주민등록증 인식 — 이름·주민등록번
   enabled: true
   engine: easyocr           # 현재 easyocr 단일 구현 (교체 지점)
   languages: [ko, en]
-  gpu: true                 # 윈도우+NVIDIA에서 true, 미지원 환경은 자동 CPU 폴백
+  gpu: false                # CPU 추론판 — torch가 CPU 빌드라 GPU 사용 불가 (GPU판: feat/think_win_gpu)
   interval_frames: 15       # OCR 모드 중 N프레임마다 1회 인식 시도 (매 프레임은 낭비)
   timeout_sec: 30.0         # OCR 모드 자동 종료 시간 — UI가 다시 요청하면 재시작
   min_text_conf: 0.4        # 인식 문자열 최소 신뢰도
@@ -137,4 +137,4 @@ logging:
 runtime:                  # 배포 기준 명세 — 설치가이드.md와 일치해야 한다
   python_version: "3.11.5"
   target_os: windows
-  target_gpu: nvidia
+  target_gpu: none        # CPU 추론판

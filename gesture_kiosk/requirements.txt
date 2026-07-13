@@ -1,17 +1,14 @@
-# 추론(윈도우 + NVIDIA + Python 3.11.5) 고정 버전 — 타 PC 재현성 보장 (설치가이드.md 참고)
+# 추론(윈도우 CPU — GPU 불필요, Python 3.11.5) 고정 버전 — 타 PC 재현성 보장 (설치가이드.md 참고)
+# ⚠ CPU 추론판(feat/think_win_cpu) — GPU 있는 PC용 고성능판은 feat/think_win_gpu 브랜치.
 #
 # 2026-07-11 라이선스 B안: ultralytics(AGPL-3.0) 제거 —
 #   실행기 = ONNX Runtime(MIT), 포즈 = rtmlib/RTMPose(Apache-2.0)
 #
-# torch / torchvision은 EasyOCR(주민등록증)용 — CUDA 12.8 휠을 install.bat이 별도 설치:
-#   pip install torch==2.11.0+cu128 torchvision==0.26.0+cu128 --index-url https://download.pytorch.org/whl/cu128
-# (맥/리눅스 개발·시험 환경은 기본 인덱스 torch면 된다)
-# onnxruntime-gpu는 CUDA 12 빌드여야 한다 — torch cu128이 등록하는 CUDA 12.8 DLL을 쓴다.
-#   (1.27.0은 CUDA 13 빌드라 cublasLt64_13.dll을 찾지 못해 조용히 CPU 폴백 — 2026-07-10 확인)
-# ⚠ rtmlib이 CPU용 onnxruntime을 의존성으로 끌고 와 GPU판 파일을 덮어쓴다 —
-#   install.bat이 설치 후 GPU판을 복구한다 (수동 설치 시에도 같은 복구 필요)
-onnxruntime-gpu==1.23.2; sys_platform == "win32"    # 배포(윈도우+NVIDIA) — CUDA 12 실행
-onnxruntime==1.23.2; sys_platform != "win32"        # 맥/리눅스 개발·시험 — CPU 실행
+# torch / torchvision은 EasyOCR(주민등록증)용 — 윈도우 PyPI 기본 휠이 CPU 빌드라 그대로 쓴다
+# (GPU판과 달리 별도 인덱스 설치·onnxruntime GPU판 복구 절차가 필요 없다)
+torch==2.11.0                      # EasyOCR용 (윈도우 기본 휠 = CPU 빌드)
+torchvision==0.26.0
+onnxruntime==1.23.2                # CPU 실행 — 전 플랫폼 공통
 rtmlib==0.0.15                     # RTMPose 포즈 추정 (Apache-2.0) — 사용자 잠금용
 opencv-python==5.0.0.93
 opencv-python-headless==5.0.0.93   # easyocr 의존성 — opencv-python과 반드시 같은 버전 (cv2 충돌 방지)

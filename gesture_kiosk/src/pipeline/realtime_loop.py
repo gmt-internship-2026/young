@@ -53,6 +53,7 @@ class PipelineState:
         self.is_user_locked = False
         self.two_palm_hold_ratio = 0.0
         self.announcer = None          # demo_server의 POST /announce가 사용한다
+        self.gesture_filter = None     # demo_server의 실험(number_select) 토글이 사용한다
         self._ocr_deadline_sec = None  # None이면 OCR 모드 꺼짐
 
     def update_frame(self, frame):
@@ -143,6 +144,7 @@ def run_pipeline(config):
     event_sender = create_event_sender(config)
     announcer = Announcer(config)
     state.announcer = announcer
+    state.gesture_filter = gesture_filter
 
     class_map = config["model"]["class_map"]
     min_loop_interval_sec = 1.0 / config["model"]["max_infer_fps"]

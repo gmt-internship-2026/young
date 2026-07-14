@@ -49,6 +49,9 @@ model:
     point: point
     one: point
     like: thumbs_up
+    # --- 실험(2026-07-14 추가, 회사 확정 전 임시) — gestures.number_select 참고 ---
+    two: two
+    three: three
 
 person_lock:              # 오토포커스 카메라 — 초점 맞은 사용자에게 잠금, 다른 사람 손 무시
   enabled: true
@@ -83,6 +86,10 @@ gestures:
       source_gesture: open_hand   # 손바닥 궤적으로 스와이프 판정 (한 손일 때만)
       window_sec: 0.7
       min_dist_ratio: 0.35
+  number_select:               # 실험(2026-07-14, 회사 미확정) — 손가락 1/2/3개로 항목 직접 선택
+    enabled: false             # 기본 꺼짐 — 데모 UI의 "1·2·3 실험" 버튼으로 세션 중 토글
+    stable_frame_count: 5      # N프레임 연속 유지 시 확정 (select와 동일 기준)
+    max_static_move_ratio: 0.08
 
 ocr:                        # 주민등록증 인식 — 이름·주민등록번호 자동 입력
   enabled: true
@@ -109,12 +116,13 @@ announce:                   # 토크백(보이스오버) — 현재 위치·기�
     go_home: "처음 화면으로 돌아갑니다"
     help_call: "직원을 호출했습니다. 잠시만 기다려 주세요"
     fill_id_fields: "주민등록증 인식 완료. 이름과 주민등록번호가 입력되었습니다"
+    select_number: "번호로 선택했습니다"  # 실험(number_select) — 항목 번호는 UI가 알고 있어 별도 안내
   # UI 화면 안내(현재 포커스 항목 설명)는 UI가 POST /announce {"text": "..."}로 요청한다
   # (회사 프로그램 연동 계약 — 이벤트는 엔진→UI, 음성 안내 요청은 UI→엔진)
 
 classes:                    # 표준 동작 목록 — UI/이벤트 수신부와의 계약
-  [move_left, move_right, select, go_home, help_call, fill_id_fields,
-   point, palm_stop, swipe_left, swipe_right, thumbs_up]   # 뒤 5개 = 레거시
+  [move_left, move_right, select, select_number, go_home, help_call, fill_id_fields,
+   point, palm_stop, swipe_left, swipe_right, thumbs_up]   # 뒤 5개 = 레거시. select_number = 실험(number_select)
 
 event_output:
   # TODO(기획서 9장 №7): 회사 키오스크 프로그램의 이벤트 수신 규격(소켓/시리얼/공유메모리)

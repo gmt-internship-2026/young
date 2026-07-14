@@ -9,8 +9,8 @@
 (tests/test_mediapipe_classify.py).
 
 출력 계약은 detector.GestureDetector와 동일: infer(frame) -> list[Detection].
-class_name은 기존 class_map 키(fist/palm/ok/one/like)를 그대로 내보내므로
-person_lock·gesture_filter는 수정 없이 동작한다.
+class_name은 기존 class_map 키(fist/palm/ok/one/like/two/three)를 그대로
+내보내므로 person_lock·gesture_filter는 수정 없이 동작한다.
 
 랜드마크 번호(MediaPipe Hands 규격): 0=손목, 4=엄지 끝, 8=검지 끝,
 12=중지 끝, 16=약지 끝, 20=새끼 끝. 각 손가락은 MCP-PIP-DIP-TIP 순.
@@ -31,7 +31,7 @@ LM_MIDDLE_MCP = 9
 # (검지, 중지, 약지, 새끼): (PIP, TIP)
 FINGER_PIP_TIP = ((6, 8), (10, 12), (14, 16), (18, 20))
 
-CLASS_IDS = {"fist": 0, "palm": 1, "ok": 2, "one": 3, "like": 4}
+CLASS_IDS = {"fist": 0, "palm": 1, "ok": 2, "one": 3, "like": 4, "two": 5, "three": 6}
 
 OPPOSITE_SIDE = {"left": "right", "right": "left"}
 
@@ -89,7 +89,13 @@ def classify_hand_landmarks(landmarks, extended_ratio, ok_pinch_ratio):
     # palm(손바닥): 네 손가락 모두 폄
     if index_ext and middle_ext and ring_ext and pinky_ext:
         return "palm"
-    # one(포인트): 검지만 폄 — 레거시 point로 매핑된다
+    # three: 검지·중지·약지 폄, 새끼는 굽힘 — 숫자 3 (실험: number_select)
+    if index_ext and middle_ext and ring_ext and not pinky_ext:
+        return "three"
+    # two: 검지·중지만 폄(브이 사인) — 숫자 2 (실험: number_select)
+    if index_ext and middle_ext and not ring_ext and not pinky_ext:
+        return "two"
+    # one(포인트): 검지만 폄 — 레거시 point로 매핑되며 숫자 1로도 쓰인다
     if index_ext and not middle_ext and not ring_ext and not pinky_ext and pinch >= ok_pinch_ratio:
         return "one"
     # like(따봉): 엄지만 폄 + 엄지 끝이 손목보다 위 (화면 y는 아래로 증가)

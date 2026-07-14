@@ -20,6 +20,7 @@
   .badge { display: inline-block; border-radius: 20px; padding: 2px 10px; font-size: 12px; font-weight: 700; }
   .badge.on { background: var(--accent); color: #10141c; }
   .badge.off { background: var(--panel2); color: var(--dim); }
+  .badge.toggle { cursor: pointer; border: 1px solid var(--line); }
   main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px 22px; }
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
   .panel h2 { font-size: 14px; color: var(--dim); margin-bottom: 10px; }
@@ -59,6 +60,7 @@
   <div class="stats">
     <span id="b-lock" class="badge off">사용자 인식 대기</span>
     <span id="b-ocr" class="badge off">신분증 스캔</span>
+    <span id="b-numsel" class="badge off toggle" title="클릭해서 실험 기능 켜기/끄기">1·2·3 실험 꺼짐</span>
     <span>추론 <b id="s-infer">-</b> FPS</span>
     <span>카메라 <b id="s-cap">-</b> FPS</span>
   </div>
@@ -69,7 +71,8 @@
     <img id="cam" src="/video_feed" alt="camera stream">
     <div class="guide">
       <span>✊→✋ 왼손</span>왼쪽 이동 &nbsp; <span>✊→✋ 오른손</span>오른쪽 이동<br>
-      <span>👌 OK</span>선택·확인 &nbsp; <span>🙌 양 손바닥 10초</span>처음으로
+      <span>👌 OK</span>선택·확인 &nbsp; <span>🙌 양 손바닥 10초</span>처음으로<br>
+      <span>☝️✌️🤟 실험</span>1·2·3번 항목 직접 선택 (위 배지를 눌러 켜기)
     </div>
     <div class="holdwrap" id="holdwrap"><div class="holdbar" id="holdbar"></div></div>
     <div style="margin-top:12px;">
@@ -93,6 +96,7 @@ let chosenCert = null;
 let idFields = null;        // fill_id_fields 수신 결과 {name, rrn}
 let lastEventTs = 0;
 let wasOcrMode = false;
+let numberSelectEnabled = false;  // 실험(2026-07-14): 손가락 1/2/3개로 항목 직접 선택
 
 const $ = (id) => document.getElementById(id);
 
@@ -141,6 +145,17 @@ function enterScreen(nextScreen) {
   render();
 }
 
+function confirmAt(idx) {  // "선택" 동작 — select와 select_number(실험)가 공유한다
+  if (screen === "home") { chosenCert = CERTS[idx]; enterScreen("confirm"); }
+  else if (screen === "confirm") {
+    if (CONFIRM_BUTTONS[idx] === "발급하기") {
+      if (!idFields) { showToast("주민등록증을 먼저 인식해 주세요"); announce("주민등록증을 먼저 인식해 주세요"); }
+      else enterScreen("done");
+    } else enterScreen("home");
+  }
+  else enterScreen("home");
+}
+
 function applyEvent(e) {
   if (e.class_name === "go_home") { enterScreen("home"); return; }
   if (e.class_name === "fill_id_fields" && screen === "confirm") {
@@ -148,15 +163,13 @@ function applyEvent(e) {
   }
   if (e.class_name === "move_left")  setFocus(focusIdx - 1);
   if (e.class_name === "move_right") setFocus(focusIdx + 1);
-  if (e.class_name === "select") {
-    if (screen === "home") { chosenCert = CERTS[focusIdx]; enterScreen("confirm"); }
-    else if (screen === "confirm") {
-      if (CONFIRM_BUTTONS[focusIdx] === "발급하기") {
-        if (!idFields) { showToast("주민등록증을 먼저 인식해 주세요"); announce("주민등록증을 먼저 인식해 주세요"); }
-        else enterScreen("done");
-      } else enterScreen("home");
-    }
-    else enterScreen("home");
+  if (e.class_name === "select") confirmAt(focusIdx);
+  if (e.class_name === "select_number") {  // 실험: 손가락 개수로 항목 N번 직접 선택
+    const labels = focusLabels();
+    const idx = e.data.number - 1;
+    if (idx < 0 || idx >= labels.length) { showToast(`${e.data.number}번 항목이 없습니다`); return; }
+    setFocus(idx, false);
+    confirmAt(idx);
   }
   // 레거시 이벤트(point/palm_stop/swipe/thumbs_up 등)는 이벤트 로그에만 남긴다
 }
@@ -190,6 +203,16 @@ function render() {
   }
 }
 
+async function toggleNumberSelect() {  // 실험 배지 클릭 — 재시작 없이 켜고 끈다
+  const next = !numberSelectEnabled;
+  try {
+    await fetch("/experiments/number_select", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: next }),
+    });
+  } catch (err) { /* 엔진 재시작 중 실패는 무시 — 다음 폴링이 실제 상태로 되돌린다 */ }
+}
+
 function showToast(msg) {
   const t = $("toast");
   t.textContent = msg; t.style.display = "block";
@@ -209,6 +232,11 @@ async function poll() {
     const ocr = $("b-ocr");
     ocr.className = "badge " + (d.status.is_ocr_mode ? "on" : "off");
     ocr.textContent = d.status.is_ocr_mode ? "신분증 스캔 중" : "신분증 스캔";
+
+    numberSelectEnabled = d.status.is_number_select_enabled;
+    const numsel = $("b-numsel");
+    numsel.className = "badge toggle " + (numberSelectEnabled ? "on" : "off");
+    numsel.textContent = numberSelectEnabled ? "1·2·3 실험 켜짐" : "1·2·3 실험 꺼짐";
     if (wasOcrMode && !d.status.is_ocr_mode && screen === "confirm" && !idFields) {
       showToast("인식 시간이 지났습니다 — 화면을 다시 선택하면 재시도합니다");
     }
@@ -226,6 +254,7 @@ async function poll() {
     }
   } catch (err) { /* 서버 재시작 중 폴링 실패는 무시 */ }
 }
+$("b-numsel").addEventListener("click", toggleNumberSelect);
 render();
 setInterval(poll, 250);
 </script>

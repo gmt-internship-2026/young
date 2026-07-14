@@ -40,6 +40,8 @@ model:
     point: point
     one: point
     like: thumbs_up
+    two: two          # 실험(2026-07-14, 회사 미확정) — gestures.number_select 참고
+    three: three
 
 person_lock:
   enabled: true
@@ -63,6 +65,10 @@ gestures:
     stable_frame_count: 5
     max_static_move_ratio: 0.08
     swipe: { source_gesture: open_hand, window_sec: 0.7, min_dist_ratio: 0.35 }
+  number_select:            # 실험(2026-07-14, 회사 미확정) — config.yaml 주석 참고
+    enabled: false
+    stable_frame_count: 5
+    max_static_move_ratio: 0.08
 
 ocr:
   enabled: true
@@ -86,9 +92,10 @@ announce:
     go_home: "처음 화면으로 돌아갑니다"
     help_call: "직원을 호출했습니다. 잠시만 기다려 주세요"
     fill_id_fields: "주민등록증 인식 완료. 이름과 주민등록번호가 입력되었습니다"
+    select_number: "번호로 선택했습니다"
 
 classes:
-  [move_left, move_right, select, go_home, help_call, fill_id_fields,
+  [move_left, move_right, select, select_number, go_home, help_call, fill_id_fields,
    point, palm_stop, swipe_left, swipe_right, thumbs_up]
 
 event_output:

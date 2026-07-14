@@ -73,9 +73,15 @@ class ClassifyHandLandmarksTest(unittest.TestCase):
             classify(build_hand(extended=[], thumb_tip=THUMB_TIP_UP)), "like"
         )
 
-    def test_victory_is_unknown(self):
-        """검지+중지만 폄(브이) — 정의된 제스처가 아니므로 None."""
-        self.assertIsNone(classify(build_hand(extended=["index", "middle"])))
+    def test_two_index_and_middle_only(self):
+        """검지+중지만 폄(브이 사인) = two (숫자 2, number_select 실험용)."""
+        self.assertEqual(classify(build_hand(extended=["index", "middle"])), "two")
+
+    def test_three_index_middle_ring(self):
+        """검지+중지+약지 폄, 새끼는 굽힘 = three (숫자 3, number_select 실험용)."""
+        self.assertEqual(
+            classify(build_hand(extended=["index", "middle", "ring"])), "three"
+        )
 
     def test_pinch_without_extended_fingers_is_not_ok(self):
         """핀치여도 중지·약지·새끼가 굽어 있으면 ok가 아니다 — fist로 본다."""

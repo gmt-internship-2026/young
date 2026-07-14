@@ -9,6 +9,9 @@
 - 레거시(기획서 5.1 초안): point / palm_stop / swipe_left / swipe_right / thumbs_up
   — gestures.legacy.enabled=true일 때만 판정. 양 손바닥 유지 중에는 손바닥
   스와이프·정지 판정을 멈춰 go_home과 충돌하지 않게 한다.
+- select_number(실험, 2026-07-14 추가, 회사 미확정): 손가락 1(point)/2(two)/3(three)개를
+  N프레임 유지하면 항목을 번호로 직접 선택. gestures.number_select.enabled 토글로
+  켜지며, 데모 UI의 실험 버튼으로 세션 중 on/off 가능(set_number_select_enabled).
 
 이벤트 확정 직후 cooldown_sec 동안 모든 입력을 무시한다 (연타 방지).
 모든 수치는 config에서 읽는다 (기획서 4.7).
@@ -28,6 +31,9 @@ SWIPE_RIGHT = "swipe_right"
 FIST = "fist"
 OPEN_HAND = "open_hand"
 OK = "ok"
+
+# 실험(number_select): 표준 제스처 이름 -> 손가락 개수(1~3)
+NUMBER_GESTURE_TO_INT = {"point": 1, "two": 2, "three": 3}
 
 
 @dataclass
@@ -131,6 +137,12 @@ class GestureFilter:
         self._two_palm_last_seen_sec = None
         self.two_palm_hold_ratio = 0.0  # 시각화·UI 진행 표시용 (0.0~1.0)
 
+        number_select = gestures["number_select"]
+        self._number_select_enabled = number_select["enabled"]
+        self._number_tracker = _StableTracker(
+            number_select["stable_frame_count"], number_select["max_static_move_ratio"]
+        )
+
         legacy = gestures["legacy"]
         self._legacy_enabled = legacy["enabled"]
         self._legacy_static_tracker = _StableTracker(
@@ -148,6 +160,17 @@ class GestureFilter:
         }
 
         self._last_event_ts_sec = None
+
+    def set_number_select_enabled(self, enabled):
+        """실험(number_select) 런타임 토글 — 데모 UI 버튼이 재시작 없이 켜고 끈다."""
+        self._number_select_enabled = enabled
+        if not enabled:
+            self._number_tracker.reset()
+
+    @property
+    def is_number_select_enabled(self):
+        """데모 UI /data 상태 표시용 — 현재 실험 토글 상태."""
+        return self._number_select_enabled
 
     def filter_observations(self, observations):
         """observations -> gesture_event | None (기획서 4.6 계약).
@@ -172,6 +195,14 @@ class GestureFilter:
         for obs in observations:
             if obs.gesture == OK and self._select_tracker.update(obs.gesture, obs.cx_ratio):
                 return self._confirm("select", obs.conf, now_sec)
+
+        if self._number_select_enabled:
+            for obs in observations:
+                number = NUMBER_GESTURE_TO_INT.get(obs.gesture)
+                if number is not None and self._number_tracker.update(obs.gesture, obs.cx_ratio):
+                    return self._confirm(
+                        "select_number", obs.conf, now_sec, data={"number": number}
+                    )
 
         if self._legacy_enabled:
             # 양 손바닥이 보이는 동안에는 레거시 손바닥 판정(스와이프·정지)을 멈춘다
@@ -267,6 +298,7 @@ class GestureFilter:
         for tracker in self._move_trackers.values():
             tracker.reset()
         self._select_tracker.reset()
+        self._number_tracker.reset()
         self._legacy_static_tracker.reset()
         self._legacy_track.clear()
         self._two_palm_start_sec = None

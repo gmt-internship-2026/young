@@ -24,7 +24,7 @@ class FakeClock:
         self.now_sec += dt_sec
 
 
-def make_config(two_palm_action="go_home", legacy_enabled=True):
+def make_config(two_palm_action="go_home", legacy_enabled=True, number_select_enabled=False):
     return {
         "detect": {"cooldown_sec": 1.0},
         "gestures": {
@@ -40,6 +40,11 @@ def make_config(two_palm_action="go_home", legacy_enabled=True):
                     "window_sec": 0.7,
                     "min_dist_ratio": 0.35,
                 },
+            },
+            "number_select": {
+                "enabled": number_select_enabled,
+                "stable_frame_count": 5,
+                "max_static_move_ratio": 0.08,
             },
         },
     }
@@ -152,6 +157,47 @@ class TwoPalmTest(GestureFilterTestBase):
         self.filter = GestureFilter(make_config(two_palm_action="help_call"), clock=self.clock)
         event = self._feed(self.BOTH_PALMS, frame_count=303)  # 10초 + 부동소수점 여유
         self.assertEqual(event.class_name, "help_call")
+
+
+class NumberSelectTest(GestureFilterTestBase):
+    """실험(2026-07-14) — 손가락 1/2/3개 유지로 항목 번호 직접 선택."""
+
+    def setUp(self):
+        self.clock = FakeClock()
+        self.filter = GestureFilter(
+            make_config(number_select_enabled=True), clock=self.clock
+        )
+
+    def test_one_finger_stable_fires_number_1(self):
+        event = self._feed([obs("right", "point")], frame_count=5)
+        self.assertEqual(event.class_name, "select_number")
+        self.assertEqual(event.data, {"number": 1})
+
+    def test_two_fingers_stable_fires_number_2(self):
+        event = self._feed([obs("right", "two")], frame_count=5)
+        self.assertEqual(event.class_name, "select_number")
+        self.assertEqual(event.data, {"number": 2})
+
+    def test_three_fingers_stable_fires_number_3(self):
+        event = self._feed([obs("right", "three")], frame_count=5)
+        self.assertEqual(event.class_name, "select_number")
+        self.assertEqual(event.data, {"number": 3})
+
+    def test_disabled_by_default_ignores_number_gestures(self):
+        self.filter = GestureFilter(make_config(number_select_enabled=False), clock=self.clock)
+        event = self._feed([obs("right", "two")], frame_count=10)
+        self.assertIsNone(event)
+
+    def test_runtime_toggle_off_stops_firing(self):
+        self.filter.set_number_select_enabled(False)
+        event = self._feed([obs("right", "three")], frame_count=10)
+        self.assertIsNone(event)
+
+    def test_runtime_toggle_on_starts_firing(self):
+        self.filter = GestureFilter(make_config(number_select_enabled=False), clock=self.clock)
+        self.filter.set_number_select_enabled(True)
+        event = self._feed([obs("right", "point")], frame_count=5)
+        self.assertEqual(event.class_name, "select_number")
 
 
 class LegacyGestureTest(GestureFilterTestBase):

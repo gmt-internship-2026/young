@@ -10,6 +10,10 @@ TODO(기획서 9장 №7·№8): 회사 프로그램(UI) 파일을 받으면 이
   설명처럼 화면 구조를 아는 쪽(UI)이 문구를 만들어 엔진 TTS로 읽힌다
 - 주민등록증 인식(UI→엔진): POST /ocr/start — 본인확인 화면 진입 시 요청,
   인식 성공 시 fill_id_fields 이벤트가 온다. POST /ocr/stop으로 중단
+
+실험 전용(회사 연동 계약 아님, 2026-07-14 추가 — 회사 미확정 상태라 정식 계약에서 제외):
+- POST /experiments/number_select {"enabled": bool} — 손가락 1/2/3개로 항목을
+  직접 선택하는 기능을 재시작 없이 켜고 끈다. 켜지면 select_number 이벤트(data.number)가 온다.
 """
 import asyncio
 import os
@@ -30,6 +34,10 @@ RECENT_EVENT_COUNT = 20
 
 class AnnounceBody(BaseModel):
     text: str
+
+
+class NumberSelectToggleBody(BaseModel):
+    enabled: bool
 
 
 def create_app(state, config):
@@ -83,6 +91,7 @@ def create_app(state, config):
                 "is_user_locked": state.is_user_locked,
                 "two_palm_hold_ratio": round(state.two_palm_hold_ratio, 2),
                 "is_ocr_mode": state.is_ocr_mode_active(),
+                "is_number_select_enabled": state.gesture_filter.is_number_select_enabled,
             },
             "classes": config["classes"],
             "events": events,
@@ -106,5 +115,13 @@ def create_app(state, config):
     async def ocr_stop():
         state.stop_ocr_mode()
         return {"ok": True}
+
+    # ----- 실험 기능 (2026-07-14, 회사 미확정 — number_select 손가락 1/2/3 선택) -----
+
+    @app.post("/experiments/number_select")
+    async def toggle_number_select(body: NumberSelectToggleBody):
+        """데모 UI의 실험 버튼 — 재시작 없이 손가락 개수 선택 판정을 켜고 끈다."""
+        state.gesture_filter.set_number_select_enabled(body.enabled)
+        return {"ok": True, "enabled": body.enabled}
 
     return app

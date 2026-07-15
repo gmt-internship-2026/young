@@ -11,30 +11,33 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 
-from src.postprocess.person_lock import KPT_LEFT_WRIST, KPT_RIGHT_WRIST, PersonLock
+from src.postprocess.person_lock import (
+    KPT_LEFT_ELBOW, KPT_LEFT_WRIST, KPT_RIGHT_ELBOW, KPT_RIGHT_WRIST, PersonLock,
+)
 
 FRAME_WIDTH_PX = 1280
 FRAME_HEIGHT_PX = 720
 
 
 class FakePerson:
-    """PersonPose와 같은 필드·메서드를 가진 테스트 대역 (ultralytics 임포트 회피)."""
+    """PersonPose와 같은 필드·메서드를 가진 테스트 대역 (rtmlib 임포트 회피)."""
 
     def __init__(self, center_x, center_y, size_px=200.0,
-                 left_wrist=None, right_wrist=None, head_points=None):
+                 left_wrist=None, right_wrist=None,
+                 left_elbow=None, right_elbow=None, head_points=None):
         half = size_px / 2.0
         self.bbox = (center_x - half, center_y - half, center_x + half, center_y + half)
         self.conf = 0.9
         self.keypoints = np.zeros((17, 3))
-        if left_wrist is not None:
-            self.keypoints[KPT_LEFT_WRIST] = (*left_wrist, 0.9)
-        if right_wrist is not None:
-            self.keypoints[KPT_RIGHT_WRIST] = (*right_wrist, 0.9)
+        for index, point in ((KPT_LEFT_WRIST, left_wrist), (KPT_RIGHT_WRIST, right_wrist),
+                             (KPT_LEFT_ELBOW, left_elbow), (KPT_RIGHT_ELBOW, right_elbow)):
+            if point is not None:
+                self.keypoints[index] = (*point, 0.9)
         self.head_points = head_points if head_points is not None else [
             (center_x - 20, center_y - half + 30), (center_x + 20, center_y - half + 30)
         ]
 
-    def wrist(self, index, min_conf):
+    def keypoint(self, index, min_conf):
         x, y, conf = self.keypoints[index]
         if conf < min_conf:
             return None
@@ -61,7 +64,7 @@ class FakeClock:
         self.now_sec += dt_sec
 
 
-CLASS_MAP = {"fist": "fist", "palm": "open_hand", "ok": "ok"}
+CLASS_MAP = {"back_of_hand": "dorsum", "palm": "palm_front"}
 
 
 def make_config(enabled=True, mirror=True):
@@ -93,7 +96,8 @@ def make_lock(config=None, sharpness_by_x=None):
 
     clock = FakeClock()
     lock = PersonLock(
-        config or make_config(), FRAME_WIDTH_PX, clock=clock, sharpness_fn=sharpness_fn
+        config or make_config(), FRAME_WIDTH_PX, FRAME_HEIGHT_PX,
+        clock=clock, sharpness_fn=sharpness_fn,
     )
     return lock, clock
 
@@ -171,11 +175,13 @@ class AttachDetectionsTest(unittest.TestCase):
 
     def test_detection_near_wrist_is_attached_with_user_side(self):
         lock = self._locked_lock()
-        detections = [FakeDetection("fist", 510, 410)]     # 모델 왼손목 근처
+        detections = [FakeDetection("back_of_hand", 510, 410)]     # 모델 왼손목 근처
         observations = lock.attach_detections(detections, CLASS_MAP)
         self.assertEqual(len(observations), 1)
         self.assertEqual(observations[0].side, "right")    # mirror=true — 사용자 오른손
-        self.assertEqual(observations[0].gesture, "fist")
+        self.assertEqual(observations[0].gesture, "dorsum")
+        self.assertAlmostEqual(observations[0].cx_ratio, 510 / FRAME_WIDTH_PX)
+        self.assertAlmostEqual(observations[0].cy_ratio, 410 / FRAME_HEIGHT_PX)
 
     def test_far_detection_is_dropped(self):
         lock = self._locked_lock()
@@ -196,9 +202,43 @@ class AttachDetectionsTest(unittest.TestCase):
 
     def test_disabled_lock_falls_back_to_screen_half(self):
         lock, _ = make_lock(make_config(enabled=False))
-        detections = [FakeDetection("fist", 200, 400), FakeDetection("palm", 1100, 400)]
+        detections = [FakeDetection("back_of_hand", 200, 400), FakeDetection("palm", 1100, 400)]
         observations = lock.attach_detections(detections, CLASS_MAP)
         self.assertEqual([o.side for o in observations], ["left", "right"])
+
+
+class UserArmPointsTest(unittest.TestCase):
+    """팔등 분류용 (팔꿈치, 손목) 쌍 — 거울 좌/우 보정과 결손 처리 (2026-07-15)."""
+
+    def _locked(self, mirror=True, **person_kwargs):
+        lock, clock = make_lock(make_config(mirror=mirror))
+        person = FakePerson(640, 360, **person_kwargs)
+        for _ in range(3):
+            lock.update(FRAME, [person])
+            clock.tick(1 / 30)
+        return lock
+
+    def test_mirror_swaps_arm_pairs_to_user_side(self):
+        lock = self._locked(
+            left_wrist=(500, 400), left_elbow=(520, 500),
+            right_wrist=(800, 400), right_elbow=(780, 500),
+        )
+        arms = lock.user_arm_points()
+        self.assertEqual(arms["right"], ((520.0, 500.0), (500.0, 400.0)))  # 모델 왼팔 = 사용자 오른팔
+        self.assertEqual(arms["left"], ((780.0, 500.0), (800.0, 400.0)))
+
+    def test_missing_elbow_drops_that_arm_only(self):
+        lock = self._locked(
+            left_wrist=(500, 400),                       # 모델 왼팔은 팔꿈치 결손
+            right_wrist=(800, 400), right_elbow=(780, 500),
+        )
+        arms = lock.user_arm_points()
+        self.assertIsNone(arms["right"])                 # 팔꿈치 없는 쪽(사용자 오른팔)만 제외
+        self.assertIsNotNone(arms["left"])
+
+    def test_no_lock_returns_none_pairs(self):
+        lock, _ = make_lock()
+        self.assertEqual(lock.user_arm_points(), {"left": None, "right": None})
 
 
 class HandednessAttachTest(unittest.TestCase):
@@ -221,7 +261,7 @@ class HandednessAttachTest(unittest.TestCase):
         # 모델 왼손목(500,400) = 사용자 오른손 — hand_side와 손목이 일치하는 정상 케이스
         lock = self._locked(left_wrist=(500, 400), right_wrist=(800, 400))
         observations = lock.attach_detections(
-            [FakeDetection("fist", 510, 410, hand_side="right")], CLASS_MAP
+            [FakeDetection("back_of_hand", 510, 410, hand_side="right")], CLASS_MAP
         )
         self.assertEqual(len(observations), 1)
         self.assertEqual(observations[0].side, "right")
@@ -230,7 +270,7 @@ class HandednessAttachTest(unittest.TestCase):
         # 사용자 왼팔의 손목 키포인트 없음(모델 오른손목 미설정) — 잠긴 사람 박스 안이면 수용
         lock = self._locked(left_wrist=(500, 400))  # 모델 왼손목만 = 사용자 오른손만 키포인트 존재
         observations = lock.attach_detections(
-            [FakeDetection("fist", 600, 400, hand_side="left")], CLASS_MAP
+            [FakeDetection("back_of_hand", 600, 400, hand_side="left")], CLASS_MAP
         )
         self.assertEqual(len(observations), 1)
         self.assertEqual(observations[0].side, "left")
@@ -239,7 +279,7 @@ class HandednessAttachTest(unittest.TestCase):
         # 손목 소실 + 잠긴 사람 박스에서 먼 손 = 다른 사람 손으로 보고 무시
         lock = self._locked(left_wrist=(500, 400))
         observations = lock.attach_detections(
-            [FakeDetection("fist", 100, 100, hand_side="left")], CLASS_MAP
+            [FakeDetection("back_of_hand", 100, 100, hand_side="left")], CLASS_MAP
         )
         self.assertEqual(observations, [])
 
@@ -247,14 +287,14 @@ class HandednessAttachTest(unittest.TestCase):
         # 해당 손목이 있으면 박스 안이라도 손목 반경(179px)을 벗어나면 무시 — 엄격 유지
         lock = self._locked(left_wrist=(500, 400), right_wrist=(800, 400))
         observations = lock.attach_detections(
-            [FakeDetection("fist", 700, 420, hand_side="right")], CLASS_MAP  # 손목에서 201px
+            [FakeDetection("back_of_hand", 700, 420, hand_side="right")], CLASS_MAP  # 손목에서 201px
         )
         self.assertEqual(observations, [])
 
     def test_disabled_lock_prefers_hand_side_over_screen_half(self):
         lock, _ = make_lock(make_config(enabled=False))
         observations = lock.attach_detections(
-            [FakeDetection("fist", 200, 400, hand_side="right")], CLASS_MAP  # 화면 왼쪽 절반
+            [FakeDetection("back_of_hand", 200, 400, hand_side="right")], CLASS_MAP  # 화면 왼쪽 절반
         )
         self.assertEqual([o.side for o in observations], ["right"])
 

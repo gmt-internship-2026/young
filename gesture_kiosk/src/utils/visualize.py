@@ -6,7 +6,6 @@ EVENT_COLOR = (0, 160, 255)
 TEXT_COLOR = (255, 255, 255)
 LOCK_COLOR = (255, 200, 0)       # 잠긴 사용자 얼굴 박스
 WRIST_COLOR = {"left": (255, 120, 60), "right": (60, 120, 255)}
-HOLD_BAR_COLOR = (0, 220, 220)   # 양 손바닥 유지 진행 바
 OCR_COLOR = (80, 200, 255)       # OCR 모드 안내 영역
 
 
@@ -46,22 +45,6 @@ def draw_person_lock(frame, person_lock):
             frame, side[0].upper(), (x_px + 12, y_px + 5),
             cv2.FONT_HERSHEY_SIMPLEX, 0.6, WRIST_COLOR[side], 2,
         )
-    return frame
-
-
-def draw_two_palm_hold(frame, hold_ratio):
-    """양 손바닥 유지(처음으로) 진행 바 — 하단 중앙."""
-    if hold_ratio <= 0.0:
-        return frame
-    h_px, w_px = frame.shape[:2]
-    bar_w = int(w_px * 0.5)
-    x1 = (w_px - bar_w) // 2
-    y1 = h_px - 40
-    cv2.rectangle(frame, (x1, y1), (x1 + bar_w, y1 + 16), TEXT_COLOR, 1)
-    cv2.rectangle(frame, (x1, y1), (x1 + int(bar_w * hold_ratio), y1 + 16), HOLD_BAR_COLOR, -1)
-    cv2.putText(
-        frame, "HOLD", (x1 - 70, y1 + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.6, HOLD_BAR_COLOR, 2
-    )
     return frame
 
 

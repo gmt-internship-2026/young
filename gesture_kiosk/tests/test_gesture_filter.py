@@ -24,29 +24,29 @@ class FakeClock:
         self.now_sec += dt_sec
 
 
-def make_config(two_palm_action="go_home", legacy_enabled=True):
+def make_config():
     return {
         "detect": {"cooldown_sec": 1.0},
         "gestures": {
-            "move": {"fist_min_frames": 3, "open_within_sec": 0.8},
-            "select": {"stable_frame_count": 5, "max_static_move_ratio": 0.08},
-            "two_palm": {"action": two_palm_action, "hold_sec": 10.0, "grace_sec": 0.4},
-            "legacy": {
-                "enabled": legacy_enabled,
-                "stable_frame_count": 5,
+            "swipe": {
+                "window_sec": 0.6,
+                "min_dist_x_ratio": 0.25,
+                "min_dist_y_ratio": 0.25,
+                "axis_dominance": 1.5,
+                "min_track_frames": 4,
+            },
+            "select": {
+                "stable_frame_count": 8,
                 "max_static_move_ratio": 0.08,
-                "swipe": {
-                    "source_gesture": "open_hand",
-                    "window_sec": 0.7,
-                    "min_dist_ratio": 0.35,
-                },
+                "max_hand_y_ratio": 0.85,
             },
         },
     }
 
 
-def obs(side, gesture, conf=0.9, cx_ratio=0.5):
-    return HandObservation(side=side, gesture=gesture, conf=conf, cx_ratio=cx_ratio)
+def obs(side, gesture, conf=0.9, cx_ratio=0.5, cy_ratio=0.4):
+    return HandObservation(side=side, gesture=gesture, conf=conf,
+                           cx_ratio=cx_ratio, cy_ratio=cy_ratio)
 
 
 FRAME_DT_SEC = 1.0 / 30.0  # 30 FPS 가정
@@ -57,148 +57,130 @@ class GestureFilterTestBase(unittest.TestCase):
         self.clock = FakeClock()
         self.filter = GestureFilter(make_config(), clock=self.clock)
 
-    def _feed(self, observations, frame_count=1, dt_sec=FRAME_DT_SEC):
+    def _feed(self, observations=None, wrists=None, frame_count=1, dt_sec=FRAME_DT_SEC):
         """frame_count 프레임 공급 — 첫 확정 이벤트를 즉시 돌려준다 (없으면 None)."""
         for _ in range(frame_count):
-            event = self.filter.filter_observations(observations)
+            event = self.filter.filter_observations(observations or [], wrists)
             self.clock.tick(dt_sec)
             if event is not None:
                 return event
         return None
 
+    def _feed_swipe(self, side, points, dt_sec=FRAME_DT_SEC):
+        """한 손목의 궤적 점들을 순서대로 공급 — 첫 확정 이벤트를 돌려준다."""
+        other = "right" if side == "left" else "left"
+        for point in points:
+            event = self._feed(wrists={side: point, other: None}, dt_sec=dt_sec)
+            if event is not None:
+                return event
+        return None
 
-class MoveGestureTest(GestureFilterTestBase):
-    """신규 스펙 — 주먹 쥐었다 펴면 이동 (왼손=왼쪽, 오른손=오른쪽)."""
 
-    def test_left_fist_then_open_fires_move_left(self):
-        self._feed([obs("left", "fist")], frame_count=3)
-        event = self._feed([obs("left", "open_hand")])
+def path(start, end, step_count, y_ratio=None, x_ratio=None):
+    """직선 궤적 점 목록 — y_ratio 지정 시 수평 이동, x_ratio 지정 시 수직 이동."""
+    points = []
+    for step_idx in range(step_count + 1):
+        value = start + (end - start) * step_idx / step_count
+        points.append((value, y_ratio) if y_ratio is not None else (x_ratio, value))
+    return points
+
+
+class SwipeGestureTest(GestureFilterTestBase):
+    """신규 스펙(2026-07-15) — 팔(손목) 쓸기: 좌/우=이동, 아래=이전, 위=처음."""
+
+    def test_swipe_right_fires_move_right(self):
+        event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4))
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "move_left")
-        self.assertEqual(event.hand_side, "left")
+        self.assertEqual(event.class_name, "move_right")
+        self.assertEqual(event.hand_side, "right")
 
-    def test_right_fist_then_open_fires_move_right(self):
-        self._feed([obs("right", "fist")], frame_count=3)
-        event = self._feed([obs("right", "open_hand")])
+    def test_swipe_left_fires_move_left(self):
+        event = self._feed_swipe("left", path(0.6, 0.2, 8, y_ratio=0.4))
+        self.assertEqual(event.class_name, "move_left")
+
+    def test_swipe_up_fires_go_home(self):
+        event = self._feed_swipe("right", path(0.8, 0.3, 8, x_ratio=0.5))
+        self.assertEqual(event.class_name, "go_home")
+
+    def test_swipe_down_fires_go_back(self):
+        event = self._feed_swipe("right", path(0.3, 0.8, 8, x_ratio=0.5))
+        self.assertEqual(event.class_name, "go_back")
+
+    def test_short_move_does_not_fire(self):
+        # min_dist_x_ratio(0.25) 미만 이동 — 이벤트 없음
+        event = self._feed_swipe("right", path(0.4, 0.55, 8, y_ratio=0.4))
+        self.assertIsNone(event)
+
+    def test_diagonal_move_is_held(self):
+        # x·y 진행도가 비슷한 대각선 — 주축 우세(1.5배) 불충족이라 보류
+        points = [(0.2 + i * 0.05, 0.2 + i * 0.05) for i in range(12)]
+        event = self._feed_swipe("right", points)
+        self.assertIsNone(event)
+
+    def test_min_track_frames_blocks_teleport(self):
+        # 3프레임 만에 임계를 넘는 순간이동(키포인트 튐) — 4프레임째부터 확정 가능
+        event = self._feed_swipe("right", [(0.1, 0.4), (0.5, 0.4), (0.5, 0.4)])
+        self.assertIsNone(event)
+        event = self._feed_swipe("right", [(0.5, 0.4)])
+        self.assertIsNotNone(event)
         self.assertEqual(event.class_name, "move_right")
 
-    def test_short_fist_does_not_arm(self):
-        self._feed([obs("left", "fist")], frame_count=2)  # 3프레임 미만
-        event = self._feed([obs("left", "open_hand")])
+    def test_wrist_loss_resets_track(self):
+        # 절반 이동 후 손목 소실 — 궤적이 리셋돼 나머지 절반로는 확정되지 않는다
+        self._feed_swipe("right", path(0.2, 0.4, 4, y_ratio=0.4))
+        self._feed(wrists={"right": None, "left": None})
+        event = self._feed_swipe("right", path(0.4, 0.6, 4, y_ratio=0.4))
         self.assertIsNone(event)
 
-    def test_open_too_late_does_not_fire(self):
-        self._feed([obs("left", "fist")], frame_count=3)
-        self.clock.tick(1.0)  # open_within_sec(0.8초) 초과
-        event = self._feed([obs("left", "open_hand")])
-        self.assertIsNone(event)
-
-    def test_hands_are_independent(self):
-        self._feed([obs("left", "fist")], frame_count=3)  # 왼손 장전
-        event = self._feed([obs("right", "open_hand")])   # 오른손 펴기 — 무관
-        self.assertIsNone(event)
-
-    def test_other_gesture_between_resets_fist_run(self):
-        self._feed([obs("left", "fist")], frame_count=2)
-        self._feed([obs("left", "ok")])                   # 끼어듦 — 리셋
-        self._feed([obs("left", "fist")], frame_count=1)  # 다시 1프레임뿐
-        event = self._feed([obs("left", "open_hand")])
+    def test_slow_drift_outside_window_does_not_fire(self):
+        # 같은 거리라도 window_sec(0.6초)보다 느리면 쓸기가 아니다 — 배회 오탐 방지
+        event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4), dt_sec=0.2)
         self.assertIsNone(event)
 
 
 class SelectGestureTest(GestureFilterTestBase):
-    """신규 스펙 — OK 사인 유지 = 선택/확인 통일."""
+    """신규 스펙(2026-07-15) — 손등/팔등(dorsum) 유지 = 선택/확인."""
 
-    def test_ok_stable_frames_fires_select(self):
-        self.assertIsNone(self._feed([obs("right", "ok")], frame_count=4))
-        event = self._feed([obs("right", "ok")])
+    def test_dorsum_stable_frames_fires_select(self):
+        self.assertIsNone(self._feed([obs("right", "dorsum")], frame_count=7))
+        event = self._feed([obs("right", "dorsum")])
         self.assertIsNotNone(event)
         self.assertEqual(event.class_name, "select")
 
-    def test_moving_ok_does_not_fire(self):
-        for frame_idx in range(10):
-            event = self._feed([obs("right", "ok", cx_ratio=0.1 + frame_idx * 0.1)])
+    def test_moving_dorsum_does_not_fire(self):
+        for frame_idx in range(16):
+            event = self._feed([obs("right", "dorsum", cx_ratio=0.1 + frame_idx * 0.05)])
         self.assertIsNone(event)
 
-
-class TwoPalmTest(GestureFilterTestBase):
-    """신규 스펙 — 양 손바닥 10초 유지 = 처음으로 (config로 직원 호출 전환 가능)."""
-
-    BOTH_PALMS = [obs("left", "open_hand", cx_ratio=0.3), obs("right", "open_hand", cx_ratio=0.7)]
-
-    def test_two_palms_held_fires_go_home(self):
-        event = self._feed(self.BOTH_PALMS, frame_count=299)
-        self.assertIsNone(event)  # 299프레임 ≈ 9.93초 — 아직
-        event = self._feed(self.BOTH_PALMS, frame_count=3)  # 10초 경계 통과
-        self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "go_home")
-
-    def test_hold_ratio_progresses(self):
-        self._feed(self.BOTH_PALMS, frame_count=150)  # ≈ 5초
-        self.assertGreater(self.filter.two_palm_hold_ratio, 0.4)
-        self.assertLess(self.filter.two_palm_hold_ratio, 0.6)
-
-    def test_break_beyond_grace_resets(self):
-        self._feed(self.BOTH_PALMS, frame_count=200)
-        self._feed([], frame_count=1, dt_sec=0.5)  # grace_sec(0.4초) 초과 공백
-        self._feed(self.BOTH_PALMS, frame_count=1)
-        self.assertLess(self.filter.two_palm_hold_ratio, 0.1)  # 처음부터 다시
-
-    def test_single_palm_never_fires_home(self):
-        event = self._feed([obs("left", "open_hand")], frame_count=350)
-        self.assertNotEqual(getattr(event, "class_name", None), "go_home")
-
-    def test_action_config_switches_to_help_call(self):
-        self.filter = GestureFilter(make_config(two_palm_action="help_call"), clock=self.clock)
-        event = self._feed(self.BOTH_PALMS, frame_count=303)  # 10초 + 부동소수점 여유
-        self.assertEqual(event.class_name, "help_call")
-
-
-class LegacyGestureTest(GestureFilterTestBase):
-    """레거시(기획서 5.1 초안) — legacy.enabled 토글로 병행 유지."""
-
-    def test_palm_swipe_right(self):
-        event = None
-        for frame_idx in range(12):
-            cx_ratio = 0.15 + frame_idx * 0.0625
-            event = self._feed([obs("right", "open_hand", cx_ratio=cx_ratio)])
-            if event is not None:
-                break
-        self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "swipe_right")
-
-    def test_stationary_palm_fires_palm_stop(self):
-        event = self._feed([obs("right", "open_hand")], frame_count=5)
-        self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "palm_stop")
-
-    def test_point_stable_fires_point(self):
-        event = self._feed([obs("right", "point")], frame_count=5)
-        self.assertEqual(event.class_name, "point")
-
-    def test_thumbs_up_fires(self):
-        event = self._feed([obs("right", "thumbs_up")], frame_count=5)
-        self.assertEqual(event.class_name, "thumbs_up")
-
-    def test_both_palms_suppress_legacy_palm(self):
-        both = [obs("left", "open_hand", cx_ratio=0.3), obs("right", "open_hand", cx_ratio=0.7)]
-        event = self._feed(both, frame_count=10)  # 손바닥 정지 5프레임을 넘겨도
-        self.assertIsNone(event)                  # palm_stop이 나오면 안 된다 (go_home 대기)
-
-    def test_legacy_disabled_silences_legacy_events(self):
-        self.filter = GestureFilter(make_config(legacy_enabled=False), clock=self.clock)
-        event = self._feed([obs("right", "point")], frame_count=10)
+    def test_lowered_hand_dorsum_is_ignored(self):
+        # 내린 손(cy > max_hand_y_ratio) — 쉬는 자세의 손등 오탐 방지
+        event = self._feed([obs("right", "dorsum", cy_ratio=0.95)], frame_count=20)
         self.assertIsNone(event)
+
+    def test_palm_front_never_fires(self):
+        event = self._feed([obs("right", "palm_front")], frame_count=20)
+        self.assertIsNone(event)
+
+    def test_arm_observation_without_cy_guard_needs_stability(self):
+        # cy_ratio가 None인 관측도 판정은 동작한다 (높이 가드만 건너뜀)
+        event = self._feed([obs("right", "dorsum", cy_ratio=None)], frame_count=8)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "select")
 
 
 class CooldownTest(GestureFilterTestBase):
     def test_cooldown_blocks_repeat_event(self):
-        self._feed([obs("right", "ok")], frame_count=5)   # select 확정
-        event = self._feed([obs("right", "ok")], frame_count=5)  # 쿨다운(1초) 내
+        self._feed([obs("right", "dorsum")], frame_count=8)   # select 확정
+        event = self._feed([obs("right", "dorsum")], frame_count=8)  # 쿨다운(1초) 내
         self.assertIsNone(event)
         self.clock.tick(1.0)
-        event = self._feed([obs("right", "ok")], frame_count=5)
+        event = self._feed([obs("right", "dorsum")], frame_count=8)
         self.assertIsNotNone(event)
+
+    def test_cooldown_blocks_swipe_after_select(self):
+        self._feed([obs("right", "dorsum")], frame_count=8)   # select 확정
+        event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4))
+        self.assertIsNone(event)                              # 쿨다운 내 쓸기 무시
 
 
 class MetricsTest(unittest.TestCase):

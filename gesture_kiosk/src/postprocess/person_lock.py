@@ -27,7 +27,9 @@ from src.utils.logger import get_logger
 logger = get_logger("postprocess")
 
 # COCO 17 키포인트 규격 (pose_estimator와 동일 번호 — 모델 무관 고정 스펙이라 여기 직접 둔다.
-# 임포트하면 ultralytics가 딸려 와 단위 테스트가 무거워진다)
+# 임포트하면 rtmlib가 딸려 와 단위 테스트가 무거워진다)
+KPT_LEFT_ELBOW = 7
+KPT_RIGHT_ELBOW = 8
 KPT_LEFT_WRIST = 9
 KPT_RIGHT_WRIST = 10
 
@@ -37,12 +39,23 @@ SHARPNESS_SQUASH = 300.0      # 라플라시안 분산 정규화 상수 (v/(v+K)
 
 @dataclass
 class HandObservation:
-    """잠긴 사용자에게 귀속된 손 관측 1건 — gesture_filter의 입력."""
+    """잠긴 사용자에게 귀속된 손/팔 관측 1건 — gesture_filter의 입력."""
 
     side: str        # "left" | "right" — 사용자 기준 좌/우
-    gesture: str     # 표준 제스처 이름 (class_map 적용 후)
+    gesture: str     # 표준 제스처 이름 (class_map 적용 후 / 팔등 분류는 직접 "dorsum")
     conf: float
     cx_ratio: float  # 프레임 폭 대비 중심 x (0.0~1.0)
+    cy_ratio: float = None  # 프레임 높이 대비 중심 y — select의 내린 손 오탐 방지에 쓴다
+
+
+def user_side_points(model_left, model_right, is_mirror):
+    """포즈 모델(화면 기준) 좌/우 값 -> 사용자 기준 {"left": ..., "right": ...}.
+
+    거울 프레임에서 포즈 모델의 '왼쪽' 키포인트는 사용자의 실제 오른쪽이다.
+    """
+    if is_mirror:
+        return {"left": model_right, "right": model_left}
+    return {"left": model_left, "right": model_right}
 
 
 def _center(bbox):
@@ -78,7 +91,8 @@ def _laplacian_sharpness(frame, face_box):
 
 
 class PersonLock:
-    def __init__(self, config, frame_width_px, clock=time.monotonic, sharpness_fn=None):
+    def __init__(self, config, frame_width_px, frame_height_px,
+                 clock=time.monotonic, sharpness_fn=None):
         lock_cfg = config["person_lock"]
         self.enabled = lock_cfg["enabled"]
         self._kpt_conf = lock_cfg["kpt_conf_threshold"]
@@ -90,6 +104,7 @@ class PersonLock:
         self._is_mirror = config["camera"]["mirror"]
 
         self._frame_width_px = frame_width_px
+        self._frame_height_px = frame_height_px
         self._clock = clock
         self._sharpness_fn = sharpness_fn or _laplacian_sharpness
 
@@ -116,7 +131,10 @@ class PersonLock:
     def update(self, frame, persons):
         """프레임의 사람 목록으로 잠금 상태를 갱신한다. 잠긴 사람(or None)을 돌려준다."""
         if not self.enabled:
-            return None
+            # 잠금 비활성이어도 쓸기(손목 궤적)·팔등 크롭은 기준 인물이 필요하다 —
+            # 최고 신뢰도 사람을 추적해 user_wrists()/user_arm_points()가 동작하게 한다
+            self.locked_person = max(persons, key=lambda p: p.conf) if persons else None
+            return self.locked_person
         now_sec = self._clock()
 
         scored = []
@@ -180,12 +198,32 @@ class PersonLock:
         """잠긴 사용자의 손목 좌표를 '사용자 기준' 좌/우로 돌려준다: {"left": (x,y)|None, ...}"""
         if self.locked_person is None:
             return {"left": None, "right": None}
-        model_left = self.locked_person.wrist(KPT_LEFT_WRIST, self._kpt_conf)
-        model_right = self.locked_person.wrist(KPT_RIGHT_WRIST, self._kpt_conf)
-        if self._is_mirror:
-            # 거울 프레임에서 포즈 모델의 '왼손목'은 사용자의 실제 오른손이다
-            return {"left": model_right, "right": model_left}
-        return {"left": model_left, "right": model_right}
+        return user_side_points(
+            self.locked_person.keypoint(KPT_LEFT_WRIST, self._kpt_conf),
+            self.locked_person.keypoint(KPT_RIGHT_WRIST, self._kpt_conf),
+            self._is_mirror,
+        )
+
+    def user_arm_points(self):
+        """잠긴 사용자의 (팔꿈치, 손목) 픽셀 좌표 쌍 — 사용자 기준 좌/우.
+
+        팔등 분류(arm_side_classifier)의 전완 크롭용. 한쪽 키포인트가 빠지면 그쪽 None.
+        """
+        if self.locked_person is None:
+            return {"left": None, "right": None}
+
+        def arm_pair(elbow_idx, wrist_idx):
+            elbow = self.locked_person.keypoint(elbow_idx, self._kpt_conf)
+            wrist = self.locked_person.keypoint(wrist_idx, self._kpt_conf)
+            if elbow is None or wrist is None:
+                return None
+            return (elbow, wrist)
+
+        return user_side_points(
+            arm_pair(KPT_LEFT_ELBOW, KPT_LEFT_WRIST),
+            arm_pair(KPT_RIGHT_ELBOW, KPT_RIGHT_WRIST),
+            self._is_mirror,
+        )
 
     def _is_near_locked_person(self, point):
         """잠긴 사람 박스(+손목 매칭 반경 여유) 안의 점인지 — 손목 소실 시 소유권 폴백."""
@@ -215,12 +253,13 @@ class PersonLock:
                 gesture = class_map.get(det.class_name)
                 if gesture is None:
                     continue
-                cx, _ = _center(det.bbox)
+                cx, cy = _center(det.bbox)
                 side = getattr(det, "hand_side", None)
                 if side not in ("left", "right"):
                     side = "left" if cx < self._frame_width_px / 2.0 else "right"
                 observations.append(
-                    HandObservation(side, gesture, det.conf, cx / self._frame_width_px)
+                    HandObservation(side, gesture, det.conf,
+                                    cx / self._frame_width_px, cy / self._frame_height_px)
                 )
             return observations
 
@@ -256,8 +295,9 @@ class PersonLock:
                 if best_side is None:
                     continue  # 잠긴 사용자의 손목 근처가 아니다 — 다른 사람 손으로 보고 무시
 
-            cx, _ = det_center
+            cx, cy = det_center
             observations.append(
-                HandObservation(best_side, gesture, det.conf, cx / self._frame_width_px)
+                HandObservation(best_side, gesture, det.conf,
+                                cx / self._frame_width_px, cy / self._frame_height_px)
             )
         return observations

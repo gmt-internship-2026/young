@@ -7,7 +7,7 @@ COCO 17 키포인트라 사용자 잠금(person_lock)은 수정 없이 그대로
 모델 파일은 첫 실행 때 자동으로 내려받아 캐시(~/.cache/rtmlib)에 둔다 —
 내부망 반입 시에는 make_offline_bundle.bat이 이 캐시를 함께 담는다.
 
-키포인트 번호는 COCO 17 규격이다 (0=코, 1·2=눈, 3·4=귀, 9=왼손목, 10=오른손목).
+키포인트 번호는 COCO 17 규격이다 (0=코, 1·2=눈, 3·4=귀, 7·8=팔꿈치, 9·10=손목).
 주의: 이 라벨은 "화면에 보이는 사람" 기준의 해부학적 좌/우다. 거울 반전된
 프레임에서는 사용자의 실제 좌/우와 반대가 되며, 그 보정은 person_lock이 담당한다.
 """
@@ -22,6 +22,8 @@ logger = get_logger("inference")
 # COCO 17 키포인트 인덱스 (RTMPose body 계열 출력 순서)
 KPT_NOSE = 0
 KPT_HEAD_INDICES = (0, 1, 2, 3, 4)  # 코·양눈·양귀 — 얼굴 영역 추정에 사용
+KPT_LEFT_ELBOW = 7
+KPT_RIGHT_ELBOW = 8
 KPT_LEFT_WRIST = 9
 KPT_RIGHT_WRIST = 10
 
@@ -37,8 +39,8 @@ class PersonPose:
     keypoints: np.ndarray       # shape (17, 3) — (x_px, y_px, conf)
     head_points: list = field(default_factory=list)  # 신뢰도 통과한 머리 키포인트 [(x, y)]
 
-    def wrist(self, index, min_conf):
-        """키포인트 신뢰도가 통과하면 (x_px, y_px), 아니면 None."""
+    def keypoint(self, index, min_conf):
+        """키포인트 신뢰도가 통과하면 (x_px, y_px), 아니면 None (손목·팔꿈치 공용)."""
         x, y, conf = self.keypoints[index]
         if conf < min_conf:
             return None

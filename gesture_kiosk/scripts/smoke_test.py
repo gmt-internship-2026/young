@@ -4,7 +4,7 @@ install.bat 마지막 단계에서 자동 실행된다. 확인 항목:
 1. 파이썬 버전 (배포 기준 3.11.5 — 시험 장비의 다른 버전은 경고만)
 2. 핵심 패키지 임포트 (onnxruntime·rtmlib·cv2·fastapi / 선택: easyocr·pyttsx3·torch)
 3. GPU 가속 확인 (onnxruntime CUDA — 맥 시험 장비는 CPU 안내)
-4. 제스처 ONNX 존재 + 더미 프레임 추론 (제스처 + 포즈)
+4. 더미 프레임 추론 (손등/손바닥 + 포즈) + 팔등 분류 모델 존재 안내
 
 사용법 (프로젝트 루트에서):
     python scripts/smoke_test.py
@@ -77,9 +77,6 @@ def main():
         except ImportError as error:
             check("pyttsx3 임포트 (음성 안내)", False, str(error))
 
-    check("제스처 ONNX 파일", os.path.exists(config["model"]["gesture_onnx_path"]),
-          config["model"]["gesture_onnx_path"])
-
     try:
         import numpy as np
 
@@ -88,23 +85,28 @@ def main():
         detector = create_gesture_detector(config)
         dummy = np.zeros((480, 640, 3), dtype=np.uint8)
         detector.infer(dummy)
-        check("더미 프레임 추론 (제스처)", True,
-              f"engine={config['model'].get('gesture_engine', 'mediapipe')}")
+        check("더미 프레임 추론 (손등/손바닥 — MediaPipe)", True)
     except Exception as error:  # 모델 누락·드라이버 문제 등 — 원인 그대로 보여준다
-        check("더미 프레임 추론 (제스처)", False, repr(error))
+        check("더미 프레임 추론 (손등/손바닥 — MediaPipe)", False, repr(error))
 
-    if config["person_lock"]["enabled"]:
-        try:
-            import numpy as np
+    # 포즈는 항상 필요 — 쓸기(이동·이전·처음) 판정이 손목 궤적 기반 (2026-07-15)
+    try:
+        import numpy as np
 
-            from src.inference.pose_estimator import PoseEstimator
+        from src.inference.pose_estimator import PoseEstimator
 
-            pose = PoseEstimator(config)
-            dummy = np.zeros((480, 640, 3), dtype=np.uint8)
-            pose.infer(dummy)
-            check("더미 프레임 추론 (포즈 — 사용자 잠금)", True)
-        except Exception as error:
-            check("더미 프레임 추론 (포즈 — 사용자 잠금)", False, repr(error))
+        pose = PoseEstimator(config)
+        dummy = np.zeros((480, 640, 3), dtype=np.uint8)
+        pose.infer(dummy)
+        check("더미 프레임 추론 (포즈 — 쓸기·사용자 잠금)", True)
+    except Exception as error:
+        check("더미 프레임 추론 (포즈 — 쓸기·사용자 잠금)", False, repr(error))
+
+    arm_onnx_path = config["model"]["arm_side"]["onnx_path"]
+    # 팔등 모델은 자체 학습 산출물이라 없어도 설치 실패가 아니다 — 상태만 안내
+    check("팔등 분류 모델 (자체 학습)", True,
+          arm_onnx_path if os.path.exists(arm_onnx_path)
+          else "없음 — 손등 판정만 동작 (collect_arm_side.py → train_arm_side.py)")
 
     print()
     if is_all_passed:

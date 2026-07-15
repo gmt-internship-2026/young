@@ -1,19 +1,19 @@
-"""inference 모듈 — MediaPipe 손 랜드마크로 제스처를 검출한다 (라이선스 C안).
+"""inference 모듈 — MediaPipe 손 랜드마크로 손등/손바닥 방향을 검출한다 (라이선스 C안).
 
-2026-07-10 교체(라이선스 C안): HaGRID YOLOv10 ONNX는 AGPL(ultralytics/YOLOv10)
-학습·변환 계열이라 비공개 상업 배포에 위험 — MediaPipe Hand Landmarker
-(Apache-2.0, 구글 배포 .task 모델)로 교체했다. 저작자 표시 의무도 없다.
+2026-07-15 동작 개편: 제스처 어휘를 손가락 모양(주먹/OK 등)에서 손 방향
+(손등/손바닥)으로 교체했다 — 선택(OK)이 '손등 보이기'로 바뀌었기 때문이다
+(범용 설계: 손목 돌리기만 하면 되므로 손가락이 없는 사용자도 가능).
 
-동작 방식: 손 21 랜드마크를 추정한 뒤, 손 크기로 정규화한 기하 규칙로
-제스처를 판정한다 — 별도 학습 0회, 판정 규칙은 단위 테스트로 검증된다
-(tests/test_mediapipe_classify.py).
+판정 원리: (검지MCP-손목)×(새끼MCP-손목) 외적의 z부호는 손등/손바닥 중
+어느 쪽이 카메라를 향하는지에 따라 뒤집히고, 화면 내 회전에는 불변이다.
+손가락 끝(TIP)을 쓰지 않아 손가락이 일부 없는 손에도 강건하다.
+부호 규약은 tests/test_mediapipe_classify.py 8조합(좌우×거울×등/바닥)으로 고정.
 
-출력 계약은 detector.GestureDetector와 동일: infer(frame) -> list[Detection].
-class_name은 기존 class_map 키(fist/palm/ok/one/like)를 그대로 내보내므로
-person_lock·gesture_filter는 수정 없이 동작한다.
+출력 계약: infer(frame) -> list[Detection], class_name ∈ {back_of_hand, palm}.
+class_map(back_of_hand -> dorsum)을 거쳐 gesture_filter의 select 판정에 쓰인다.
 
-랜드마크 번호(MediaPipe Hands 규격): 0=손목, 4=엄지 끝, 8=검지 끝,
-12=중지 끝, 16=약지 끝, 20=새끼 끝. 각 손가락은 MCP-PIP-DIP-TIP 순.
+랜드마크 번호(MediaPipe Hands 규격): 0=손목, 5=검지 MCP, 9=중지 MCP, 17=새끼 MCP.
+MCP = 손가락 뿌리 관절 — 손바닥 몸통에 있어 손가락 유무와 무관하게 추정된다.
 """
 import math
 import time
@@ -25,13 +25,11 @@ logger = get_logger("inference")
 
 # 랜드마크 인덱스 — MediaPipe Hands 고정 규격
 LM_WRIST = 0
-LM_THUMB_IP, LM_THUMB_TIP = 3, 4
 LM_INDEX_MCP = 5
 LM_MIDDLE_MCP = 9
-# (검지, 중지, 약지, 새끼): (PIP, TIP)
-FINGER_PIP_TIP = ((6, 8), (10, 12), (14, 16), (18, 20))
+LM_PINKY_MCP = 17
 
-CLASS_IDS = {"fist": 0, "palm": 1, "ok": 2, "one": 3, "like": 4}
+CLASS_IDS = {"back_of_hand": 0, "palm": 1}
 
 OPPOSITE_SIDE = {"left": "right", "right": "left"}
 
@@ -60,49 +58,29 @@ def _hand_size(landmarks):
     return max(_dist(landmarks[LM_WRIST], landmarks[LM_MIDDLE_MCP]), 1e-6)
 
 
-def _extended_fingers(landmarks, extended_ratio):
-    """(검지, 중지, 약지, 새끼) 각각의 펴짐 여부 — TIP이 PIP보다 손목에서 충분히 멀면 폄."""
-    wrist = landmarks[LM_WRIST]
-    return tuple(
-        _dist(landmarks[tip], wrist) > _dist(landmarks[pip], wrist) * extended_ratio
-        for pip, tip in FINGER_PIP_TIP
-    )
+def classify_hand_orientation(landmarks, user_side, is_mirror, back_facing_threshold):
+    """21개 랜드마크 -> "back_of_hand" | "palm" | None (순수 함수 — 단위 테스트 가능).
 
-
-def classify_hand_landmarks(landmarks, extended_ratio, ok_pinch_ratio):
-    """21개 랜드마크 [(x, y), ...] -> 제스처 이름(class_map 키) 또는 None.
-
-    순수 함수 — mediapipe 없이 단위 테스트 가능. 좌표 단위는 무엇이든
-    (픽셀/정규화) 일관되기만 하면 된다 (내부에서 손 크기로 정규화).
+    user_side: 사용자 기준 손 좌/우 (user_side_from_label 결과). None이면 판정 불가 —
+    좌/우를 모르면 외적 부호의 기준을 정할 수 없다.
+    |외적|을 손 크기 제곱으로 정규화해 임계 미만(옆면·뒤집는 도중)은 None.
     """
-    size = _hand_size(landmarks)
-    index_ext, middle_ext, ring_ext, pinky_ext = _extended_fingers(landmarks, extended_ratio)
-    pinch = _dist(landmarks[LM_THUMB_TIP], landmarks[8]) / size
-    thumb_ext = (
-        _dist(landmarks[LM_THUMB_TIP], landmarks[LM_WRIST])
-        > _dist(landmarks[LM_THUMB_IP], landmarks[LM_WRIST]) * extended_ratio
-    )
+    if user_side not in ("left", "right"):
+        return None
+    wrist = landmarks[LM_WRIST]
+    ax = landmarks[LM_INDEX_MCP][0] - wrist[0]
+    ay = landmarks[LM_INDEX_MCP][1] - wrist[1]
+    bx = landmarks[LM_PINKY_MCP][0] - wrist[0]
+    by = landmarks[LM_PINKY_MCP][1] - wrist[1]
+    cross_norm = (ax * by - ay * bx) / _hand_size(landmarks) ** 2
+    if abs(cross_norm) < back_facing_threshold:
+        return None
 
-    # OK: 엄지-검지 끝 맞닿음 + 나머지 세 손가락 폄 (검지는 굽어 있어 palm과 배타)
-    if pinch < ok_pinch_ratio and middle_ext and ring_ext and pinky_ext:
-        return "ok"
-    # palm(손바닥): 네 손가락 모두 폄
-    if index_ext and middle_ext and ring_ext and pinky_ext:
-        return "palm"
-    # one(포인트): 검지만 폄 — 레거시 point로 매핑된다
-    if index_ext and not middle_ext and not ring_ext and not pinky_ext and pinch >= ok_pinch_ratio:
-        return "one"
-    # like(따봉): 엄지만 폄 + 엄지 끝이 손목보다 위 (화면 y는 아래로 증가)
-    if (
-        thumb_ext
-        and not any((index_ext, middle_ext, ring_ext, pinky_ext))
-        and landmarks[LM_THUMB_TIP][1] < landmarks[LM_WRIST][1]
-    ):
-        return "like"
-    # fist(주먹): 네 손가락 모두 굽힘
-    if not any((index_ext, middle_ext, ring_ext, pinky_ext)):
-        return "fist"
-    return None
+    # 부호 규약: 손바닥을 카메라로 향한 오른손은 엄지·검지가 화면 오른쪽에 온다
+    # (해부학 — 오른손 '정지' 자세를 정면에서 보면 엄지가 보는 사람 오른쪽).
+    # 이때 외적이 음수 → 비거울 오른손은 손등=양수, 거울 프레임은 x반전으로 부호가 뒤집힌다
+    back_sign = -1.0 if (user_side == "right") == is_mirror else 1.0
+    return "back_of_hand" if cross_norm * back_sign > 0 else "palm"
 
 
 def _bbox_from_landmarks(landmarks, frame_shape, pad_ratio):
@@ -118,15 +96,14 @@ def _bbox_from_landmarks(landmarks, frame_shape, pad_ratio):
 
 
 class MediaPipeGestureDetector:
-    """MediaPipe 손 랜드마크 기반 제스처 검출기. infer(frame) -> list[Detection]."""
+    """MediaPipe 손 랜드마크 기반 손등/손바닥 검출기. infer(frame) -> list[Detection]."""
 
     def __init__(self, config):
-        import mediapipe as mp  # 무거운 의존 — onnx 엔진 선택 시 임포트하지 않는다
+        import mediapipe as mp  # 무거운 의존 — 생성 시점 지연 임포트
         from mediapipe.tasks.python import BaseOptions, vision
 
         mp_cfg = config["model"]["mediapipe"]
-        self._extended_ratio = mp_cfg["finger_extended_ratio"]
-        self._ok_pinch_ratio = mp_cfg["ok_pinch_ratio"]
+        self._back_facing_threshold = mp_cfg["back_facing_threshold"]
         self._bbox_pad_ratio = mp_cfg["bbox_pad_ratio"]
         self._conf_threshold = config["detect"]["conf_threshold"]
         self._is_mirror = config["camera"]["mirror"]
@@ -147,7 +124,7 @@ class MediaPipeGestureDetector:
                     mp_cfg["hand_landmarker_path"])
 
     def infer(self, frame):
-        """프레임(BGR)에서 손을 찾아 기하 규칙으로 제스처를 판정한다."""
+        """프레임(BGR)에서 손을 찾아 손등/손바닥 방향을 판정한다."""
         h_px, w_px = frame.shape[:2]
         rgb = frame[:, :, ::-1]
         mp_image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB,
@@ -162,12 +139,6 @@ class MediaPipeGestureDetector:
             conf = float(handedness[0].score) if handedness else 1.0
             if conf < self._conf_threshold:
                 continue
-            points_px = [(lm.x * w_px, lm.y * h_px) for lm in hand_landmarks]
-            class_name = classify_hand_landmarks(
-                points_px, self._extended_ratio, self._ok_pinch_ratio
-            )
-            if class_name is None:
-                continue
             hand_side = None
             if handedness:
                 hand_side = user_side_from_label(
@@ -175,6 +146,12 @@ class MediaPipeGestureDetector:
                     self._is_mirror,
                     self._flip_handedness,
                 )
+            points_px = [(lm.x * w_px, lm.y * h_px) for lm in hand_landmarks]
+            class_name = classify_hand_orientation(
+                points_px, hand_side, self._is_mirror, self._back_facing_threshold
+            )
+            if class_name is None:
+                continue
             detections.append(
                 Detection(
                     class_id=CLASS_IDS[class_name],

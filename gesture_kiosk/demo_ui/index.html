@@ -26,8 +26,6 @@
   #cam { width: 100%; border-radius: 8px; background: #000; min-height: 300px; }
   .guide { margin-top: 10px; font-size: 12px; color: var(--dim); line-height: 1.9; }
   .guide span { display: inline-block; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 1px 8px; margin-right: 6px; }
-  .holdwrap { margin-top: 8px; height: 10px; background: var(--panel2); border-radius: 6px; overflow: hidden; display: none; }
-  .holdbar { height: 100%; width: 0%; background: var(--warn); transition: width 0.2s; }
   .screen-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
   .screen-head .title { font-size: 17px; font-weight: 700; }
   .screen-head .hint { color: var(--dim); font-size: 12px; }
@@ -68,10 +66,9 @@
     <h2>실시간 인식 화면 (CAM)</h2>
     <img id="cam" src="/video_feed" alt="camera stream">
     <div class="guide">
-      <span>✊→✋ 왼손</span>왼쪽 이동 &nbsp; <span>✊→✋ 오른손</span>오른쪽 이동<br>
-      <span>👌 OK</span>선택·확인 &nbsp; <span>🙌 양 손바닥 10초</span>처음으로
+      <span>👋 좌/우로 쓸기</span>포커스 이동 &nbsp; <span>⬇ 아래로 쓸기</span>이전 화면<br>
+      <span>⬆ 위로 쓸기</span>처음으로 &nbsp; <span>🤚 손등/팔등 보이기</span>선택·확인
     </div>
-    <div class="holdwrap" id="holdwrap"><div class="holdbar" id="holdbar"></div></div>
     <div style="margin-top:12px;">
       <h2>이벤트 로그</h2>
       <ul id="evlog"></ul>
@@ -143,6 +140,10 @@ function enterScreen(nextScreen) {
 
 function applyEvent(e) {
   if (e.class_name === "go_home") { enterScreen("home"); return; }
+  if (e.class_name === "go_back") {   // 이전 화면 — 아래로 쓸기 (home에서는 무시)
+    if (screen !== "home") enterScreen("home");
+    return;
+  }
   if (e.class_name === "fill_id_fields" && screen === "confirm") {
     idFields = e.data; render(); return;
   }
@@ -158,7 +159,6 @@ function applyEvent(e) {
     }
     else enterScreen("home");
   }
-  // 레거시 이벤트(point/palm_stop/swipe/thumbs_up 등)는 이벤트 로그에만 남긴다
 }
 
 function render() {
@@ -166,7 +166,7 @@ function render() {
   if (screen === "home") {
     s.innerHTML = `
       <div class="screen-head"><div class="title">증명서 선택</div>
-        <div class="hint">✊→✋ 이동 · 👌 선택</div></div>
+        <div class="hint">👋 좌/우 쓸기 이동 · 🤚 손등 보이기 선택</div></div>
       <div class="menu">${CERTS.map((c, i) =>
         `<div class="item ${i === focusIdx ? "hl" : ""}">${c}</div>`).join("")}</div>`;
   } else if (screen === "confirm") {
@@ -186,7 +186,7 @@ function render() {
   } else {
     s.innerHTML = `
       <div class="done"><div class="big">✅ ${chosenCert} 발급 완료</div>
-        <p>출력물을 받아 가세요.<br>👌 OK 또는 🙌 양 손바닥으로 처음 화면으로 돌아갑니다.</p></div>`;
+        <p>출력물을 받아 가세요.<br>⬆ 위로 쓸기 또는 🤚 손등 보이기로 처음 화면으로 돌아갑니다.</p></div>`;
   }
 }
 
@@ -213,10 +213,6 @@ async function poll() {
       showToast("인식 시간이 지났습니다 — 화면을 다시 선택하면 재시도합니다");
     }
     wasOcrMode = d.status.is_ocr_mode;
-
-    const wrap = $("holdwrap");
-    wrap.style.display = d.status.two_palm_hold_ratio > 0 ? "block" : "none";
-    $("holdbar").style.width = `${d.status.two_palm_hold_ratio * 100}%`;
 
     const log = $("evlog");
     log.innerHTML = d.events.slice().reverse().map(e =>

@@ -10,9 +10,11 @@ def load_config(config_path):
         config = yaml.safe_load(f)
 
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(config_path)))
-    config["model"]["gesture_onnx_path"] = os.path.join(
-        root_dir, config["model"]["gesture_onnx_path"]
+    model = config["model"]
+    model["mediapipe"]["hand_landmarker_path"] = os.path.join(
+        root_dir, model["mediapipe"]["hand_landmarker_path"]
     )
+    model["arm_side"]["onnx_path"] = os.path.join(root_dir, model["arm_side"]["onnx_path"])
     config["logging"]["save_dir"] = os.path.join(root_dir, config["logging"]["save_dir"])
     config["root_dir"] = root_dir
     return config

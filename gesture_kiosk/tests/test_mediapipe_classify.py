@@ -1,98 +1,78 @@
-"""detector_mediapipe.classify_hand_landmarks 단위 테스트 — mediapipe 설치 없이 실행 가능.
+"""detector_mediapipe.classify_hand_orientation 단위 테스트 — mediapipe 설치 없이 실행.
 
-합성 랜드마크로 기하 판정 규칙(펴짐/굽힘/핀치)을 검증한다. 좌표는 화면 픽셀
-관례(y는 아래로 증가)를 따르고, 손목(100, 200) 위로 손가락이 뻗은 자세를 기본으로 한다.
+합성 랜드마크로 손등/손바닥 외적 부호 규약을 8조합(좌우×거울×등/바닥) 전부 고정한다.
+좌표는 화면 픽셀 관례(y 아래로 증가), 손목(100,200) 위로 손가락이 뻗은 자세.
+
+부호의 물리 근거: 손바닥을 카메라로 향한 오른손('정지' 자세)을 비거울 화면에서
+보면 엄지·검지가 화면 오른쪽에 온다 — 왼손·손등·거울은 각각 그 반대.
 """
 import unittest
 
-from src.inference.detector_mediapipe import classify_hand_landmarks, user_side_from_label
+from src.inference.detector_mediapipe import classify_hand_orientation, user_side_from_label
 
-EXTENDED_RATIO = 1.15
-OK_PINCH_RATIO = 0.35
+BACK_FACING_THRESHOLD = 0.15
 
 WRIST = (100.0, 200.0)
 MIDDLE_MCP = (100.0, 140.0)  # 손 크기 기준 = 손목~중지MCP = 60px
 
-# 손가락 x 위치 (검지, 중지, 약지, 새끼)
-FINGER_X = {"index": 85.0, "middle": 100.0, "ring": 115.0, "pinky": 130.0}
-# (PIP, TIP) 랜드마크 번호
-FINGER_LM = {"index": (6, 8), "middle": (10, 12), "ring": (14, 16), "pinky": (18, 20)}
 
-THUMB_IP = (70.0, 170.0)          # 손목에서 42px
-THUMB_TIP_NEUTRAL = (80.0, 180.0)  # 굽힘 (28px < 42*1.15)
-THUMB_TIP_UP = (60.0, 130.0)       # 폄 + 손목보다 위 (81px > 42*1.15)
-
-
-def build_hand(extended, thumb_tip=THUMB_TIP_NEUTRAL, index_tip_override=None):
-    """21개 랜드마크 합성. extended: 펴는 손가락 이름 목록."""
-    points = [(100.0, 180.0)] * 21  # 미사용 랜드마크는 손바닥 안 중립 위치
+def build_hand(index_mcp_x, pinky_mcp_x, mcp_y=145.0):
+    """21개 랜드마크 합성 — 검지/새끼 MCP의 x 위치로 엄지쪽 방향을 정한다."""
+    points = [(100.0, 170.0)] * 21  # 미사용 랜드마크는 손바닥 안 중립 위치
     points[0] = WRIST
     points[9] = MIDDLE_MCP
-    points[3] = THUMB_IP
-    points[4] = thumb_tip
-    for name, (pip, tip) in FINGER_LM.items():
-        x = FINGER_X[name]
-        points[pip] = (x, 120.0)                            # PIP — 손목에서 약 81px
-        points[tip] = (x, 80.0) if name in extended else (x, 150.0)  # 폄 121px / 굽힘 52px
-    if index_tip_override is not None:
-        points[8] = index_tip_override
+    points[5] = (index_mcp_x, mcp_y)
+    points[17] = (pinky_mcp_x, mcp_y)
     return points
 
 
-def classify(points):
-    return classify_hand_landmarks(points, EXTENDED_RATIO, OK_PINCH_RATIO)
+# 엄지쪽(검지MCP)이 화면 오른쪽 / 왼쪽에 있는 손 — |외적|/크기² ≈ 0.61 (임계 0.15 초과)
+THUMB_SCREEN_RIGHT = build_hand(index_mcp_x=120.0, pinky_mcp_x=80.0)
+THUMB_SCREEN_LEFT = build_hand(index_mcp_x=80.0, pinky_mcp_x=120.0)
 
 
-class ClassifyHandLandmarksTest(unittest.TestCase):
-    def test_fist_all_fingers_curled(self):
-        """네 손가락 굽힘 + 엄지 중립 = fist."""
-        self.assertEqual(classify(build_hand(extended=[])), "fist")
+def classify(points, user_side, is_mirror):
+    return classify_hand_orientation(points, user_side, is_mirror, BACK_FACING_THRESHOLD)
 
-    def test_palm_all_fingers_extended(self):
-        """네 손가락 폄 = palm (open_hand로 매핑됨)."""
-        self.assertEqual(
-            classify(build_hand(extended=["index", "middle", "ring", "pinky"])), "palm"
-        )
 
-    def test_ok_pinch_with_three_fingers_extended(self):
-        """엄지-검지 끝 맞닿음 + 중지·약지·새끼 폄 = ok."""
-        points = build_hand(
-            extended=["middle", "ring", "pinky"],
-            thumb_tip=(74.0, 156.0),
-            index_tip_override=(75.0, 155.0),  # 엄지 끝과 1.4px — 핀치
-        )
-        self.assertEqual(classify(points), "ok")
+class ClassifyHandOrientationTest(unittest.TestCase):
+    def test_no_mirror_right_hand(self):
+        """비거울 오른손: 엄지가 화면 오른쪽 = 손바닥, 왼쪽 = 손등."""
+        self.assertEqual(classify(THUMB_SCREEN_RIGHT, "right", False), "palm")
+        self.assertEqual(classify(THUMB_SCREEN_LEFT, "right", False), "back_of_hand")
 
-    def test_one_index_only(self):
-        """검지만 폄 = one (point로 매핑됨)."""
-        self.assertEqual(classify(build_hand(extended=["index"])), "one")
+    def test_no_mirror_left_hand(self):
+        """비거울 왼손: 오른손과 대칭."""
+        self.assertEqual(classify(THUMB_SCREEN_LEFT, "left", False), "palm")
+        self.assertEqual(classify(THUMB_SCREEN_RIGHT, "left", False), "back_of_hand")
 
-    def test_like_thumb_up_only(self):
-        """엄지만 폄 + 엄지 끝이 손목보다 위 = like (thumbs_up으로 매핑됨)."""
-        self.assertEqual(
-            classify(build_hand(extended=[], thumb_tip=THUMB_TIP_UP)), "like"
-        )
+    def test_mirror_right_hand(self):
+        """거울(배포 기본) 오른손: x반전으로 비거울과 부호가 뒤집힌다."""
+        self.assertEqual(classify(THUMB_SCREEN_LEFT, "right", True), "palm")
+        self.assertEqual(classify(THUMB_SCREEN_RIGHT, "right", True), "back_of_hand")
 
-    def test_victory_is_unknown(self):
-        """검지+중지만 폄(브이) — 정의된 제스처가 아니므로 None."""
-        self.assertIsNone(classify(build_hand(extended=["index", "middle"])))
+    def test_mirror_left_hand(self):
+        self.assertEqual(classify(THUMB_SCREEN_RIGHT, "left", True), "palm")
+        self.assertEqual(classify(THUMB_SCREEN_LEFT, "left", True), "back_of_hand")
 
-    def test_pinch_without_extended_fingers_is_not_ok(self):
-        """핀치여도 중지·약지·새끼가 굽어 있으면 ok가 아니다 — fist로 본다."""
-        points = build_hand(
-            extended=[],
-            thumb_tip=(86.0, 160.0),  # 굽힌 검지 끝(85, 150)과 10px — 핀치이되 엄지는 굽힘
-        )
-        self.assertEqual(classify(points), "fist")
+    def test_edge_on_hand_is_held(self):
+        """옆면(뒤집는 도중) — MCP들이 거의 일직선이라 |외적| 작음 → 판정 보류."""
+        edge_on = build_hand(index_mcp_x=103.0, pinky_mcp_x=97.0)  # 외적/크기² ≈ 0.09
+        self.assertIsNone(classify(edge_on, "right", True))
 
-    def test_ok_beats_palm_priority(self):
-        """핀치 + 네 손가락 폄이 동시에 성립해도 ok가 우선한다."""
-        points = build_hand(
-            extended=["index", "middle", "ring", "pinky"],
-            thumb_tip=(84.0, 81.0),
-            index_tip_override=(85.0, 80.0),
-        )
-        self.assertEqual(classify(points), "ok")
+    def test_unknown_side_is_held(self):
+        """좌/우를 모르면 부호 기준이 없어 판정하지 않는다."""
+        self.assertIsNone(classify(THUMB_SCREEN_RIGHT, None, True))
+
+    def test_rotation_invariance(self):
+        """화면 내 회전(손끝이 옆을 향해도)에도 판정이 유지된다 — 외적 부호는 회전 불변."""
+        # THUMB_SCREEN_RIGHT를 90도 돌린 손: 손목(100,200) 기준 (x,y)->(y축 회전)
+        def rotate90(p):
+            dx, dy = p[0] - WRIST[0], p[1] - WRIST[1]
+            return (WRIST[0] - dy, WRIST[1] + dx)
+
+        rotated = [rotate90(p) for p in THUMB_SCREEN_RIGHT]
+        self.assertEqual(classify(rotated, "right", False), "palm")
 
 
 class UserSideFromLabelTest(unittest.TestCase):

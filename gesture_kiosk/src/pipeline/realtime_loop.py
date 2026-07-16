@@ -15,6 +15,7 @@ import time
 
 from src.announce.announcer import Announcer
 from src.capture.camera_stream import CameraStream
+from src.utils.env_report import log_environment
 from src.inference.pose_estimator import PoseEstimator
 from src.inference.preprocessor import Preprocessor
 from src.pipeline.event_sender import create_event_sender
@@ -64,6 +65,7 @@ class PipelineState:
 def run_pipeline(config):
     """파이프라인 전체를 조립해 시작하고 PipelineState를 돌려준다 (기획서 4.6 계약)."""
     state = PipelineState()
+    log_environment(config)   # 어느 하드웨어에서 돈 기록인지 로그 첫머리에 남긴다 (2026-07-16)
     camera = CameraStream(config).start()
     preprocessor = Preprocessor(config)
     pose_estimator = PoseEstimator(config)   # 유일한 추론 모델 — 모든 판정의 입력

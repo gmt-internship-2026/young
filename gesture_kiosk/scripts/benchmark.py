@@ -36,7 +36,9 @@ def main():
     init_logging(config)
 
     from src.inference.pose_estimator import PoseEstimator
+    from src.utils.env_report import log_environment
 
+    log_environment(config)   # 벤치마크 수치가 어느 하드웨어 것인지 함께 기록 (2026-07-16)
     pose_estimator = PoseEstimator(config)
 
     camera = None

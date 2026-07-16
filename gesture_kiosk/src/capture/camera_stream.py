@@ -41,7 +41,33 @@ def init_camera(config):
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc.upper()))
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, config["camera"]["width_px"])
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config["camera"]["height_px"])
+    _log_camera_negotiation(cap, config)
     return cap
+
+
+def _log_camera_negotiation(cap, config):
+    """어떤 카메라가 어떤 조건으로 열렸는지 기록 — 기기별 실기 로그의 증거용 (2026-07-16).
+
+    OpenCV는 장치 이름을 못 주므로 기종은 config(camera.model — 사람이 기록)를 싣고,
+    협상 결과(실제 해상도·FPS·픽셀포맷·백엔드)는 장치에서 읽어 함께 남긴다 —
+    요청값과 협상값이 다르면(예: YUY2 5 FPS 함정) 여기서 바로 드러난다.
+    """
+    fourcc_int = int(cap.get(cv2.CAP_PROP_FOURCC))
+    fourcc_text = "".join(chr((fourcc_int >> 8 * i) & 0xFF) for i in range(4)).strip() or "?"
+    try:
+        backend_label = cap.getBackendName()
+    except cv2.error:
+        backend_label = "?"
+    logger.info(
+        "카메라 협상 결과: device_id=%s · 기종(config)=%s · 백엔드=%s · %dx%d @ %.0f FPS · 포맷=%s",
+        config["camera"]["device_id"],
+        config["camera"].get("model", "미기록"),
+        backend_label,
+        int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+        int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+        cap.get(cv2.CAP_PROP_FPS),
+        fourcc_text,
+    )
 
 
 class CameraStream:

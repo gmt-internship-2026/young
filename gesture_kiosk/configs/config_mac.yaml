@@ -5,6 +5,7 @@
 #   announce.backend: tts       (pyttsx3가 맥 nsss로 동작 — 미설치면 자동 log 폴백)
 
 camera:
+  model: "MacBook Pro 내장 FaceTime HD"  # 사용 카메라 기종 기록(2026-07-16) — config.yaml 주석 참고
   device_id: 0            # 맥 내장(MacBook Pro) 카메라
   width_px: 1280
   height_px: 720
@@ -85,3 +86,8 @@ runtime:
   python_version: "3.11.5"   # 배포 기준 — 맥 개발 venv(3.10)는 검증용이라 무관
   target_os: windows
   target_gpu: nvidia
+  hardware:                  # 실제 개발 PC 명세 기록(2026-07-16) — config.yaml 주석 참고
+    device_model: MacBook Pro (Apple M5 Pro — 개발·검증 PC)
+    cpu: Apple M5 Pro
+    ram: 64GB               # 시작 로그 실측으로 확인 (2026-07-16)
+    accelerator: 없음 (CPU 실행 — 전신 모델 실측 28.9 FPS)

@@ -7,6 +7,9 @@
 #   모든 판정이 RTMPose 키포인트 하나로 끝난다 (손 검출·꾸벅 등 구 방식 전부 제거).
 
 camera:
+  model: "Logitech Brio 100"  # 사용 카메라 기종 기록(2026-07-16 신설) — 실측 검증 2026-07-10.
+                              #   OpenCV는 장치 이름을 못 읽으므로 사람이 기록. 교체 시 갱신 —
+                              #   시작 로그의 "카메라 협상 결과"에 협상값과 나란히 남는다
   device_id: 0            # USB 웹캠 장치 번호
   width_px: 1280
   height_px: 720
@@ -123,3 +126,9 @@ runtime:                  # 배포 기준 명세 — 설치가이드.md와 일�
   python_version: "3.11.5"
   target_os: windows
   target_gpu: none        # CPU 추론판
+  hardware:               # 타깃 하드웨어 명세 기록(2026-07-16 신설) — №12 기기 확정 시 채울 것.
+                          #   시작 로그에 실제 감지값(OS·CPU·RAM·가속기)과 나란히 남아 대조된다
+    device_model: 미확정   # 기기 모델명 (예: 미니PC 제조사·모델)
+    cpu: 미확정
+    ram: 미확정
+    accelerator: 없음 (CPU 전용판)

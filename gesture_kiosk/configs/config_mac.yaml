@@ -19,8 +19,9 @@ model:
   use_tensorrt: false
   pose_mode: lightweight  # ★ 맥 CPU — 가벼운 포즈 모델로 개발 확인
   input_size_px: 640
-  max_infer_fps: 30       # 배포와 동일 30 고정(2026-07-16) — 60이면 추론 루프가 캡처
-                          #   스레드의 CPU/GIL을 빼앗아 캡처 FPS가 반토막 → 인식 저하
+  max_infer_fps: 60       # 2026-07-16 30→60 상향(사용자 결정 — config.yaml 주석 참고).
+                          #   맥은 전신 모델 추론 실측 28.9 FPS라 상한 미도달(사실상 무영향) —
+                          #   캡처 간섭으로 인식 저하 재현 시 30으로 되돌릴 것(2026-07-10 실측 이력)
 
 person_lock:
   enabled: true

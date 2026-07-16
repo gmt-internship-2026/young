@@ -29,9 +29,10 @@ model:
   use_tensorrt: false     # CPU판 — TensorRT 사용 불가 (GPU 가속은 feat/think_win_gpu)
   pose_mode: lightweight  # CPU 기본(30 FPS 확보용) — GPU판 기본은 balanced
   input_size_px: 640
-  max_infer_fps: 30       # 추론 루프 FPS 상한 — 초과분은 대기 (GPU 낭비 방지)
-                          #   KPI가 30 FPS — 60으로 두면 추론 루프가 캡처 스레드의
-                          #   CPU/GIL을 빼앗아 캡처가 30→15 FPS로 반토막난다 (2026-07-10 실측)
+  max_infer_fps: 60       # 추론 루프 FPS 상한 — 초과분은 대기 (GPU 낭비 방지).
+                          #   2026-07-16 30→60 상향(사용자 결정 — 제한 완화). ★주의: 2026-07-10
+                          #   실측에서 CPU 추론 루프가 60으로 돌 때 캡처 스레드의 CPU/GIL을
+                          #   빼앗아 캡처 FPS 반토막 → CPU 기기에서 인식 저하 시 30으로 되돌릴 것
 
 person_lock:              # 오토포커스 카메라 — 초점 맞은 사용자에게 잠금, 다른 사람 무시
   enabled: true

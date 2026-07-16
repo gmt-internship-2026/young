@@ -49,11 +49,11 @@ source venv/bin/activate        # 맥·리눅스 공통 / 윈도우: venv\Script
 pip install -r requirements.txt
 ```
 
-- onnxruntime(실행기)·rtmlib(포즈)·opencv(카메라)·fastapi(서버)·easyocr 등이 한 번에 설치된다 (수 분 소요)
-- PyTorch는 EasyOCR용으로 함께 설치한다. **Apple Silicon 맥은 이 기본 설치만으로
-  MPS(맥 GPU 가속)까지 지원** — 코드가 CUDA → MPS → CPU 순으로 자동 감지한다
-- 윈도우 + NVIDIA GPU라면 GPU 가속용 torch를 별도 설치:
-  `pip install torch --index-url https://download.pytorch.org/whl/cu124`
+- rtmlib(포즈 — 유일한 모델)·onnxruntime(실행기)·opencv(카메라)·fastapi(서버)·easyocr(주민등록증 OCR)
+  등이 한 번에 설치된다 (약 2GB, 수 분 소요) — 라이선스 검토 완료 스택 (docs/TODO.md №9)
+- PyTorch는 easyocr가 의존성으로 끌고 온다 (OCR용 — 제스처·포즈는 torch 불필요)
+- 윈도우 + NVIDIA GPU에서 OCR까지 GPU로 확인하려면 CUDA torch를 별도 설치
+  (배포 기준 cu128 — install.bat이 자동 처리)
 - 리눅스 x86 PC는 기본 pip torch에 CUDA가 이미 포함 — NVIDIA 드라이버만 있으면 끝
   (`nvidia-smi`가 정상 출력되는지, `python3 -c "import torch; print(torch.cuda.is_available())"`가 True인지 확인)
 
@@ -63,7 +63,7 @@ pip install -r requirements.txt
 # ① 단위 테스트 — 카메라·모델 없이 판정 로직 검증 (즉시 통과해야 정상)
 python -m unittest discover tests -v
 
-# ② 모델 가중치 다운로드 (22MB)
+# ② 포즈 모델 캐시 프리페치 (수십 MB — 생략 시 첫 실행 때 자동)
 python scripts/download_weights.py
 
 # ③ 실시간 데모 — 개발 PC에서는 내장/USB 카메라가 USB 웹캠의 대역을 한다
@@ -73,7 +73,7 @@ python scripts/run_demo.py
 #   macOS가 카메라 권한을 물으면 "허용"
 ```
 
-③에서 팔을 좌/우로 쓸면 → 화면에 `move_left`/`move_right` 이벤트가 뜨면 전체 파이프라인 정상.
+③에서 팔을 좌/우로 쓸면 `move_left`/`move_right`, 고개를 두 번 꾸벅하면 `select`가 뜨면 전체 파이프라인 정상.
 
 ## 문제 해결
 

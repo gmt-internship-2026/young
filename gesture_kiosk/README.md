@@ -6,12 +6,13 @@
 
 - 실행 환경: **윈도우 CPU(GPU 불필요) + Python 3.11.5** — CPU 추론판 (정부 민원발급기)
 - GPU 있는 PC용 고성능판: **feat/think_win_gpu 브랜치** (같은 코드 — 설치 스택·성능 기준만 다름)
-- 동작 체계(2026-07-15 개편): **팔 쓸기(좌/우=이동·아래=이전·위=처음) + 손등/팔등 보이기(선택)**
-  — 장애인·비장애인 범용 설계: 손가락·손이 없어도 팔만으로 모든 조작이 가능하다
-- 모델: MediaPipe 손 랜드마크(Apache-2.0, 손등/손바닥) + RTMPose 포즈(Apache-2.0, 쓸기·사용자 잠금)
-  + **자체 학습 팔등 분류 CNN(제3자 가중치 없음)** — 카피레프트·고지 의무 없는 상용 안전 스택
-- 파인튜닝 계열 학습은 별도 `training/` 폴더 담당 (feat/study 브랜치) — 팔등 분류기만
-  이 폴더의 scripts/collect_arm_side.py·train_arm_side.py로 만든다 (자체 데이터 필수)
+- 실행 환경: **윈도우 + NVIDIA GPU + Python 3.11.5** (2026-07-10 타깃 변경 — 정부 민원발급기)
+- 동작 체계(2026-07-15 개편, 같은 날 2차 확정): **팔 쓸기(좌/우=이동·아래=이전·위=처음)
+  + 고개 꾸벅 2회(선택)** — 장애인·비장애인 범용 설계: 손·손가락이 없어도 팔로,
+  팔이 없어도 고개로 조작이 가능하다
+- 모델: **RTMPose 포즈(Apache-2.0) 단일** — 쓸기·끄덕임·사용자 잠금이 전부 키포인트
+  하나로 판정된다 (2차에서 MediaPipe 손 검출·팔등 CNN 제거 — 학습 0회 스택 복귀)
+- 학습(파인튜닝)은 별도 `training/` 폴더 담당 (feat/study 브랜치) — 이 폴더는 추론 전용
 
 ## 빠른 시작 (윈도우)
 
@@ -30,23 +31,25 @@ run.bat            :: 실행 — 브라우저 http://localhost:5000
 | move_left / move_right | 팔을 **좌/우로 쓸기** | 포즈 손목 궤적 (window 내 이동량·주축 우세) | 포커스 1칸 이동 |
 | go_back | 팔을 **아래로 쓸기** | 〃 | 이전 화면 |
 | go_home | 팔을 **위로 쓸기** | 〃 | 처음 화면으로 |
-| select | **손등/팔등 보이기** 유지 | 손: 랜드마크 외적 부호 / 팔: 자체 CNN | 선택·확인 |
+| select | **고개 꾸벅 2회** | 목 길이 비율(코~어깨, 어깨 너비 정규화) 숙임→복귀 ×2 | 선택·확인 |
 | fill_id_fields | 주민등록증 제시 | OCR 모드에서 EasyOCR 판독 | 이름·주민번호 자동 입력 |
 
 - **범용 설계 근거**: 쓸기는 손이 아니라 **손목 키포인트(포즈)** 궤적이라 손·손가락이
-  없어도 동작한다. 선택도 손이 검출되면 손등, 안 되면 전완(팔등) 분류로 이중화 —
-  손등/팔등 판정 모두 손가락 유무와 무관하다 (MCP·전완만 사용)
+  없어도 동작하고, 선택은 **고개 끄덕임**이라 팔이 전혀 없어도 가능하다.
+  "끄덕임=예"는 몸에 밴 동작이라 별도 안내 없이 직관적 (2회 요구 = 무의식 끄덕임 오탐 방지)
+- 내려다보기(지갑·신분증)는 선택으로 오인하지 않는다 — 제때(0.8초) 복귀해야 꾸벅으로 인정
 - 상하 포커스 이동 없음 — **줄 끝에서 다음 줄 첫 칸 랩(토크백식 선형 순회)은 UI 책임**
 - 잠긴 사용자(초점 맞은 얼굴 기준)의 손목·팔만 인식 — **다른 사람 손 무시**
 - 구 동작(주먹→펴기·OK핀치·양손바닥 10초)과 레거시 토글은 2026-07-15 제거 —
-  직원 호출(help_call)은 트리거가 사라져 이벤트 계약에서도 제외 (회사 협의 №1)
+  직원 호출(help_call)은 트리거가 사라져 이벤트 계약에서도 제외 (회사 협의 №1).
+  같은 날 2차에서 선택을 손등/팔등 보이기 → 고개 꾸벅 2회로 재확정 (팔등 자체 학습 불필요화)
 
 ## 처리 흐름
 
 ```
-카메라(스레드) → 거울 반전 → 손등/손바닥 검출(MediaPipe 랜드마크) + 사람 포즈(rtmlib RTMPose)
-  → 사용자 잠금(person_lock: 얼굴 선명도×크기) → 손 귀속(왼/오른) + 팔등 분류(arm_side CNN)
-  → 동작 판정(gesture_filter: 손목 쓸기 궤적·손등 유지) → 이벤트 전송(event_sender) + 음성 안내(announce)
+카메라(스레드) → 거울 반전 → 사람 포즈(rtmlib RTMPose — 유일한 모델)
+  → 사용자 잠금(person_lock: 얼굴 선명도×크기) → 손목 좌/우 보정·목 길이 비율
+  → 동작 판정(gesture_filter: 손목 쓸기 궤적 + 고개 꾸벅 2회) → 이벤트 전송(event_sender) + 음성 안내(announce)
 주민등록증 OCR(easyocr)은 별도 워커 스레드 — UI가 /ocr/start로 요청할 때만
 ```
 
@@ -56,24 +59,19 @@ run.bat            :: 실행 — 브라우저 http://localhost:5000
 gesture_kiosk/
 ├─ install.bat / run.bat / make_offline_bundle.bat  # 윈도우 이식·실행 (설치가이드.md)
 ├─ configs/config.yaml      # 모든 설정값의 단일 출처 — 튜닝은 여기서만
-├─ models/weights/          # hand_landmarker.task(손) + arm_side_cnn.onnx(팔등 — 자체 학습)
-├─ data/raw/arm_side/       # 팔등 분류 학습 데이터 (collect_arm_side.py — 인물별 폴더)
+├─ models/weights/          # (비어 있음 — 포즈 모델은 ~/.cache/rtmlib 자동 캐시)
 ├─ src/
 │   ├─ capture/camera_stream.py      # USB 카메라 캡처 스레드 (윈도우 MSMF 기본)
-│   ├─ inference/detector_mediapipe.py  # 손등/손바닥 검출 (MediaPipe 랜드마크 외적 부호)
-│   ├─ inference/arm_side_classifier.py # 팔등(전완 등쪽) 분류 — 자체 학습 CNN (ONNX)
-│   ├─ inference/detector.py         # 공통 Detection 구조 + 엔진 팩토리 + ORT 헬퍼
-│   ├─ inference/pose_estimator.py   # 사람 포즈 (rtmlib RTMPose) — 손목·팔꿈치, 얼굴 키포인트
-│   ├─ postprocess/person_lock.py    # 사용자 잠금 + 손 귀속 (거울 좌/우 보정)
-│   ├─ postprocess/gesture_filter.py # 동작 판정 — 손목 쓸기 궤적 + 손등/팔등 유지
+│   ├─ inference/pose_estimator.py   # 사람 포즈 (rtmlib RTMPose) — 유일한 추론 모델
+│   ├─ postprocess/person_lock.py    # 사용자 잠금 + 손목·목 길이 신호 (거울 좌/우 보정)
+│   ├─ postprocess/gesture_filter.py # 동작 판정 — 손목 쓸기 궤적 + 고개 꾸벅 2회
 │   ├─ ocr/idcard_reader.py          # 주민등록증 이름·주민번호 (마스킹 로그)
 │   ├─ announce/announcer.py         # 토크백 TTS (pyttsx3 — SAPI/nsss)
 │   ├─ pipeline/realtime_loop.py     # 실시간 루프 조립 (멀티스레딩)
 │   ├─ pipeline/event_sender.py      # ★ 회사 프로그램 연동 접점 (console/udp)
 │   └─ pipeline/demo_server.py       # ★ 예시 UI 서버 + /announce·/ocr 계약
 ├─ scripts/                 # run_demo · download_weights · benchmark · smoke_test
-│                           #   · collect_arm_side / train_arm_side (팔등 분류기 제작)
-├─ tests/                   # 단위 테스트 64건 (카메라·모델 없이 실행 가능)
+├─ tests/                   # 단위 테스트 43건 (카메라·모델 없이 실행 가능)
 ├─ demo_ui/index.html       # ★ 예시 민원발급기 화면 (회사 UI 수령 시 교체)
 └─ docs/TODO.md             # 작업 분해 및 회사 확인 필요 항목
 ```
@@ -87,7 +85,7 @@ gesture_kiosk/
 | `run.bat` / `python scripts/run_demo.py` | 파이프라인 + 예시 UI (시연용) |
 | `run.bat --headless` | 파이프라인만 — 이벤트는 `event_output` 설정대로 전송 |
 | `python scripts/benchmark.py` | 추론 단독 FPS 측정 (기획서 6.1 — KPI 30 FPS) |
-| `python -m unittest discover tests -v` | 판정·잠금·OCR 파싱·단위 테스트 (64건) |
+| `python -m unittest discover tests -v` | 판정·잠금·OCR 파싱·단위 테스트 (43건) |
 
 ## 회사 프로그램(UI) 연동 계약
 
@@ -102,16 +100,14 @@ gesture_kiosk/
 
 - **주민등록번호 처리 법적 근거(개인정보보호법 제24조의2) — 회사 확인 필수** (docs/TODO.md №11).
   엔진은 프레임·인식값을 저장하지 않고 로그는 마스킹한다 (설치가이드.md F절)
-- **라이선스 (2026-07-15 기준)**: 스택 전체가 상업 사용 가능 + 코드 공개(카피레프트) 의무 없음 —
-  MediaPipe(Apache-2.0) · rtmlib/RTMPose(Apache-2.0) · ONNX Runtime(MIT) ·
-  EasyOCR(Apache-2.0) · pyttsx3(MPL-2.0 — 무수정 사용이라 공개 의무 없음).
-  **팔등 분류기는 자체 데이터·무(無) 사전학습으로 직접 학습한 자산이라 제3자 의무가 아예 없다.**
+- **라이선스 (2026-07-15 2차 기준)**: 스택 전체가 상업 사용 가능 + 코드 공개(카피레프트) 의무 없음 —
+  rtmlib/RTMPose(Apache-2.0) · ONNX Runtime(MIT) · EasyOCR(Apache-2.0) ·
+  pyttsx3(MPL-2.0 — 무수정 사용이라 공개 의무 없음). 추론 모델이 포즈 하나뿐이라
+  검토 대상 자체가 최소화됐다 (MediaPipe·자체 학습 CNN도 2차에서 제거).
   Apache/MIT의 라이선스 문서 동봉(배포물 내 고지)은 통상 절차 — 제품 화면 표시 의무는 없다.
-  구 HaGRID YOLOv10 ONNX 엔진(AGPL 리스크·비교 시험용)은 신규 스펙을 판정할 수 없어
-  2026-07-15 코드·가중치 모두 제거 완료 (기획서 9장 №9 잔여 확인 항목 해소)
+  구 HaGRID YOLOv10 ONNX 엔진(AGPL 리스크)은 코드·가중치 모두 제거 완료 (기획서 9장 №9 해소)
 
 ## 참고 링크
 
-- MediaPipe Hand Landmarker (Apache-2.0): https://developers.google.com/edge/mediapipe/solutions/vision/hand_landmarker
 - rtmlib (RTMPose, Apache-2.0): https://github.com/Tau-J/rtmlib
 - EasyOCR: https://github.com/JaidedAI/EasyOCR

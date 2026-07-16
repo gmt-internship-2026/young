@@ -1,12 +1,9 @@
 """pipeline 모듈 — 캡처·추론·판정·안내를 연결해 실시간 루프를 구동한다 (기획서 2.2, 3.2).
 
-프레임 흐름 (윈도우 + NVIDIA GPU 기준):
-  카메라(스레드) → 거울 반전 → [손등/손바닥 검출 + 사람 포즈] → 사용자 잠금(person_lock)
-  → 손 귀속 + 팔등 분류(arm_side) → 동작 판정(gesture_filter: 손목 쓸기·손등 선택)
+프레임 흐름 (윈도우 + NVIDIA GPU 기준 — 2026-07-15 2차: 포즈 단일 엔진):
+  카메라(스레드) → 거울 반전 → 사람 포즈(RTMPose) → 사용자 잠금(person_lock)
+  → 동작 판정(gesture_filter: 손목 쓸기 궤적 + 고개 꾸벅 2회)
   → 이벤트 전송 + 음성 안내
-
-포즈 추정은 항상 돈다 — 쓸기(이동·이전·처음) 판정이 손목 키포인트 궤적
-기반이라(2026-07-15 범용 설계) 사용자 잠금 여부와 무관하게 필요하다.
 
 주민등록증 OCR은 별도 워커 스레드에서 돈다 — EasyOCR 1회가 수백 ms라
 추론 루프(30 FPS 목표)를 막지 않게 분리한다. OCR은 UI가 요청할 때만
@@ -19,8 +16,6 @@ import time
 
 from src.announce.announcer import Announcer
 from src.capture.camera_stream import CameraStream
-from src.inference.arm_side_classifier import ArmSideClassifier
-from src.inference.detector import create_gesture_detector
 from src.inference.pose_estimator import PoseEstimator
 from src.inference.preprocessor import Preprocessor
 from src.pipeline.event_sender import create_event_sender
@@ -28,12 +23,7 @@ from src.postprocess.gesture_filter import GestureEvent, GestureFilter
 from src.postprocess.person_lock import PersonLock
 from src.utils.logger import get_logger
 from src.utils.metrics import FpsMeter
-from src.utils.visualize import (
-    draw_bbox,
-    draw_ocr_mode,
-    draw_person_lock,
-    draw_status,
-)
+from src.utils.visualize import draw_ocr_mode, draw_person_lock, draw_status
 
 logger = get_logger("pipeline")
 
@@ -136,10 +126,7 @@ def run_pipeline(config):
     state = PipelineState()
     camera = CameraStream(config).start()
     preprocessor = Preprocessor(config)
-    detector = create_gesture_detector(config)
-    # 포즈는 항상 필요 — 쓸기 판정(손목 궤적)·팔등 크롭이 포즈 키포인트 기반이다
-    pose_estimator = PoseEstimator(config)
-    arm_classifier = ArmSideClassifier(config) if config["model"]["arm_side"]["enabled"] else None
+    pose_estimator = PoseEstimator(config)   # 유일한 추론 모델 — 모든 판정의 입력
 
     first_frame = camera.capture_frame()
     frame_height_px, frame_width_px = first_frame.shape[:2]
@@ -149,7 +136,6 @@ def run_pipeline(config):
     announcer = Announcer(config)
     state.announcer = announcer
 
-    class_map = config["model"]["class_map"]
     min_loop_interval_sec = 1.0 / config["model"]["max_infer_fps"]
     ocr_guide_region = config["ocr"]["guide_region_ratio"]
 
@@ -164,17 +150,9 @@ def run_pipeline(config):
 
             frame = camera.capture_frame()
             input_tensor = preprocessor.preprocess_frame(frame)
-            detections = detector.infer(input_tensor)
 
             persons = pose_estimator.infer(input_tensor)
             person_lock.update(input_tensor, persons)
-            observations = person_lock.attach_detections(detections, class_map)
-            if arm_classifier is not None and arm_classifier.enabled:
-                # 손 관측이 있는 쪽은 건너뛴다 — 손 랜드마크 판정이 더 정확하다
-                taken_sides = {obs.side for obs in observations}
-                observations += arm_classifier.observe(
-                    input_tensor, person_lock.user_arm_points(), taken_sides
-                )
             state.is_user_locked = (
                 person_lock.enabled and person_lock.locked_person is not None
             )
@@ -185,7 +163,9 @@ def run_pipeline(config):
                 else (point[0] / frame_width_px, point[1] / frame_height_px)
                 for side, point in person_lock.user_wrists().items()
             }
-            gesture_event = gesture_filter.filter_observations(observations, wrists_ratio)
+            gesture_event = gesture_filter.filter_signals(
+                wrists_ratio, person_lock.user_neck_ratio()
+            )
 
             if gesture_event is not None:
                 event_sender.send(gesture_event)
@@ -196,8 +176,7 @@ def run_pipeline(config):
             state.capture_fps = camera.fps_meter.avg_fps
             state.infer_fps = infer_fps_meter.avg_fps
 
-            annotated = draw_bbox(input_tensor, detections)
-            annotated = draw_person_lock(annotated, person_lock)
+            annotated = draw_person_lock(input_tensor, person_lock)
             if state.is_ocr_mode_active():
                 annotated = draw_ocr_mode(annotated, ocr_guide_region)
             overlay_event = state.last_event

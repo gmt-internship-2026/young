@@ -1,9 +1,10 @@
 # gesture_kiosk 설정 — 모든 튜닝값의 단일 출처 (기획서 4.7 : 코드에 숫자 하드코딩 금지)
 #
 # 2026-07-10 전면 개편 — 타깃: 윈도우 CPU(GPU 불필요) + Python 3.11.5 (정부 민원발급기 — CPU 추론판)
-# 2026-07-15 동작 체계 개편 (장애인·비장애인 범용 설계 — 팔만 있어도 전부 가능):
+# 2026-07-15 동작 체계 개편 (장애인·비장애인 범용 설계 — 포즈 단일 엔진):
 #   팔 좌/우 쓸기=포커스 이동 · 아래로 쓸기=이전 화면(go_back) · 위로 쓸기=처음으로 /
-#   손등(팔등) 보이기=선택. 구 동작(주먹→펴기·OK핀치·양손바닥10초)과 레거시 토글은 제거.
+#   고개 꾸벅 2회=선택. 모든 판정이 RTMPose 키포인트 하나로 끝난다 —
+#   같은 날 2차에서 선택을 손등/팔등→꾸벅으로 재확정, 손 검출(MediaPipe)·팔등 CNN 제거.
 
 camera:
   device_id: 0            # USB 웹캠 장치 번호
@@ -17,24 +18,8 @@ camera:
                           #   (msmf는 이 설정을 무시하기도 한다 — dshow 계열 카메라용)
 
 model:
-  # 라이선스(2026-07-15): 손등/손바닥 MediaPipe(Apache-2.0) + 포즈 rtmlib RTMPose(Apache-2.0)
-  # + 팔등 분류는 자체 학습 CNN(제3자 가중치 없음 — 의무 0). 구 HaGRID ONNX 엔진은 제거.
-  mediapipe:                  # 손 랜드마크 기반 손등/손바닥 판정 (detector_mediapipe.py)
-    hand_landmarker_path: models/weights/hand_landmarker.task   # 구글 배포 모델 (Apache-2.0)
-    num_hands: 2              # 동시 추적 손 개수 — 양손 어느 쪽으로든 선택 가능해야 해서 2
-    min_tracking_confidence: 0.5
-    back_facing_threshold: 0.15   # |외적|/손크기² 이 미만이면 옆면·뒤집는 중 — 판정 보류
-    bbox_pad_ratio: 0.15          # 랜드마크 -> 손 박스 패딩 (person_lock 손목 귀속용)
-    flip_handedness: true         # 좌/우 라벨 뒤집기 — mediapipe 0.10.35가 문서와 반대로
-                                  #   라벨을 내는 것 실측(구글 이슈 #4724). 데모 화면 손 박스의
-                                  #   L/R이 실제 손과 뒤집혀 보이면 이 값을 반전할 것
-  arm_side:                   # 팔등(전완 등쪽) 분류 — 손이 검출되지 않는 사용자의 선택 수단
-    enabled: true
-    onnx_path: models/weights/arm_side_cnn.onnx   # 자체 학습 CNN — 없으면 자동 비활성
-                                                  #   (수집 collect_arm_side.py → 학습 train_arm_side.py)
-    input_size_px: 96         # 크롭 입력 한 변 — train_arm_side.py와 반드시 일치
-    crop_scale: 1.6           # 팔꿈치~손목 길이 대비 크롭 변 배율 (전완 폭 여유 포함)
-    dorsal_prob_threshold: 0.8    # 이 확률 이상이어야 팔등(dorsum) 관측으로 인정
+  # 라이선스(2026-07-15 2차): rtmlib RTMPose(Apache-2.0) **포즈 단일 모델** —
+  # 손 검출(MediaPipe)·팔등 CNN 제거로 쓸기·끄덕임·잠금이 전부 이 키포인트로 판정된다
   device: cpu             # CPU 추론판 고정 — GPU 가속판은 feat/think_win_gpu 브랜치
   use_tensorrt: false     # CPU판 — TensorRT 사용 불가 (GPU 가속은 feat/think_win_gpu)
   pose_mode: lightweight  # CPU 기본(30 FPS 확보용) — GPU판 기본은 balanced
@@ -42,39 +27,34 @@ model:
   max_infer_fps: 30       # 추론 루프 FPS 상한 — 초과분은 대기 (GPU 낭비 방지)
                           #   KPI가 30 FPS — 60으로 두면 추론 루프가 캡처 스레드의
                           #   CPU/GIL을 빼앗아 캡처가 30→15 FPS로 반토막난다 (2026-07-10 실측)
-  class_map:              # 검출기 class_name -> 표준 제스처. 미등록 클래스는 무시된다
-    back_of_hand: dorsum  # 손등 — 선택(select)의 근거 관측 (팔등 분류도 dorsum으로 합류)
-    palm: palm_front      # 손바닥 — 이벤트는 없지만 관측으로 남겨 팔등 분류를 막는다
-                          #   (손이 보이면 손 판정 우선 — 같은 팔을 이중 판정하지 않는다)
 
-person_lock:              # 오토포커스 카메라 — 초점 맞은 사용자에게 잠금, 다른 사람 손 무시
+person_lock:              # 오토포커스 카메라 — 초점 맞은 사용자에게 잠금, 다른 사람 무시
   enabled: true
-  kpt_conf_threshold: 0.3     # 포즈 키포인트(손목·팔꿈치·머리) 최소 신뢰도
+  kpt_conf_threshold: 0.3     # 포즈 키포인트(손목·어깨·머리) 최소 신뢰도
   lock_frame_count: 3         # 최고 점수 후보가 N프레임 연속이면 그 사용자에게 잠금
   follow_radius_ratio: 0.25   # 잠금 유지·추적 반경 (프레임 폭 대비 비율)
   release_sec: 2.0            # 이 시간 동안 안 보이면 잠금 해제 — 다음 사용자 인식
-  wrist_match_ratio: 0.14     # 제스처 박스를 손목에 귀속시키는 최대 거리 (프레임 폭 비율)
   sharpness_weight: 0.5       # 사용자 선정 점수에서 초점 선명도 비중 (0=크기만, 1=선명도만)
 
-detect:
-  conf_threshold: 0.5
-  cooldown_sec: 1.0           # 이벤트 확정 직후 입력 무시 시간 — 연타 방지.
-                              #   gestures.swipe.window_sec보다 길게 유지할 것 —
-                              #   쿨다운이 지나면 쓸기 궤적의 잔여 점이 전부 만료되게
-
 gestures:
+  cooldown_sec: 1.0           # 이벤트 확정 직후 입력 무시 시간 — 연타 방지.
+                              #   swipe.window_sec보다 길게 유지할 것 —
+                              #   쿨다운이 지나면 쓸기 궤적의 잔여 점이 전부 만료되게
   swipe:                      # 팔(손목) 쓸기 — 포즈 궤적 판정: 손이 없는 사용자도 동일 (범용 설계)
-    window_sec: 0.6           # 이 시간 안의 이동량으로 판정 (detect.cooldown_sec보다 짧게)
+    window_sec: 0.6           # 이 시간 안의 이동량으로 판정 (cooldown_sec보다 짧게)
     min_dist_x_ratio: 0.25    # 좌/우 쓸기 확정 최소 이동 (프레임 폭 비율)
     min_dist_y_ratio: 0.25    # 위/아래 쓸기 확정 최소 이동 (프레임 높이 비율)
     axis_dominance: 1.5       # 주축 진행도가 부축의 N배 이상일 때만 확정 — 대각선 오인 보류
     min_track_frames: 4       # 최소 궤적 프레임 — 키포인트 튐 1~2프레임 오발 방지
-  select:                     # 손등/팔등 보이기 = 선택/확인 — 뒤집는 동작이 명확한 의도 표시
-    stable_frame_count: 8     # N프레임 연속 유지 시 확정 — 쓸기 도중 스치는 손등 오발 방지
-                              #   (30 FPS 기준 ~0.27초, 쓸기 속도면 그 사이 이동량이 아래 임계 초과)
-    max_static_move_ratio: 0.08   # 정적 포즈로 인정하는 최대 이동량 (프레임 폭 비율)
-    max_hand_y_ratio: 0.85    # 손/팔 중심이 이보다 아래(내린 팔)면 무시 —
-                              #   쉬는 자세에선 손등이 자연히 앞을 향해 오탐이 잦다
+  select:                     # 고개 꾸벅 2회 = 선택/확인 — "끄덕임=예"라 안내 없이 직관적이고,
+                              #   팔이 전혀 없는 사용자도 가능. 2회 요구는 무의식 끄덕임 오탐 방지.
+                              #   신호 = 목 길이 비율: (어깨중점 y - 코 y) / 어깨 너비
+    nod_dip_ratio: 0.12       # 기준선 대비 이만큼 줄면 "숙임" — 어깨 너비 40cm 기준 약 5cm
+    nod_return_ratio: 0.05    # 기준선에서 이 이내로 돌아오면 꾸벅 1회 완료
+    nod_return_within_sec: 0.8    # 이 안에 못 돌아오면 내려다보기(지갑·신분증) — 무효
+    double_within_sec: 1.6    # 1회째 완료 후 2회째 완료까지 허용 시간
+    rebase_after_sec: 3.0     # 기준선과 계속 어긋나면(사용자 교대 등) 이 시간 후 재학습
+    baseline_alpha: 0.05      # 평시 목 길이 기준선 EMA 계수 (평시 자세에서만 갱신)
 
 ocr:                        # 주민등록증 인식 — 이름·주민등록번호 자동 입력
   enabled: true

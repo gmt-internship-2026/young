@@ -1,31 +1,11 @@
-"""디버그 시각화 — 검출 결과와 상태를 프레임 위에 그린다 (예시 UI 스트림에도 사용)."""
+"""디버그 시각화 — 포즈·잠금 상태를 프레임 위에 그린다 (예시 UI 스트림에도 사용)."""
 import cv2
 
-BBOX_COLOR = (0, 220, 120)
 EVENT_COLOR = (0, 160, 255)
 TEXT_COLOR = (255, 255, 255)
 LOCK_COLOR = (255, 200, 0)       # 잠긴 사용자 얼굴 박스
 WRIST_COLOR = {"left": (255, 120, 60), "right": (60, 120, 255)}
 OCR_COLOR = (80, 200, 255)       # OCR 모드 안내 영역
-
-
-def draw_bbox(frame, detections):
-    """검출된 제스처 bbox와 이름·좌우(L/R)·conf를 그린다 — L/R은 사용자 기준."""
-    for det in detections:
-        x1, y1, x2, y2 = det.bbox
-        side = getattr(det, "hand_side", None)
-        side_tag = f"[{side[0].upper()}]" if side in ("left", "right") else ""
-        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), BBOX_COLOR, 2)
-        cv2.putText(
-            frame,
-            f"{det.class_name}{side_tag} {det.conf:.2f}",
-            (int(x1), int(y1) - 8),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            BBOX_COLOR,
-            2,
-        )
-    return frame
 
 
 def draw_person_lock(frame, person_lock):

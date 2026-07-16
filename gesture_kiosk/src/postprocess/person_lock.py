@@ -1,7 +1,7 @@
-"""postprocess 모듈 — 오토포커스 사용자 잠금: 초점 맞은 사람에게 잠그고 그 손만 인식한다.
+"""postprocess 모듈 — 오토포커스 사용자 잠금: 초점 맞은 사람에게 잠그고 그 사람만 인식한다.
 
 요구사항(2026-07-10): 오토포커스 카메라 기준, 초점이 맞춰진 사람의 얼굴을 기준으로
-잠금(lock)하고 그 사람의 손목·손만 인식한다 — 다른 사람의 손은 무시한다.
+잠금(lock)하고 그 사람의 포즈(손목·머리)만 판정에 쓴다 — 다른 사람은 무시한다.
 
 판정 절차(모든 수치는 config person_lock에서 읽는다):
 1. 후보 점수 = 얼굴 크기 × 초점 선명도(라플라시안 분산) 가중 평균
@@ -9,8 +9,7 @@
 2. 최고 점수 후보가 lock_frame_count 프레임 연속이면 그 사람에게 잠금
 3. 잠금 중에는 follow_radius 안에서 같은 사람을 추적, release_sec 이상
    사라지면 해제하고 다음 사용자를 받는다
-4. 제스처 검출 박스는 잠긴 사람의 손목과 wrist_match_ratio 거리 안일 때만
-   해당 손(side)으로 귀속시킨다 — 밖이면 버린다
+4. 잠긴 사용자의 손목(쓸기)·목 길이 비율(끄덕임 select)을 gesture_filter에 공급한다
 
 거울 반전 주의: 포즈 모델의 왼/오른손목 라벨은 화면에 보이는 해부학 기준이라
 mirror=true 프레임에서는 사용자 실제 좌/우와 반대다. 이 모듈이 뒤집어
@@ -18,7 +17,6 @@ mirror=true 프레임에서는 사용자 실제 좌/우와 반대다. 이 모듈
 """
 import math
 import time
-from dataclasses import dataclass
 
 import cv2
 
@@ -28,24 +26,15 @@ logger = get_logger("postprocess")
 
 # COCO 17 키포인트 규격 (pose_estimator와 동일 번호 — 모델 무관 고정 스펙이라 여기 직접 둔다.
 # 임포트하면 rtmlib가 딸려 와 단위 테스트가 무거워진다)
-KPT_LEFT_ELBOW = 7
-KPT_RIGHT_ELBOW = 8
+KPT_NOSE = 0
+KPT_LEFT_SHOULDER = 5
+KPT_RIGHT_SHOULDER = 6
 KPT_LEFT_WRIST = 9
 KPT_RIGHT_WRIST = 10
 
 FACE_BOX_PAD_RATIO = 0.6      # 머리 키포인트 묶음 -> 얼굴 박스로 넓히는 패딩 비율
 SHARPNESS_SQUASH = 300.0      # 라플라시안 분산 정규화 상수 (v/(v+K) — 0~1로 압축)
-
-
-@dataclass
-class HandObservation:
-    """잠긴 사용자에게 귀속된 손/팔 관측 1건 — gesture_filter의 입력."""
-
-    side: str        # "left" | "right" — 사용자 기준 좌/우
-    gesture: str     # 표준 제스처 이름 (class_map 적용 후 / 팔등 분류는 직접 "dorsum")
-    conf: float
-    cx_ratio: float  # 프레임 폭 대비 중심 x (0.0~1.0)
-    cy_ratio: float = None  # 프레임 높이 대비 중심 y — select의 내린 손 오탐 방지에 쓴다
+MIN_SHOULDER_WIDTH_PX = 20.0  # 이보다 좁으면(측면 자세·검출 불량) 목 길이 정규화가 무의미
 
 
 def user_side_points(model_left, model_right, is_mirror):
@@ -99,7 +88,6 @@ class PersonLock:
         self._lock_frame_count = lock_cfg["lock_frame_count"]
         self._follow_radius_px = lock_cfg["follow_radius_ratio"] * frame_width_px
         self._release_sec = lock_cfg["release_sec"]
-        self._wrist_match_px = lock_cfg["wrist_match_ratio"] * frame_width_px
         self._sharpness_weight = lock_cfg["sharpness_weight"]
         self._is_mirror = config["camera"]["mirror"]
 
@@ -131,8 +119,8 @@ class PersonLock:
     def update(self, frame, persons):
         """프레임의 사람 목록으로 잠금 상태를 갱신한다. 잠긴 사람(or None)을 돌려준다."""
         if not self.enabled:
-            # 잠금 비활성이어도 쓸기(손목 궤적)·팔등 크롭은 기준 인물이 필요하다 —
-            # 최고 신뢰도 사람을 추적해 user_wrists()/user_arm_points()가 동작하게 한다
+            # 잠금 비활성이어도 쓸기(손목 궤적)·끄덕임은 기준 인물이 필요하다 —
+            # 최고 신뢰도 사람을 추적해 user_wrists()/user_neck_ratio()가 동작하게 한다
             self.locked_person = max(persons, key=lambda p: p.conf) if persons else None
             return self.locked_person
         now_sec = self._clock()
@@ -192,7 +180,7 @@ class PersonLock:
             self._candidate_count = 0
         return self.locked_person
 
-    # ----- 제스처 검출 -> 손 귀속 -----
+    # ----- 잠긴 사용자의 판정 신호 (gesture_filter 입력) -----
 
     def user_wrists(self):
         """잠긴 사용자의 손목 좌표를 '사용자 기준' 좌/우로 돌려준다: {"left": (x,y)|None, ...}"""
@@ -204,100 +192,22 @@ class PersonLock:
             self._is_mirror,
         )
 
-    def user_arm_points(self):
-        """잠긴 사용자의 (팔꿈치, 손목) 픽셀 좌표 쌍 — 사용자 기준 좌/우.
+    def user_neck_ratio(self):
+        """잠긴 사용자의 목 길이 비율 — (어깨 중점 y - 코 y) / 어깨 너비. 불가 시 None.
 
-        팔등 분류(arm_side_classifier)의 전완 크롭용. 한쪽 키포인트가 빠지면 그쪽 None.
+        끄덕임(select) 판정 신호: 고개를 숙이면 코가 어깨선으로 내려와 값이 준다.
+        어깨 너비로 정규화해 거리·체격에 불변이고, 몸 전체 이동·허리 굽힘은
+        코·어깨가 같이 움직여 값이 변하지 않는다. 좌/우 대칭 신호라 거울 보정 불필요.
         """
         if self.locked_person is None:
-            return {"left": None, "right": None}
-
-        def arm_pair(elbow_idx, wrist_idx):
-            elbow = self.locked_person.keypoint(elbow_idx, self._kpt_conf)
-            wrist = self.locked_person.keypoint(wrist_idx, self._kpt_conf)
-            if elbow is None or wrist is None:
-                return None
-            return (elbow, wrist)
-
-        return user_side_points(
-            arm_pair(KPT_LEFT_ELBOW, KPT_LEFT_WRIST),
-            arm_pair(KPT_RIGHT_ELBOW, KPT_RIGHT_WRIST),
-            self._is_mirror,
-        )
-
-    def _is_near_locked_person(self, point):
-        """잠긴 사람 박스(+손목 매칭 반경 여유) 안의 점인지 — 손목 소실 시 소유권 폴백."""
-        if self.locked_person is None:
-            return False
-        x1, y1, x2, y2 = self.locked_person.bbox
-        margin = self._wrist_match_px
-        return (x1 - margin) <= point[0] <= (x2 + margin) and (
-            (y1 - margin) <= point[1] <= (y2 + margin)
-        )
-
-    def attach_detections(self, detections, class_map):
-        """제스처 검출을 잠긴 사용자에게 귀속시켜 HandObservation 목록으로 바꾼다.
-
-        좌/우 판정 (2026-07-10 개선 — 한쪽 팔이 없는 사용자 지원):
-        1순위 det.hand_side(검출기의 손 좌/우 — MediaPipe handedness). 이때 손목 거리는
-        "잠긴 사용자의 손인지" 소유권 검사로만 쓰고, 해당 손목 키포인트가 없으면
-        (한쪽 팔 없음·가림 — 포즈 모델이 환각하기 쉬운 상황) 잠긴 사람 박스 근접으로
-        대신 검사한다. hand_side가 없는 검출(ONNX 엔진)은 기존 최근접 손목 방식.
-
-        잠금이 없으면 빈 목록 — 다른 사람 손을 절대 통과시키지 않는다.
-        person_lock.enabled=false면 hand_side, 없으면 화면 좌/우 절반으로 귀속한다.
-        """
-        observations = []
-        if not self.enabled:
-            for det in detections:
-                gesture = class_map.get(det.class_name)
-                if gesture is None:
-                    continue
-                cx, cy = _center(det.bbox)
-                side = getattr(det, "hand_side", None)
-                if side not in ("left", "right"):
-                    side = "left" if cx < self._frame_width_px / 2.0 else "right"
-                observations.append(
-                    HandObservation(side, gesture, det.conf,
-                                    cx / self._frame_width_px, cy / self._frame_height_px)
-                )
-            return observations
-
-        if self.locked_person is None:
-            return observations
-        wrists = self.user_wrists()
-
-        for det in detections:
-            gesture = class_map.get(det.class_name)
-            if gesture is None:
-                continue
-            det_center = _center(det.bbox)
-            side_hint = getattr(det, "hand_side", None)
-
-            if side_hint in ("left", "right"):
-                wrist = wrists[side_hint]
-                if wrist is not None:
-                    if math.dist(det_center, wrist) > self._wrist_match_px:
-                        continue  # 잠긴 사용자의 해당 손목 근처가 아니다 — 다른 사람 손
-                elif not self._is_near_locked_person(det_center):
-                    continue      # 손목 키포인트 소실 — 잠긴 사람 박스 밖이면 무시
-                best_side = side_hint
-            else:
-                best_side = None
-                best_dist = None
-                for side in ("left", "right"):
-                    if wrists[side] is None:
-                        continue
-                    dist = math.dist(det_center, wrists[side])
-                    if dist <= self._wrist_match_px and (best_dist is None or dist < best_dist):
-                        best_side = side
-                        best_dist = dist
-                if best_side is None:
-                    continue  # 잠긴 사용자의 손목 근처가 아니다 — 다른 사람 손으로 보고 무시
-
-            cx, cy = det_center
-            observations.append(
-                HandObservation(best_side, gesture, det.conf,
-                                cx / self._frame_width_px, cy / self._frame_height_px)
-            )
-        return observations
+            return None
+        nose = self.locked_person.keypoint(KPT_NOSE, self._kpt_conf)
+        left = self.locked_person.keypoint(KPT_LEFT_SHOULDER, self._kpt_conf)
+        right = self.locked_person.keypoint(KPT_RIGHT_SHOULDER, self._kpt_conf)
+        if nose is None or left is None or right is None:
+            return None
+        shoulder_width_px = math.dist(left, right)
+        if shoulder_width_px < MIN_SHOULDER_WIDTH_PX:
+            return None   # 측면 자세·검출 불량 — 정규화 분모로 못 쓴다
+        shoulders_mid_y = (left[1] + right[1]) / 2.0
+        return (shoulders_mid_y - nose[1]) / shoulder_width_px

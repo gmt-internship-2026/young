@@ -67,7 +67,7 @@
     <img id="cam" src="/video_feed" alt="camera stream">
     <div class="guide">
       <span>👋 좌/우로 쓸기</span>포커스 이동 &nbsp; <span>⬇ 아래로 쓸기</span>이전 화면<br>
-      <span>⬆ 위로 쓸기</span>처음으로 &nbsp; <span>🤚 손등/팔등 보이기</span>선택·확인
+      <span>⬆ 위로 쓸기</span>처음으로 &nbsp; <span>🙇 고개 꾸벅 2회</span>선택·확인
     </div>
     <div style="margin-top:12px;">
       <h2>이벤트 로그</h2>
@@ -166,7 +166,7 @@ function render() {
   if (screen === "home") {
     s.innerHTML = `
       <div class="screen-head"><div class="title">증명서 선택</div>
-        <div class="hint">👋 좌/우 쓸기 이동 · 🤚 손등 보이기 선택</div></div>
+        <div class="hint">👋 좌/우 쓸기 이동 · 🙇 고개 꾸벅 2회 선택</div></div>
       <div class="menu">${CERTS.map((c, i) =>
         `<div class="item ${i === focusIdx ? "hl" : ""}">${c}</div>`).join("")}</div>`;
   } else if (screen === "confirm") {
@@ -186,7 +186,7 @@ function render() {
   } else {
     s.innerHTML = `
       <div class="done"><div class="big">✅ ${chosenCert} 발급 완료</div>
-        <p>출력물을 받아 가세요.<br>⬆ 위로 쓸기 또는 🤚 손등 보이기로 처음 화면으로 돌아갑니다.</p></div>`;
+        <p>출력물을 받아 가세요.<br>⬆ 위로 쓸기 또는 🙇 고개 꾸벅 2회로 처음 화면으로 돌아갑니다.</p></div>`;
   }
 }
 

@@ -14,28 +14,12 @@ camera:
   fourcc: mjpg            # 캡처 픽셀 포맷 — 맥 내장 카메라는 무시될 수 있다 (무해)
 
 model:
-  # 라이선스(2026-07-15): MediaPipe(Apache-2.0) + rtmlib(Apache-2.0) + 자체 학습 팔등 CNN. 맥은 CPU 실행
-  mediapipe:
-    hand_landmarker_path: models/weights/hand_landmarker.task
-    num_hands: 2
-    min_tracking_confidence: 0.5
-    back_facing_threshold: 0.15
-    bbox_pad_ratio: 0.15
-    flip_handedness: true   # config.yaml 주석 참고 (mediapipe 라벨 방향 실측 보정)
-  arm_side:
-    enabled: true
-    onnx_path: models/weights/arm_side_cnn.onnx   # 없으면 자동 비활성 — 손등 판정만 동작
-    input_size_px: 96
-    crop_scale: 1.6
-    dorsal_prob_threshold: 0.8
+  # 라이선스(2026-07-15 2차): rtmlib RTMPose(Apache-2.0) 포즈 단일 모델. 맥은 CPU 실행(개발 확인용)
   device: auto            # 맥: CUDA 없음 -> 자동으로 cpu
   use_tensorrt: false
   pose_mode: lightweight  # ★ 맥 CPU — 가벼운 포즈 모델로 개발 확인
   input_size_px: 640
   max_infer_fps: 60
-  class_map:
-    back_of_hand: dorsum
-    palm: palm_front
 
 person_lock:
   enabled: true
@@ -43,24 +27,23 @@ person_lock:
   lock_frame_count: 3
   follow_radius_ratio: 0.25
   release_sec: 2.0
-  wrist_match_ratio: 0.14
   sharpness_weight: 0.5
 
-detect:
-  conf_threshold: 0.5
-  cooldown_sec: 1.0       # swipe.window_sec보다 길게 (config.yaml 주석 참고)
-
 gestures:
+  cooldown_sec: 1.0       # swipe.window_sec보다 길게 (config.yaml 주석 참고)
   swipe:
     window_sec: 0.6
     min_dist_x_ratio: 0.25
     min_dist_y_ratio: 0.25
     axis_dominance: 1.5
     min_track_frames: 4
-  select:
-    stable_frame_count: 8
-    max_static_move_ratio: 0.08
-    max_hand_y_ratio: 0.85
+  select:                 # 고개 꾸벅 2회 — config.yaml 주석 참고
+    nod_dip_ratio: 0.12
+    nod_return_ratio: 0.05
+    nod_return_within_sec: 0.8
+    double_within_sec: 1.6
+    rebase_after_sec: 3.0
+    baseline_alpha: 0.05
 
 ocr:
   enabled: true

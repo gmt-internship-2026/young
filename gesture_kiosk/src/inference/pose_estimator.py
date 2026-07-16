@@ -1,16 +1,20 @@
-"""inference 모듈 — 사람 포즈(RTMPose)를 추론해 얼굴·손목 키포인트를 얻는다.
+"""inference 모듈 — 사람 포즈(RTMPose)를 추론해 얼굴·어깨·손목 키포인트를 얻는다.
+
+2026-07-15 2차 개편으로 **유일한 추론 모델**이 됐다 — 쓸기(손목 궤적)·
+선택(고개 끄덕임)·사용자 잠금(얼굴)이 전부 이 포즈 키포인트로 판정된다
+(손 검출 MediaPipe·팔등 CNN 제거).
 
 2026-07-11 교체(라이선스 B안): ultralytics yolo11n-pose(AGPL-3.0)를 제거하고
-rtmlib(Apache-2.0, RTMPose 계열 + ONNX Runtime)로 바꿨다. 출력 규격은 동일한
-COCO 17 키포인트라 사용자 잠금(person_lock)은 수정 없이 그대로 동작한다.
+rtmlib(Apache-2.0, RTMPose 계열 + ONNX Runtime)로 바꿨다.
 
 모델 파일은 첫 실행 때 자동으로 내려받아 캐시(~/.cache/rtmlib)에 둔다 —
 내부망 반입 시에는 make_offline_bundle.bat이 이 캐시를 함께 담는다.
 
-키포인트 번호는 COCO 17 규격이다 (0=코, 1·2=눈, 3·4=귀, 7·8=팔꿈치, 9·10=손목).
+키포인트 번호는 COCO 17 규격이다 (0=코, 1·2=눈, 3·4=귀, 5·6=어깨, 9·10=손목).
 주의: 이 라벨은 "화면에 보이는 사람" 기준의 해부학적 좌/우다. 거울 반전된
 프레임에서는 사용자의 실제 좌/우와 반대가 되며, 그 보정은 person_lock이 담당한다.
 """
+import sys
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -22,12 +26,26 @@ logger = get_logger("inference")
 # COCO 17 키포인트 인덱스 (RTMPose body 계열 출력 순서)
 KPT_NOSE = 0
 KPT_HEAD_INDICES = (0, 1, 2, 3, 4)  # 코·양눈·양귀 — 얼굴 영역 추정에 사용
-KPT_LEFT_ELBOW = 7
-KPT_RIGHT_ELBOW = 8
+KPT_LEFT_SHOULDER = 5
+KPT_RIGHT_SHOULDER = 6
 KPT_LEFT_WRIST = 9
 KPT_RIGHT_WRIST = 10
 
 BBOX_PAD_RATIO = 0.10  # 키포인트 묶음 -> 사람 박스로 넓히는 패딩 (추적용)
+
+
+def ensure_cuda_dlls():
+    """윈도우: onnxruntime CUDA는 torch(cu128)가 등록하는 CUDA DLL 경로에 의존한다.
+
+    onnxruntime-gpu가 설치되면 CUDAExecutionProvider는 항상 목록에 보이지만
+    DLL 로드는 세션 생성 시점에 일어나므로(실패 시 조용히 CPU 폴백), CUDA를
+    쓰려면 세션을 만들기 전에 반드시 torch를 먼저 임포트해 둬야 한다.
+    (2026-07-15 2차: 구 detector.py 삭제로 이 모듈로 옮겨 왔다)"""
+    if sys.platform.startswith("win"):
+        try:
+            import torch  # noqa: F401 — DLL 경로 등록 부수효과만 목적
+        except ImportError:
+            pass
 
 
 @dataclass
@@ -53,8 +71,6 @@ def _resolve_device(device):
         return device
     # rtmlib의 ORT 세션도 torch의 CUDA DLL 경로가 있어야 GPU로 열린다 —
     # 없으면 조용히 CPU로 폴백해 30 FPS가 무너진다 (2026-07-10 실측: 10 FPS)
-    from src.inference.detector import ensure_cuda_dlls
-
     ensure_cuda_dlls()
     if device != "auto":
         return device

@@ -48,16 +48,29 @@ class GestureEvent:
 
 
 class _SwipeTracker:
-    """한 손목의 쓸기 궤적 — window_sec 안 이동량과 주축 우세로 방향을 확정한다."""
+    """한 손목의 쓸기 궤적 — window_sec 안 이동량과 주축 우세로 방향을 확정한다.
+
+    정지 재장전(rest-gating, 2026-07-16): 이벤트 확정 직후에는 해제(disarm)되고,
+    추적점이 잠깐 멈춰야(rearm_still) 다음 쓸기가 장전된다. 팔을 원위치로
+    되돌리는 복귀 스트로크는 뻗은 자세에서 곧장 이어지는 연속 동작이라 정지
+    조건을 채울 수 없다 — 우로 쓸고 복귀할 때 좌로 오인되는 문제의 해결책.
+    좌우·상하·대각 복귀와 팔 왕복 흔들기 연발 오탐까지 같은 원리로 막는다.
+    """
 
     def __init__(self, window_sec, min_dist_x_ratio, min_dist_y_ratio,
-                 axis_dominance, min_track_frames):
+                 axis_dominance, min_track_frames,
+                 rearm_still_ratio, rearm_still_frames):
         self._window_sec = window_sec
         self._min_dist_x_ratio = min_dist_x_ratio
         self._min_dist_y_ratio = min_dist_y_ratio
         self._axis_dominance = axis_dominance
         self._min_track_frames = min_track_frames
+        self._rearm_still_ratio = rearm_still_ratio
+        self._rearm_still_frames = rearm_still_frames
         self._track = deque()   # (ts_sec, x_ratio, y_ratio)
+        self._is_armed = True   # 첫 쓸기는 멈춤 조건 없이 — 이벤트 확정 후부터 재장전 요구
+        self._still_count = 0
+        self._last_point = None
 
     def update(self, x_ratio, y_ratio, now_sec, gain=1.0):
         """관측 1건을 반영하고, 쓸기 확정이면 방향("left"/"right"/"up"/"down").
@@ -65,6 +78,20 @@ class _SwipeTracker:
         gain: 진행도 보정 배율 — 팔꿈치 추적(elbow_gain)처럼 같은 팔 휘두름에도
         이동량이 작은 추적점을 손목과 같은 기준으로 판정하기 위한 값.
         """
+        prev_point = self._last_point
+        self._last_point = (x_ratio, y_ratio)
+
+        if not self._is_armed:
+            is_still = prev_point is not None and (
+                max(abs(x_ratio - prev_point[0]), abs(y_ratio - prev_point[1]))
+                <= self._rearm_still_ratio
+            )
+            self._still_count = self._still_count + 1 if is_still else 0
+            if self._still_count >= self._rearm_still_frames:
+                self._is_armed = True   # 충분히 멈췄다 — 다음 쓸기 장전
+                self._still_count = 0
+            return None
+
         self._track.append((now_sec, x_ratio, y_ratio))
         while self._track and now_sec - self._track[0][0] > self._window_sec:
             self._track.popleft()
@@ -83,7 +110,15 @@ class _SwipeTracker:
         return None   # 대각선(주축 불명) — 방향이 분명해질 때까지 보류
 
     def reset(self):
+        """추적점 소실·손목↔팔꿈치 전환 — 궤적만 비우고 장전 상태는 유지한다."""
         self._track.clear()
+        self._still_count = 0
+        self._last_point = None
+
+    def disarm(self):
+        """이벤트 확정 직후 — 복귀 스트로크를 무시하도록 해제 (멈춰야 재장전)."""
+        self.reset()
+        self._is_armed = False
 
 
 class _NodTracker:
@@ -187,6 +222,7 @@ class GestureFilter:
             side: _SwipeTracker(
                 swipe["window_sec"], swipe["min_dist_x_ratio"], swipe["min_dist_y_ratio"],
                 swipe["axis_dominance"], swipe["min_track_frames"],
+                swipe["rearm_still_ratio"], swipe["rearm_still_frames"],
             )
             for side in ("left", "right")
         }
@@ -242,7 +278,7 @@ class GestureFilter:
     def _confirm(self, class_name, conf, now_sec, hand_side=None, data=None):
         self._last_event_ts_sec = now_sec
         for tracker in self._swipe_trackers.values():
-            tracker.reset()
+            tracker.disarm()   # 복귀 스트로크 무시 — 멈춰야 다음 쓸기 장전 (정지 재장전)
         self._nod_tracker.reset()
 
         event = GestureEvent(

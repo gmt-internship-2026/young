@@ -34,6 +34,8 @@ def make_config():
                 "axis_dominance": 1.5,
                 "min_track_frames": 4,
                 "elbow_gain": 2.0,
+                "rearm_still_ratio": 0.005,
+                "rearm_still_frames": 5,
             },
             "select": {
                 "nod_dip_ratio": 0.12,
@@ -167,6 +169,44 @@ class SwipeGestureTest(GestureFilterTestBase):
     def test_slow_drift_outside_window_does_not_fire(self):
         # 같은 거리라도 window_sec(0.6초)보다 느리면 쓸기가 아니다 — 배회 오탐 방지
         event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4), dt_sec=0.2)
+        self.assertIsNone(event)
+
+    def _swipe_right_then_pass_cooldown(self):
+        """우로 쓸기 확정 후 쿨다운(1초)까지 지난 상태를 만든다 — 복귀 시나리오용."""
+        event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4))
+        self.assertEqual(event.class_name, "move_right")
+        self.clock.tick(1.2)
+
+    def test_return_stroke_does_not_fire_left(self):
+        # 우로 쓸고 (화면 확인 후) 원위치 복귀 — 연속 동작은 재장전이 안 돼 무시된다
+        self._swipe_right_then_pass_cooldown()
+        event = self._feed_swipe("right", path(0.6, 0.2, 8, y_ratio=0.4))
+        self.assertIsNone(event)
+
+    def test_vertical_return_stroke_does_not_fire(self):
+        # 아래로 쓸기(go_back) 후 팔을 올리는 복귀 — go_home으로 오인되면 안 된다
+        event = self._feed_swipe("right", path(0.3, 0.8, 8, x_ratio=0.5))
+        self.assertEqual(event.class_name, "go_back")
+        self.clock.tick(1.2)
+        event = self._feed_swipe("right", path(0.8, 0.3, 8, x_ratio=0.5))
+        self.assertIsNone(event)
+
+    def test_pause_rearms_next_swipe(self):
+        # 복귀 후 잠깐 멈추면(rearm_still_frames) 다음 쓸기는 정상 인식
+        self._swipe_right_then_pass_cooldown()
+        self._feed_swipe("right", path(0.6, 0.2, 8, y_ratio=0.4))   # 복귀 — 무시됨
+        self._feed_swipe("right", [(0.2, 0.4)] * 7)                 # 원점에서 멈춤 — 재장전
+        event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4))
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "move_right")
+
+    def test_waving_fires_only_once_until_pause(self):
+        # 팔을 계속 왔다갔다 흔들기 — 멈추기 전까지는 첫 이벤트 1회만
+        event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4))
+        self.assertEqual(event.class_name, "move_right")
+        self.clock.tick(1.2)
+        wave = (path(0.6, 0.2, 8, y_ratio=0.4) + path(0.2, 0.6, 8, y_ratio=0.4)) * 2
+        event = self._feed_swipe("right", wave)
         self.assertIsNone(event)
 
 

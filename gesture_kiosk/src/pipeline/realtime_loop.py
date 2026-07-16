@@ -1,8 +1,9 @@
 """pipeline 모듈 — 캡처·추론·판정·안내를 연결해 실시간 루프를 구동한다 (기획서 2.2, 3.2).
 
-프레임 흐름 (윈도우 + NVIDIA GPU 기준):
-  카메라(스레드) → 거울 반전 → [제스처 검출 + 사람 포즈] → 사용자 잠금(person_lock)
-  → 손 귀속(HandObservation) → 동작 판정(gesture_filter) → 이벤트 전송 + 음성 안내
+프레임 흐름 (윈도우 + NVIDIA GPU 기준 — 2026-07-15 2차: 포즈 단일 엔진):
+  카메라(스레드) → 거울 반전 → 사람 포즈(RTMPose) → 사용자 잠금(person_lock)
+  → 동작 판정(gesture_filter: 손목 쓸기 궤적 + 고개 꾸벅 2회)
+  → 이벤트 전송 + 음성 안내
 
 주민등록증 OCR은 별도 워커 스레드에서 돈다 — EasyOCR 1회가 수백 ms라
 추론 루프(30 FPS 목표)를 막지 않게 분리한다. OCR은 UI가 요청할 때만
@@ -15,7 +16,6 @@ import time
 
 from src.announce.announcer import Announcer
 from src.capture.camera_stream import CameraStream
-from src.inference.detector import create_gesture_detector
 from src.inference.pose_estimator import PoseEstimator
 from src.inference.preprocessor import Preprocessor
 from src.pipeline.event_sender import create_event_sender
@@ -23,13 +23,7 @@ from src.postprocess.gesture_filter import GestureEvent, GestureFilter
 from src.postprocess.person_lock import PersonLock
 from src.utils.logger import get_logger
 from src.utils.metrics import FpsMeter
-from src.utils.visualize import (
-    draw_bbox,
-    draw_ocr_mode,
-    draw_person_lock,
-    draw_status,
-    draw_two_palm_hold,
-)
+from src.utils.visualize import draw_ocr_mode, draw_person_lock, draw_status
 
 logger = get_logger("pipeline")
 
@@ -51,7 +45,6 @@ class PipelineState:
         self.event_log = []
         self.is_running = False
         self.is_user_locked = False
-        self.two_palm_hold_ratio = 0.0
         self.announcer = None          # demo_server의 POST /announce가 사용한다
         self._ocr_deadline_sec = None  # None이면 OCR 모드 꺼짐
 
@@ -133,18 +126,16 @@ def run_pipeline(config):
     state = PipelineState()
     camera = CameraStream(config).start()
     preprocessor = Preprocessor(config)
-    detector = create_gesture_detector(config)
-    pose_estimator = PoseEstimator(config) if config["person_lock"]["enabled"] else None
+    pose_estimator = PoseEstimator(config)   # 유일한 추론 모델 — 모든 판정의 입력
 
     first_frame = camera.capture_frame()
-    frame_width_px = first_frame.shape[1]
-    person_lock = PersonLock(config, frame_width_px)
+    frame_height_px, frame_width_px = first_frame.shape[:2]
+    person_lock = PersonLock(config, frame_width_px, frame_height_px)
     gesture_filter = GestureFilter(config)
     event_sender = create_event_sender(config)
     announcer = Announcer(config)
     state.announcer = announcer
 
-    class_map = config["model"]["class_map"]
     min_loop_interval_sec = 1.0 / config["model"]["max_infer_fps"]
     ocr_guide_region = config["ocr"]["guide_region_ratio"]
 
@@ -159,16 +150,22 @@ def run_pipeline(config):
 
             frame = camera.capture_frame()
             input_tensor = preprocessor.preprocess_frame(frame)
-            detections = detector.infer(input_tensor)
 
-            if pose_estimator is not None:
-                persons = pose_estimator.infer(input_tensor)
-                person_lock.update(input_tensor, persons)
-            observations = person_lock.attach_detections(detections, class_map)
-            state.is_user_locked = person_lock.locked_person is not None
+            persons = pose_estimator.infer(input_tensor)
+            person_lock.update(input_tensor, persons)
+            state.is_user_locked = (
+                person_lock.enabled and person_lock.locked_person is not None
+            )
 
-            gesture_event = gesture_filter.filter_observations(observations)
-            state.two_palm_hold_ratio = gesture_filter.two_palm_hold_ratio
+            # 쓸기 판정용 추적점(손목 — 없으면 팔꿈치) — 프레임 폭/높이 비율 좌표로 넘긴다
+            swipe_points_ratio = {
+                side: None if info is None
+                else (info[0], (info[1][0] / frame_width_px, info[1][1] / frame_height_px))
+                for side, info in person_lock.user_swipe_points().items()
+            }
+            gesture_event = gesture_filter.filter_signals(
+                swipe_points_ratio, person_lock.user_neck_ratio()
+            )
 
             if gesture_event is not None:
                 event_sender.send(gesture_event)
@@ -179,9 +176,7 @@ def run_pipeline(config):
             state.capture_fps = camera.fps_meter.avg_fps
             state.infer_fps = infer_fps_meter.avg_fps
 
-            annotated = draw_bbox(input_tensor, detections)
-            annotated = draw_person_lock(annotated, person_lock)
-            annotated = draw_two_palm_hold(annotated, state.two_palm_hold_ratio)
+            annotated = draw_person_lock(input_tensor, person_lock)
             if state.is_ocr_mode_active():
                 annotated = draw_ocr_mode(annotated, ocr_guide_region)
             overlay_event = state.last_event

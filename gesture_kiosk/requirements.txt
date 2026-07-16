@@ -19,4 +19,3 @@ uvicorn==0.51.0
 psutil==7.2.2
 easyocr==1.7.2                     # 주민등록증 OCR (ocr.enabled=false면 미사용)
 pyttsx3==2.99                      # 음성 안내 TTS — 윈도우 SAPI (announce.backend=tts) — MPL-2.0: 무수정 사용이라 공개 의무 없음
-mediapipe==0.10.35                 # 제스처 손 랜드마크 (Apache-2.0) — 라이선스 C안 기본 엔진

@@ -14,32 +14,12 @@ camera:
   fourcc: mjpg            # 캡처 픽셀 포맷 — 맥 내장 카메라는 무시될 수 있다 (무해)
 
 model:
-  # 라이선스 C안 — 제스처: MediaPipe(Apache-2.0) + 포즈: rtmlib(Apache-2.0). 맥은 CPU 실행(개발 확인용)
-  gesture_engine: mediapipe
-  mediapipe:
-    hand_landmarker_path: models/weights/hand_landmarker.task
-    num_hands: 2
-    min_tracking_confidence: 0.5
-    finger_extended_ratio: 1.15
-    ok_pinch_ratio: 0.35
-    bbox_pad_ratio: 0.15
-    flip_handedness: true   # config.yaml 주석 참고 (mediapipe 라벨 방향 실측 보정)
+  # 라이선스(2026-07-15 2차): rtmlib RTMPose(Apache-2.0) 포즈 단일 모델. 맥은 CPU 실행(개발 확인용)
   device: auto            # 맥: CUDA 없음 -> 자동으로 cpu
   use_tensorrt: false
-  gesture_onnx_path: models/weights/YOLOv10n_gestures.onnx   # (onnx 엔진 전용 — 납품 금지)
   pose_mode: lightweight  # ★ 맥 CPU — 가벼운 포즈 모델로 개발 확인
   input_size_px: 640
   max_infer_fps: 60
-  class_map:
-    fist: fist
-    palm: open_hand
-    stop: open_hand
-    stop_inverted: open_hand
-    four: open_hand
-    ok: ok
-    point: point
-    one: point
-    like: thumbs_up
 
 person_lock:
   enabled: true
@@ -47,22 +27,24 @@ person_lock:
   lock_frame_count: 3
   follow_radius_ratio: 0.25
   release_sec: 2.0
-  wrist_match_ratio: 0.14
   sharpness_weight: 0.5
 
-detect:
-  conf_threshold: 0.5
-  cooldown_sec: 1.0
-
 gestures:
-  move: { fist_min_frames: 3, open_within_sec: 0.8 }
-  select: { stable_frame_count: 5, max_static_move_ratio: 0.08 }
-  two_palm: { action: go_home, hold_sec: 10.0, grace_sec: 0.4 }
-  legacy:
-    enabled: false          # config.yaml 주석 참고 (쉬는 손바닥의 palm_stop 간섭)
-    stable_frame_count: 5
-    max_static_move_ratio: 0.08
-    swipe: { source_gesture: open_hand, window_sec: 0.7, min_dist_ratio: 0.35 }
+  cooldown_sec: 1.0       # swipe.window_sec보다 길게 (config.yaml 주석 참고)
+  swipe:
+    window_sec: 0.6
+    min_dist_x_ratio: 0.25
+    min_dist_y_ratio: 0.25
+    axis_dominance: 1.5
+    min_track_frames: 4
+    elbow_gain: 2.0         # 손목 미검출 시 팔꿈치 폴백 배율 — config.yaml 주석 참고
+  select:                 # 고개 꾸벅 2회 — config.yaml 주석 참고
+    nod_dip_ratio: 0.12
+    nod_return_ratio: 0.05
+    nod_return_within_sec: 0.8
+    double_within_sec: 1.6
+    rebase_after_sec: 3.0
+    baseline_alpha: 0.05
 
 ocr:
   enabled: true
@@ -83,13 +65,12 @@ announce:
     move_left: "왼쪽으로 이동"
     move_right: "오른쪽으로 이동"
     select: "선택했습니다"
+    go_back: "이전 화면으로 이동합니다"
     go_home: "처음 화면으로 돌아갑니다"
-    help_call: "직원을 호출했습니다. 잠시만 기다려 주세요"
     fill_id_fields: "주민등록증 인식 완료. 이름과 주민등록번호가 입력되었습니다"
 
 classes:
-  [move_left, move_right, select, go_home, help_call, fill_id_fields,
-   point, palm_stop, swipe_left, swipe_right, thumbs_up]
+  [move_left, move_right, select, go_back, go_home, fill_id_fields]
 
 event_output:
   mode: console

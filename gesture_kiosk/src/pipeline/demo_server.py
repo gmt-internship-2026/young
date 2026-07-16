@@ -5,7 +5,7 @@ TODO(기획서 9장 №7·№8): 회사 프로그램(UI) 파일을 받으면 이
 
 회사 프로그램 연동 계약(이 서버가 시연하는 것):
 - 이벤트(엔진→UI): /data 폴링 또는 event_output(udp) — move_left/right, select,
-  go_home, fill_id_fields(이름·주민번호) 등 config classes 목록
+  go_back, go_home, fill_id_fields(이름·주민번호) 등 config classes 목록
 - 음성 안내(UI→엔진): POST /announce {"text": "발급하기 버튼"} — 포커스 항목
   설명처럼 화면 구조를 아는 쪽(UI)이 문구를 만들어 엔진 TTS로 읽힌다
 - 주민등록증 인식(UI→엔진): POST /ocr/start — 본인확인 화면 진입 시 요청,
@@ -81,7 +81,6 @@ def create_app(state, config):
             },
             "status": {
                 "is_user_locked": state.is_user_locked,
-                "two_palm_hold_ratio": round(state.two_palm_hold_ratio, 2),
                 "is_ocr_mode": state.is_ocr_mode_active(),
             },
             "classes": config["classes"],

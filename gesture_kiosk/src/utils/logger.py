@@ -1,6 +1,6 @@
 """로깅 설정 — 기획서 4.7의 단일 포맷만 사용한다.
 
-포맷 예: [2026-07-20 14:03:22] [INFO] [pipeline] gesture_event: swipe_left (conf=0.87)
+포맷 예: [2026-07-20 14:03:22] [INFO] [pipeline] gesture_event: move_left (conf=0.87)
 """
 import logging
 import os

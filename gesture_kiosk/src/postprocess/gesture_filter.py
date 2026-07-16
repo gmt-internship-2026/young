@@ -73,6 +73,9 @@ class _SwipeTracker:
         self._is_armed = True   # 첫 쓸기는 멈춤 조건 없이 — 이벤트 확정 후부터 재장전 요구
         self._still_count = 0
         self._last_point = None
+        # 계기판 노출용(2026-07-16 실기 튜닝) — 부호 있는 진행도: ±1.0 도달 시 확정
+        self.progress_x = 0.0
+        self.progress_y = 0.0
 
     def update(self, x_ratio, y_ratio, now_sec, gain=1.0, body_scale=1.0):
         """관측 1건을 반영하고, 쓸기 확정이면 방향("left"/"right"/"up"/"down").
@@ -86,6 +89,8 @@ class _SwipeTracker:
         self._last_point = (x_ratio, y_ratio)
 
         if not self._is_armed:
+            self.progress_x = 0.0
+            self.progress_y = 0.0
             is_still = prev_point is not None and (
                 max(abs(x_ratio - prev_point[0]), abs(y_ratio - prev_point[1]))
                 <= self._rearm_still_shoulder * body_scale
@@ -105,8 +110,10 @@ class _SwipeTracker:
         dx_ratio = x_ratio - self._track[0][1]
         dy_ratio = y_ratio - self._track[0][2]
         # 무단위 진행도(이동량/임계)로 축 비교 — 임계는 어깨너비 배수 × body_scale
-        progress_x = abs(dx_ratio) / (self._min_dist_x_shoulder * body_scale) * gain
-        progress_y = abs(dy_ratio) / (self._min_dist_y_shoulder * body_scale) * gain
+        self.progress_x = dx_ratio / (self._min_dist_x_shoulder * body_scale) * gain
+        self.progress_y = dy_ratio / (self._min_dist_y_shoulder * body_scale) * gain
+        progress_x = abs(self.progress_x)
+        progress_y = abs(self.progress_y)
         if progress_x >= 1.0 and progress_x >= progress_y * self._axis_dominance:
             return "right" if dx_ratio > 0 else "left"
         if progress_y >= 1.0 and progress_y >= progress_x * self._axis_dominance:
@@ -118,6 +125,8 @@ class _SwipeTracker:
         self._track.clear()
         self._still_count = 0
         self._last_point = None
+        self.progress_x = 0.0
+        self.progress_y = 0.0
 
     def disarm(self):
         """이벤트 확정 직후 — 복귀 스트로크를 무시하도록 해제 (멈춰야 재장전)."""
@@ -240,6 +249,7 @@ class GestureFilter:
         self._nod_tracker = _NodTracker(gestures["select"])
 
         self._last_event_ts_sec = None
+        self.debug = {}   # 실기 튜닝 계기판 — /data·화면 오버레이로 노출 (판정에 미사용)
 
     def filter_signals(self, swipe_points, neck_ratio, shoulder_width_ratio=None):
         """포즈 신호 -> gesture_event | None (기획서 4.6 계약).
@@ -276,13 +286,35 @@ class GestureFilter:
                 point[0], point[1], now_sec, gain, body_scale
             )
             if direction is not None:
-                return self._confirm(
+                event = self._confirm(
                     SWIPE_EVENT_BY_DIRECTION[direction], 1.0, now_sec, hand_side=side
                 )
+                self._update_debug(body_scale, neck_ratio, shoulder_width_ratio)
+                return event
 
+        event = None
         if self._nod_tracker.update(neck_ratio, now_sec):
-            return self._confirm("select", 1.0, now_sec)
-        return None
+            event = self._confirm("select", 1.0, now_sec)
+        self._update_debug(body_scale, neck_ratio, shoulder_width_ratio)
+        return event
+
+    def _update_debug(self, body_scale, neck_ratio, shoulder_width_ratio):
+        """판정 내부값 스냅샷 — 실기에서 임계가 왜 안/잘 넘는지 숫자로 보기 위한 계기판."""
+        tracker = self._swipe_tracker
+        nod = self._nod_tracker
+        self.debug = {
+            "body_scale": round(body_scale, 3),               # 어깨너비/프레임폭 (평활 후)
+            "shoulder_raw": None if shoulder_width_ratio is None else round(shoulder_width_ratio, 3),
+            "active_side": self._active_side,
+            "active_source": self._active_source,
+            "is_armed": tracker._is_armed,                    # False면 정지 재장전 대기
+            "swipe_progress_x": round(tracker.progress_x, 2), # ±1.0 도달 시 좌/우 확정
+            "swipe_progress_y": round(tracker.progress_y, 2), # ±1.0 도달 시 상/하 확정
+            "neck_ratio": None if neck_ratio is None else round(neck_ratio, 3),
+            "nod_baseline": None if nod._baseline is None else round(nod._baseline, 3),
+            "is_dipping": nod._is_dipping,
+            "has_first_nod": nod._first_nod_sec is not None,
+        }
 
     def _update_body_scale(self, shoulder_width_ratio):
         """어깨너비 관측으로 몸 크기 자(尺)를 갱신한다 — EMA 평활 + 하한 클램프.

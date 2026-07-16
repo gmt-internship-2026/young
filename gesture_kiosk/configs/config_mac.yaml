@@ -32,9 +32,9 @@ person_lock:
 gestures:
   cooldown_sec: 1.0       # swipe.window_sec보다 길게 (config.yaml 주석 참고)
   swipe:                    # 임계 단위 = 어깨너비 배수(카메라 거리 무관) — config.yaml 주석 참고
-    window_sec: 0.6
-    min_dist_x_shoulder: 1.1
-    min_dist_y_shoulder: 0.65
+    window_sec: 0.8
+    min_dist_x_shoulder: 0.8
+    min_dist_y_shoulder: 0.5
     axis_dominance: 1.5
     min_track_frames: 4
     elbow_gain: 2.0         # 손목 미검출 시 팔꿈치 폴백 배율 — config.yaml 주석 참고

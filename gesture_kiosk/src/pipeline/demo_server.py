@@ -80,6 +80,7 @@ def create_app(state, config):
             "status": {
                 "is_user_locked": state.is_user_locked,
             },
+            "debug": state.debug,   # 판정 계기판 — 실기 튜닝용 (연동 계약 아님)
             "classes": config["classes"],
             "events": events,
         }

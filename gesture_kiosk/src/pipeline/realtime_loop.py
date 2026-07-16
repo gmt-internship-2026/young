@@ -22,7 +22,7 @@ from src.postprocess.gesture_filter import GestureFilter
 from src.postprocess.person_lock import PersonLock
 from src.utils.logger import get_logger
 from src.utils.metrics import FpsMeter
-from src.utils.visualize import draw_person_lock, draw_status
+from src.utils.visualize import draw_debug_panel, draw_person_lock, draw_status
 
 logger = get_logger("pipeline")
 
@@ -42,6 +42,7 @@ class PipelineState:
         self.event_log = []
         self.is_running = False
         self.is_user_locked = False
+        self.debug = {}                # 판정 계기판(gesture_filter.debug) — 실기 튜닝용
         self.announcer = None          # demo_server의 POST /announce가 사용한다
 
     def update_frame(self, frame):
@@ -105,6 +106,7 @@ def run_pipeline(config):
                 person_lock.user_neck_ratio(),
                 person_lock.user_shoulder_width_ratio(),
             )
+            state.debug = gesture_filter.debug
 
             if gesture_event is not None:
                 event_sender.send(gesture_event)
@@ -116,6 +118,7 @@ def run_pipeline(config):
             state.infer_fps = infer_fps_meter.avg_fps
 
             annotated = draw_person_lock(input_tensor, person_lock)
+            annotated = draw_debug_panel(annotated, state.debug)
             overlay_event = state.last_event
             if overlay_event is not None and (
                 time.monotonic() - overlay_event.ts_sec > EVENT_OVERLAY_HOLD_SEC

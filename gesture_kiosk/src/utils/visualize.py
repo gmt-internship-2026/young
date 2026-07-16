@@ -33,6 +33,34 @@ def draw_person_lock(frame, person_lock):
 
 
 
+def draw_debug_panel(frame, debug):
+    """판정 계기판 — 좌하단에 내부값 표시 (실기 튜닝용, 2026-07-16).
+
+    SCALE=어깨 스케일 / SWIPE=진행도(±1.0 확정)+장전 상태 / NOD=목길이·기준선.
+    """
+    if not debug:
+        return frame
+    h_px = frame.shape[0]
+    armed_tag = "" if debug.get("is_armed", True) else " [REARM]"
+    side = debug.get("active_side") or "-"
+    source_tag = "(E)" if debug.get("active_source") == "elbow" else ""
+    lines = [
+        f"SCALE {debug.get('body_scale', 0):.2f}  ARM {side}{source_tag}{armed_tag}",
+        f"SWIPE x{debug.get('swipe_progress_x', 0):+.2f} y{debug.get('swipe_progress_y', 0):+.2f}",
+    ]
+    neck_ratio = debug.get("neck_ratio")
+    baseline = debug.get("nod_baseline")
+    if neck_ratio is not None and baseline is not None:
+        dip_tag = " DIP" if debug.get("is_dipping") else ""
+        nod_tag = " 1/2" if debug.get("has_first_nod") else ""
+        lines.append(f"NOD {neck_ratio:.2f}/{baseline:.2f}{dip_tag}{nod_tag}")
+    for line_idx, line in enumerate(lines):
+        y_px = h_px - 14 - 24 * (len(lines) - 1 - line_idx)
+        cv2.putText(frame, line, (10, y_px),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_COLOR, 1)
+    return frame
+
+
 def draw_status(frame, avg_fps, gesture_event=None):
     """FPS와 최근 확정 이벤트를 좌상단에 표시한다."""
     cv2.putText(

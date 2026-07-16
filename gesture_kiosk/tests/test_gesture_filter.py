@@ -328,6 +328,25 @@ class NodSelectTest(GestureFilterTestBase):
         self.assertIsNone(event)
 
 
+class DebugPanelTest(GestureFilterTestBase):
+    """계기판(debug) — 판정 내부값 노출 (실기 튜닝용, 판정에는 미사용)."""
+
+    def test_progress_and_scale_are_exposed(self):
+        self._feed_swipe("right", path(0.2, 0.35, 4, y_ratio=0.3))   # 임계 미달 진행
+        debug = self.filter.debug
+        self.assertGreater(debug["swipe_progress_x"], 0.3)   # 우측(+) 진행 중
+        self.assertEqual(debug["active_side"], "right")
+        self.assertTrue(debug["is_armed"])
+        self.assertAlmostEqual(debug["body_scale"], 0.25)    # 테스트 폴백 스케일
+
+    def test_disarmed_after_confirm_is_visible(self):
+        self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.3))    # 확정
+        self._feed(frame_count=1)
+        self.clock.tick(1.2)
+        self._feed_swipe("right", [(0.6, 0.3)])                      # 쿨다운 후 1프레임
+        self.assertFalse(self.filter.debug["is_armed"])              # 재장전 대기 노출
+
+
 class CooldownTest(GestureFilterTestBase):
     def test_cooldown_blocks_repeat_event(self):
         self._feed_nod_sequence(BASELINE_WARMUP + nod() + nod())   # select 확정

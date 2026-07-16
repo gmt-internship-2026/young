@@ -1,4 +1,4 @@
-"""inference 모듈 — 사람 포즈(RTMPose)를 추론해 얼굴·어깨·손목 키포인트를 얻는다.
+"""inference 모듈 — 사람 포즈(RTMPose)를 추론해 얼굴·어깨·손목·손끝 키포인트를 얻는다.
 
 2026-07-15 2차 개편으로 **유일한 추론 모델**이 됐다 — 쓸기(손목 궤적)·
 선택(고개 끄덕임)·사용자 잠금(얼굴)이 전부 이 포즈 키포인트로 판정된다
@@ -11,6 +11,9 @@ rtmlib(Apache-2.0, RTMPose 계열 + ONNX Runtime)로 바꿨다.
 내부망 반입 시에는 make_offline_bundle.bat이 이 캐시를 함께 담는다.
 
 키포인트 번호는 COCO 17 규격이다 (0=코, 1·2=눈, 3·4=귀, 5·6=어깨, 9·10=손목).
+pose_engine=wholebody(2026-07-16 손끝 추적)면 COCO-WholeBody 133 규격 — 앞 17개
+번호는 COCO 17과 동일해 기존 판정 코드가 그대로 돌고, 91~132가 양손 21점씩이다
+(손끝 인덱스는 person_lock 참고 — 유일한 사용처).
 주의: 이 라벨은 "화면에 보이는 사람" 기준의 해부학적 좌/우다. 거울 반전된
 프레임에서는 사용자의 실제 좌/우와 반대가 되며, 그 보정은 person_lock이 담당한다.
 """
@@ -54,7 +57,7 @@ class PersonPose:
 
     bbox: tuple                 # (x1, y1, x2, y2) 픽셀 좌표 — 키포인트 묶음 기반
     conf: float
-    keypoints: np.ndarray       # shape (17, 3) — (x_px, y_px, conf)
+    keypoints: np.ndarray       # shape (17|133, 3) — (x_px, y_px, conf). 133=wholebody 엔진
     head_points: list = field(default_factory=list)  # 신뢰도 통과한 머리 키포인트 [(x, y)]
 
     def keypoint(self, index, min_conf):
@@ -98,18 +101,29 @@ class PoseEstimator:
     """RTMPose 포즈 추정기. infer(frame) -> list[PersonPose]."""
 
     def __init__(self, config):
-        from rtmlib import Body  # 무거운 의존 — person_lock을 끈 환경에선 임포트하지 않는다
-
         model = config["model"]
         device = _resolve_device(model["device"])
         self._kpt_conf_threshold = config["person_lock"]["kpt_conf_threshold"]
-        # mode: lightweight(빠름) | balanced(기본) | performance(정확) — 첫 실행 시 자동 다운로드
-        self._body = Body(mode=model["pose_mode"], backend="onnxruntime", device=device)
-        logger.info("포즈 모델 로딩 완료: rtmlib Body(mode=%s, device=%s)", model["pose_mode"], device)
+        engine = model.get("pose_engine", "body")
+        # mode: lightweight(빠름) | balanced(기본) | performance(정확) — 첫 실행 시 자동 다운로드.
+        # rtmlib은 무거운 의존이라 사용 시점에 임포트한다 (단위 테스트가 가벼워지게)
+        if engine == "wholebody":
+            # 전신 133 키포인트 — 손끝 추적(2026-07-16). body보다 무겁다: 저사양 기기는 body 유지
+            from rtmlib import Wholebody
+
+            self._pose = Wholebody(mode=model["pose_mode"], backend="onnxruntime", device=device)
+        else:
+            from rtmlib import Body
+
+            self._pose = Body(mode=model["pose_mode"], backend="onnxruntime", device=device)
+        logger.info(
+            "포즈 모델 로딩 완료: rtmlib %s(mode=%s, device=%s)",
+            "Wholebody" if engine == "wholebody" else "Body", model["pose_mode"], device,
+        )
 
     def infer(self, frame):
         """프레임에서 사람 포즈를 추정한다."""
-        keypoints_xy, scores = self._body(frame)  # (N,17,2), (N,17)
+        keypoints_xy, scores = self._pose(frame)  # (N,17|133,2), (N,17|133)
         persons = []
         for xy, score in zip(keypoints_xy, scores):
             keypoints = np.concatenate([xy, score[:, None]], axis=1).astype(np.float32)
@@ -124,7 +138,8 @@ class PoseEstimator:
             persons.append(
                 PersonPose(
                     bbox=bbox,
-                    conf=float(score.mean()),
+                    # 몸 17점만 평균 — wholebody의 얼굴 68점이 사람 신뢰도를 지배하지 않게
+                    conf=float(score[:17].mean()),
                     keypoints=keypoints,
                     head_points=head_points,
                 )

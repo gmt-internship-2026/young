@@ -9,8 +9,8 @@
 2. 최고 점수 후보가 lock_frame_count 프레임 연속이면 그 사람에게 잠금
 3. 잠금 중에는 follow_radius 안에서 같은 사람을 추적, release_sec 이상
    사라지면 해제하고 다음 사용자를 받는다
-4. 잠긴 사용자의 쓸기 추적점(손목 — 없으면 팔꿈치 폴백)·어깨너비(임계 정규화 자)를
-   gesture_filter에 공급한다
+4. 잠긴 사용자의 쓸기 추적점(손끝 → 손목 → 팔꿈치 3단 폴백)·어깨너비(임계
+   정규화 자)를 gesture_filter에 공급한다
 
 거울 반전 주의: 포즈 모델의 왼/오른손목 라벨은 화면에 보이는 해부학 기준이라
 mirror=true 프레임에서는 사용자 실제 좌/우와 반대다. 이 모듈이 뒤집어
@@ -34,6 +34,14 @@ KPT_LEFT_ELBOW = 7
 KPT_RIGHT_ELBOW = 8
 KPT_LEFT_WRIST = 9
 KPT_RIGHT_WRIST = 10
+
+# COCO-WholeBody 133 규격의 손 키포인트 (pose_engine=wholebody일 때만 존재 —
+# 몸 0~16은 COCO 17과 동일). 손 21점 = 손목뿌리 1 + 손가락 4점×5이고,
+# 왼손이 91~111, 오른손이 112~132 — 각 손끝은 엄지~새끼 순서로 뿌리+4·8·12·16·20
+WHOLEBODY_KPT_COUNT = 133
+LEFT_HAND_TIP_INDICES = (95, 99, 103, 107, 111)
+RIGHT_HAND_TIP_INDICES = (116, 120, 124, 128, 132)
+MIN_CONFIDENT_TIP_COUNT = 3   # 손끝 평균 인정 최소 개수 — 오검출 손가락 1~2개가 평균을 끌고 가는 것 방지
 
 FACE_BOX_PAD_RATIO = 0.6      # 머리 키포인트 묶음 -> 얼굴 박스로 넓히는 패딩 비율
 SHARPNESS_SQUASH = 300.0      # 라플라시안 분산 정규화 상수 (v/(v+K) — 0~1로 압축)
@@ -188,15 +196,20 @@ class PersonLock:
     def user_swipe_points(self):
         """잠긴 사용자의 쓸기 추적점 — 사용자 기준 좌/우: {"left": (출처, (x,y)) | None, ...}.
 
-        출처 = "wrist" | "elbow". 손이 없는(절단) 사용자는 포즈 모델의 손목
-        키포인트 신뢰도가 낮게 나오므로, 손목이 신뢰도 미달이면 팔꿈치로 폴백해
-        상완만 있어도 쓸기가 된다 (2026-07-16 범용 설계 보완 — 사용자 지적).
+        출처 = "hand" | "wrist" | "elbow" — 손끝 → 손목 → 팔꿈치 3단 폴백.
+        손끝(wholebody 엔진의 손끝 5점 평균)은 지렛대가 손목보다 길어 손목 스냅
+        같은 작은 동작도 임계를 넘는다 (2026-07-16 확장 — 사용자 지적). body 17
+        엔진·손 미검출이면 손목으로, 손목마저 신뢰도 미달(손 절단 사용자 등)이면
+        팔꿈치로 내려가 상완만 있어도 쓸기가 된다 (범용 설계).
         출처가 바뀌면 gesture_filter가 궤적을 리셋한다 (두 점의 좌표가 달라서).
         """
         if self.locked_person is None:
             return {"left": None, "right": None}
 
-        def swipe_point(wrist_idx, elbow_idx):
+        def swipe_point(tip_indices, wrist_idx, elbow_idx):
+            hand_tip = self._hand_tip_point(tip_indices)
+            if hand_tip is not None:
+                return ("hand", hand_tip)
             wrist = self.locked_person.keypoint(wrist_idx, self._kpt_conf)
             if wrist is not None:
                 return ("wrist", wrist)
@@ -206,9 +219,29 @@ class PersonLock:
             return None
 
         return user_side_points(
-            swipe_point(KPT_LEFT_WRIST, KPT_LEFT_ELBOW),
-            swipe_point(KPT_RIGHT_WRIST, KPT_RIGHT_ELBOW),
+            swipe_point(LEFT_HAND_TIP_INDICES, KPT_LEFT_WRIST, KPT_LEFT_ELBOW),
+            swipe_point(RIGHT_HAND_TIP_INDICES, KPT_RIGHT_WRIST, KPT_RIGHT_ELBOW),
             self._is_mirror,
+        )
+
+    def _hand_tip_point(self, tip_indices):
+        """신뢰도 통과한 손끝들의 평균 좌표 — 미달이면 None (손목 폴백).
+
+        단일 손끝 대신 평균인 이유: 손가락 간 오인(엄지↔새끼 ≈ 손 너비)이
+        순간이동 궤적을 만든다. MIN_CONFIDENT_TIP_COUNT 미만이면 손 검출이
+        불확실한 것이므로 안정적인 손목으로 내려간다 (멀어서 손이 작게 잡히면
+        자연히 손목 추적이 된다 — 거리별 자동 강등).
+        """
+        person = self.locked_person
+        if len(person.keypoints) < WHOLEBODY_KPT_COUNT:
+            return None   # body 17 엔진 — 손 키포인트 자체가 없다
+        tips = [person.keypoint(index, self._kpt_conf) for index in tip_indices]
+        tips = [tip for tip in tips if tip is not None]
+        if len(tips) < MIN_CONFIDENT_TIP_COUNT:
+            return None
+        return (
+            sum(x for x, _ in tips) / len(tips),
+            sum(y for _, y in tips) / len(tips),
         )
 
     def user_shoulder_width_ratio(self):

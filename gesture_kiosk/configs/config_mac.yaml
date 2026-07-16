@@ -14,6 +14,7 @@ camera:
 
 model:
   # 라이선스(2026-07-15 2차): rtmlib RTMPose(Apache-2.0) 포즈 단일 모델. 맥은 CPU 실행
+  pose_engine: wholebody  # 전신 133 — 손끝 추적 (config.yaml 주석 참고). 맥 CPU로 무거우면 body
   device: auto            # 맥: CUDA 없음 -> 자동으로 cpu
   use_tensorrt: false
   pose_mode: lightweight  # ★ 맥 CPU — 가벼운 포즈 모델로 개발 확인
@@ -45,7 +46,7 @@ gestures:
     double_return_min_shoulder: 0.15    # 2연속 전 복귀 확인 — config.yaml 주석 참고
     body_scale:
       fallback_ratio: 0.22
-      min_ratio: 0.08
+      min_ratio: 0.05         # 원거리 완화 2026-07-16 — config.yaml 주석 참고
       max_ratio: 0.32         # 근거리 상한 — config.yaml 주석 참고
       alpha: 0.1
 announce:

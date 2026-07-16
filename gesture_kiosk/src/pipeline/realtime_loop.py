@@ -2,7 +2,7 @@
 
 프레임 흐름 (윈도우 + NVIDIA GPU 기준 — 2026-07-15 2차: 포즈 단일 엔진):
   카메라(스레드) → 거울 반전 → 사람 포즈(RTMPose) → 사용자 잠금(person_lock)
-  → 동작 판정(gesture_filter: 손목 쓸기 궤적 — 토크백식 1회/2연속 분기)
+  → 동작 판정(gesture_filter: 손끝·손목 쓸기 궤적 — 토크백식 1회/2연속 분기)
   → 이벤트 전송 + 음성 안내
 
 2026-07-16: 주민등록증 OCR 기능 제거 — 제스처 집중(사용자 결정). 개인정보
@@ -94,7 +94,7 @@ def run_pipeline(config):
                 person_lock.enabled and person_lock.locked_person is not None
             )
 
-            # 쓸기 판정용 추적점(손목 — 없으면 팔꿈치) — x·y 모두 프레임 폭으로 나눈
+            # 쓸기 판정용 추적점(손끝 → 손목 → 팔꿈치 폴백) — x·y 모두 프레임 폭으로 나눈
             # 등방 좌표 (어깨너비 정규화와 단위 일치, 2026-07-16)
             swipe_points_ratio = {
                 side: None if info is None

@@ -1,4 +1,4 @@
-"""postprocess 모듈 — 포즈 신호(손목 궤적)를 동작 이벤트로 확정한다.
+"""postprocess 모듈 — 포즈 신호(손끝·손목 궤적)를 동작 이벤트로 확정한다.
 
 동작 체계(2026-07-16 확정 — 확인·선택 통합, 사용자 결정):
 - move_left / move_right : 팔을 좌/우로 쓸기 — 포커스 1칸 이동 (한 번에 한 팔만 인식, 즉시)
@@ -132,7 +132,7 @@ class GestureFilter:
             swipe["axis_dominance"], swipe["min_track_frames"],
         )
         self._active_side = None     # 현재 인식 중인 팔 ("left"/"right")
-        self._active_source = None   # 그 팔의 추적점 출처 ("wrist"/"elbow")
+        self._active_source = None   # 그 팔의 추적점 출처 ("hand"/"wrist"/"elbow")
 
         # 수직 쓸기 1회/2연속 분기 — 1회째는 보류했다가 판정 창이 지나면 단발로 확정
         self._double_within_sec = swipe["double_within_sec"]
@@ -163,7 +163,7 @@ class GestureFilter:
         """포즈 신호 -> gesture_event | None (기획서 4.6 계약).
 
         swipe_points: {"left": (출처, (x_ratio, y_ratio)) | None, ...} — 잠긴 사용자의
-        쓸기 추적점(person_lock.user_swipe_points — 손목, 없으면 팔꿈치 폴백).
+        쓸기 추적점(person_lock.user_swipe_points — 손끝 → 손목 → 팔꿈치 폴백).
         사용자 기준 좌/우, **x·y 모두 프레임 폭으로 나눈** 비율 좌표(등방 단위 —
         어깨너비 정규화와 단위를 맞추기 위해, 2026-07-16).
         shoulder_width_ratio: 어깨너비/프레임폭(person_lock.user_shoulder_width_ratio)
@@ -201,7 +201,7 @@ class GestureFilter:
         else:
             source, point = point_info
             if side != self._active_side or source != self._active_source:
-                self._swipe_tracker.reset()   # 팔 교체·손목↔팔꿈치 전환 — 궤적 연결 금지
+                self._swipe_tracker.reset()   # 팔 교체·추적점 출처 전환(손끝↔손목 등) — 궤적 연결 금지
                 self._active_side = side
                 self._active_source = source
             gain = self._elbow_gain if source == "elbow" else 1.0

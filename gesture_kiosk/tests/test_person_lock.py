@@ -13,7 +13,8 @@ import numpy as np
 
 from src.postprocess.person_lock import (
     KPT_LEFT_ELBOW, KPT_LEFT_SHOULDER, KPT_LEFT_WRIST, KPT_NOSE,
-    KPT_RIGHT_ELBOW, KPT_RIGHT_SHOULDER, KPT_RIGHT_WRIST, PersonLock,
+    KPT_RIGHT_ELBOW, KPT_RIGHT_SHOULDER, KPT_RIGHT_WRIST,
+    LEFT_HAND_TIP_INDICES, RIGHT_HAND_TIP_INDICES, WHOLEBODY_KPT_COUNT, PersonLock,
 )
 
 FRAME_WIDTH_PX = 1280
@@ -25,16 +26,23 @@ class FakePerson:
 
     def __init__(self, center_x, center_y, size_px=200.0,
                  left_wrist=None, right_wrist=None, left_elbow=None, right_elbow=None,
-                 nose=None, left_shoulder=None, right_shoulder=None, head_points=None):
+                 nose=None, left_shoulder=None, right_shoulder=None, head_points=None,
+                 left_hand_tips=None, right_hand_tips=None):
         half = size_px / 2.0
         self.bbox = (center_x - half, center_y - half, center_x + half, center_y + half)
         self.conf = 0.9
-        self.keypoints = np.zeros((17, 3))
+        # 손끝을 주면 wholebody(133) 사람, 아니면 body(17) 사람 — 엔진별 형상 모사
+        kpt_count = WHOLEBODY_KPT_COUNT if (left_hand_tips or right_hand_tips) else 17
+        self.keypoints = np.zeros((kpt_count, 3))
         for index, point in ((KPT_LEFT_WRIST, left_wrist), (KPT_RIGHT_WRIST, right_wrist),
                              (KPT_LEFT_ELBOW, left_elbow), (KPT_RIGHT_ELBOW, right_elbow),
                              (KPT_NOSE, nose), (KPT_LEFT_SHOULDER, left_shoulder),
                              (KPT_RIGHT_SHOULDER, right_shoulder)):
             if point is not None:
+                self.keypoints[index] = (*point, 0.9)
+        for tips, tip_indices in ((left_hand_tips, LEFT_HAND_TIP_INDICES),
+                                  (right_hand_tips, RIGHT_HAND_TIP_INDICES)):
+            for index, point in zip(tip_indices, tips or []):
                 self.keypoints[index] = (*point, 0.9)
         self.head_points = head_points if head_points is not None else [
             (center_x - 20, center_y - half + 30), (center_x + 20, center_y - half + 30)
@@ -178,6 +186,42 @@ class SwipePointTest(unittest.TestCase):
     def test_missing_arm_returns_none(self):
         lock = self._locked(right_wrist=(800, 400))   # 모델 왼팔 키포인트 전무
         self.assertIsNone(lock.user_swipe_points()["right"])
+
+
+class FingertipTest(unittest.TestCase):
+    """손끝 추적점 — wholebody 엔진의 손끝 5점 평균, 미달 시 손목 폴백 (2026-07-16)."""
+
+    def _locked(self, **person_kwargs):
+        lock, clock = make_lock(make_config(mirror=True))
+        person = FakePerson(640, 360, **person_kwargs)
+        lock_person(lock, clock, person)
+        return lock
+
+    def test_fingertips_win_over_wrist(self):
+        # 모델 왼손 — 손끝 5점과 손목이 다 보이면 손끝 평균이 추적점
+        tips = [(500, 300), (510, 300), (520, 300), (530, 300), (540, 300)]
+        lock = self._locked(left_wrist=(505, 400), left_hand_tips=tips)
+        source, point = lock.user_swipe_points()["right"]   # mirror — 사용자 오른손
+        self.assertEqual(source, "hand")
+        self.assertAlmostEqual(point[0], 520.0)             # 5점 x 평균
+        self.assertAlmostEqual(point[1], 300.0)
+
+    def test_too_few_tips_fall_back_to_wrist(self):
+        # 신뢰도 통과 손끝이 2개뿐(< MIN_CONFIDENT_TIP_COUNT) — 손이 불확실, 손목으로
+        lock = self._locked(left_wrist=(505, 400), left_hand_tips=[(500, 300), (510, 300)])
+        self.assertEqual(lock.user_swipe_points()["right"], ("wrist", (505.0, 400.0)))
+
+    def test_body17_person_uses_wrist(self):
+        # body 엔진(17 키포인트) 사람 — 손 키포인트 자체가 없어 손목 추적
+        lock = self._locked(left_wrist=(505, 400))
+        self.assertEqual(lock.user_swipe_points()["right"], ("wrist", (505.0, 400.0)))
+
+    def test_tips_without_wrist_still_track(self):
+        # 손끝은 보이는데 손목이 가려진 경우(책상 등) — 손끝만으로 추적된다
+        tips = [(500, 300), (510, 300), (520, 300), (530, 300), (540, 300)]
+        lock = self._locked(left_hand_tips=tips)
+        source, _ = lock.user_swipe_points()["right"]
+        self.assertEqual(source, "hand")
 
 
 class UserShoulderWidthRatioTest(unittest.TestCase):

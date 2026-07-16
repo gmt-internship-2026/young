@@ -226,6 +226,19 @@ class SwipeGestureTest(GestureFilterTestBase):
         self.assertIsNotNone(event)
         self.assertEqual(event.class_name, "go_home")
 
+    def test_return_after_pending_go_back_is_swallowed(self):
+        # go_back(보류 만료 확정) 후 팔을 제자리로 올리는 복귀가 select로 오발되지 않는다
+        # (2026-07-16 3차 실기 증상 — 삼킴 창을 확정 시점 기준으로 연장)
+        self._feed_swipe("right", path(0.3, 0.8, 8, x_ratio=0.5))     # 아래 1회째 -> 보류
+        event = self._feed(
+            swipe_points={"right": ("wrist", (0.5, 0.8)), "left": None}, frame_count=60,
+        )                                                             # 판정 창 만료 대기
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "go_back")
+        self.clock.tick(1.1)                                          # 쿨다운 경과, 팔은 획 끝 유지
+        event = self._feed_swipe("right", path(0.8, 0.3, 12, x_ratio=0.5))   # 복귀(위)
+        self.assertIsNone(event)                                      # 삼킴 — select 오발 금지
+
     def test_swallow_expires(self):
         # 삼킴 창(2.5초)이 지난 뒤의 좌 쓸기는 복귀가 아니다 — 정상 발화
         self._swipe_right_then_pass_cooldown()

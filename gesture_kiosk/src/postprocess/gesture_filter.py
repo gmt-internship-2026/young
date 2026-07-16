@@ -186,7 +186,13 @@ class GestureFilter:
             direction = self._pending_direction
             pending_side = self._pending_side
             self._clear_pending()
-            self._swallow_direction = None   # 복귀는 보류 중에 이미 소화됐다 — 다음 동작 보호
+            if self._swallow_direction is not None:
+                # 삼킴이 미소진 = 복귀가 아직 안 왔다(팔이 획 끝에 남아 있다) — 확정 후
+                # 팔을 제자리로 되돌리는 동작이 반대 방향으로 오발되지 않게 삼킴 창을
+                # 확정 시점 기준으로 연장한다 (2026-07-16 3차: go_back 확정 뒤 쿨다운이
+                # 지나고 팔을 올리는 복귀가 select(확인)로 오발되던 실기 증상 수정.
+                # 복귀가 보류 중에 이미 왔다면 삼킴이 소진돼 이 연장은 일어나지 않는다)
+                self._swallow_deadline_sec = now_sec + self._return_suppress_sec
             event = self._confirm(
                 SINGLE_EVENT_BY_DIRECTION[direction], 1.0, now_sec, hand_side=pending_side
             )

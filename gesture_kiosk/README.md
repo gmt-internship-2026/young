@@ -1,7 +1,7 @@
 # gesture_kiosk — 제스처 인식 배리어프리 민원발급기 (추론)
 
-(주)광명테크 인턴 프로젝트. USB 카메라 1대로 손 제스처와 주민등록증을 실시간
-인식해 키오스크 프로그램으로 이벤트를 전달한다. **기획서(기획서.docx)의
+(주)광명테크 인턴 프로젝트. USB 카메라 1대로 손 제스처를 실시간 인식해
+키오스크 프로그램으로 이벤트를 전달한다. **기획서(기획서.docx)의
 2.3 디렉터리 구조와 4장 코딩 컨벤션을 따른다.**
 
 - 실행 환경: **윈도우 CPU(GPU 불필요) + Python 3.11.5** — CPU 추론판 (정부 민원발급기)
@@ -33,7 +33,6 @@ run.bat            :: 실행 — 브라우저 http://localhost:5000
 | go_back | 팔을 **아래로 쓸기** | 〃 | 이전 화면 |
 | go_home | 팔을 **위로 쓸기** | 〃 | 처음 화면으로 |
 | select | **손가락 1개(엄지 제외)를 0.6초 이상 들기** | 잠긴 사용자 bbox 크롭 → MediaPipe 손 랜드마크 | 선택·확인 |
-| fill_id_fields | 주민등록증 제시 | OCR 모드에서 EasyOCR 판독 | 이름·주민번호 자동 입력 |
 
 - 쓸기는 손이 아니라 **손목 키포인트(포즈)** 궤적이라 손·손가락이 없어도 동작하고 —
   손목 키포인트가 신뢰도 미달(절단 등)이면 **팔꿈치로 자동 폴백**(elbow_gain 보정,
@@ -55,7 +54,6 @@ run.bat            :: 실행 — 브라우저 http://localhost:5000
   얼굴 선명도×크기) → 손목 좌/우 보정 → 잠긴 사용자 bbox 크롭 → 손 랜드마크
   (MediaPipe HandLandmarker) → 동작 판정(gesture_filter: 손목 쓸기 궤적 + 손가락
   1개 인식) → 이벤트 전송(event_sender) + 음성 안내(announce)
-주민등록증 OCR(easyocr)은 별도 워커 스레드 — UI가 /ocr/start로 요청할 때만
 ```
 
 ## 폴더 구조 (기획서 2.3 + 신규 모듈)
@@ -72,13 +70,12 @@ gesture_kiosk/
 │   ├─ inference/hand_estimator.py   # 손 랜드마크 (MediaPipe HandLandmarker) — 선택 판정
 │   ├─ postprocess/person_lock.py    # 사용자 잠금 + 쓸기 추적점(손목→팔꿈치 폴백)
 │   ├─ postprocess/gesture_filter.py # 동작 판정 — 손목 쓸기 궤적 + 손가락 1개 인식(선택)
-│   ├─ ocr/idcard_reader.py          # 주민등록증 이름·주민번호 (마스킹 로그)
 │   ├─ announce/announcer.py         # 토크백 TTS (pyttsx3 — SAPI/nsss)
 │   ├─ pipeline/realtime_loop.py     # 실시간 루프 조립 (멀티스레딩)
 │   ├─ pipeline/event_sender.py      # ★ 회사 프로그램 연동 접점 (console/udp)
-│   └─ pipeline/demo_server.py       # ★ 예시 UI 서버 + /announce·/ocr 계약
+│   └─ pipeline/demo_server.py       # ★ 예시 UI 서버 + /announce 계약
 ├─ scripts/                 # run_demo · download_weights · benchmark · smoke_test
-├─ tests/                   # 단위 테스트 47건 (카메라·모델 없이 실행 가능)
+├─ tests/                   # 단위 테스트 35건 (카메라·모델 없이 실행 가능)
 ├─ demo_ui/index.html       # ★ 예시 민원발급기 화면 (회사 UI 수령 시 교체)
 └─ docs/TODO.md             # 작업 분해 및 회사 확인 필요 항목
 ```
@@ -92,29 +89,28 @@ gesture_kiosk/
 | `run.bat` / `python scripts/run_demo.py` | 파이프라인 + 예시 UI (시연용) |
 | `run.bat --headless` | 파이프라인만 — 이벤트는 `event_output` 설정대로 전송 |
 | `python scripts/benchmark.py` | 추론 단독 FPS 측정 (기획서 6.1 — KPI 30 FPS) |
-| `python -m unittest discover tests -v` | 판정·잠금·OCR 파싱·단위 테스트 (43건) |
+| `python -m unittest discover tests -v` | 판정·잠금 단위 테스트 (35건) |
 
 ## 회사 프로그램(UI) 연동 계약
 
 1. 이벤트(엔진→UI): `event_output.mode`(console/udp) 또는 `/data` 폴링 —
    JSON `{"class_name": "move_right", "conf": 0.87, "ts_sec": ..., "hand_side": "right"}`
 2. 음성 안내(UI→엔진): `POST /announce {"text": "발급하기 버튼"}` — 포커스 항목을 TTS로
-3. 주민등록증(UI→엔진): `POST /ocr/start` → 성공 시 `fill_id_fields` 이벤트(data에 이름·주민번호)
-4. 새 수신 규격 확정 시 `event_sender.py`에 Sender 1개 추가 — 파이프라인 수정 불필요
-5. 연동 완료 후 `demo_server.py`·`demo_ui/`는 제거
+3. 새 수신 규격 확정 시 `event_sender.py`에 Sender 1개 추가 — 파이프라인 수정 불필요
+4. 연동 완료 후 `demo_server.py`·`demo_ui/`는 제거
 
 ## 개인정보·라이선스 주의
 
-- **주민등록번호 처리 법적 근거(개인정보보호법 제24조의2) — 회사 확인 필수** (docs/TODO.md №11).
-  엔진은 프레임·인식값을 저장하지 않고 로그는 마스킹한다 (설치가이드.md F절)
-- **라이선스 (2026-07-15 2차 기준)**: 스택 전체가 상업 사용 가능 + 코드 공개(카피레프트) 의무 없음 —
-  rtmlib/RTMPose(Apache-2.0) · ONNX Runtime(MIT) · EasyOCR(Apache-2.0) ·
-  pyttsx3(MPL-2.0 — 무수정 사용이라 공개 의무 없음). 추론 모델이 포즈 하나뿐이라
-  검토 대상 자체가 최소화됐다 (MediaPipe·자체 학습 CNN도 2차에서 제거).
+- 주민등록증 인식(OCR) 기능은 **2026-07-16 전면 제거됐다** — 계획 변경으로 더는
+  개인정보(주민등록번호) 처리 자체가 없다. 관련 법적 근거 검토 항목(docs/TODO.md
+  №11)도 해당 없음으로 종료.
+- **라이선스**: 스택 전체가 상업 사용 가능 + 코드 공개(카피레프트) 의무 없음 —
+  rtmlib/RTMPose(Apache-2.0) · MediaPipe(Apache-2.0) · ONNX Runtime(MIT) ·
+  pyttsx3(MPL-2.0 — 무수정 사용이라 공개 의무 없음).
   Apache/MIT의 라이선스 문서 동봉(배포물 내 고지)은 통상 절차 — 제품 화면 표시 의무는 없다.
   구 HaGRID YOLOv10 ONNX 엔진(AGPL 리스크)은 코드·가중치 모두 제거 완료 (기획서 9장 №9 해소)
 
 ## 참고 링크
 
 - rtmlib (RTMPose, Apache-2.0): https://github.com/Tau-J/rtmlib
-- EasyOCR: https://github.com/JaidedAI/EasyOCR
+- MediaPipe: https://github.com/google-ai-edge/mediapipe

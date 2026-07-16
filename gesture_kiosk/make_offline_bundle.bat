@@ -25,7 +25,7 @@ if not exist venv_bundle ( %PY_CMD% -m venv venv_bundle || exit /b 1 )
 call venv_bundle\Scripts\activate.bat
 python -m pip install --upgrade pip >nul
 
-echo [INFO] requirements 휠 다운로드 (torch CPU·onnxruntime·rtmlib 포함)...
+echo [INFO] requirements 휠 다운로드 (onnxruntime·rtmlib·mediapipe 포함)...
 pip download -r requirements.txt -d wheelhouse || exit /b 1
 echo [INFO] pip 자체도 담는다 (구버전 pip 대비)
 pip download pip -d wheelhouse
@@ -34,11 +34,6 @@ REM ---- 2) 포즈(rtmlib) 모델 캐시 수집 --------------------------
 pip install --no-index --find-links wheelhouse -r requirements.txt >nul 2>&1 || pip install -r requirements.txt >nul
 python scripts\download_weights.py || exit /b 1
 xcopy /y /q /e "%USERPROFILE%\.cache\rtmlib" bundle_models\rtmlib\ >nul
-
-REM ---- 3) EasyOCR 한국어 모델 수집 ----------------------------
-echo [INFO] EasyOCR 모델 1회 다운로드 (수 분)...
-python -c "import easyocr; easyocr.Reader(['ko','en'], gpu=False)" || exit /b 1
-xcopy /y /q /e "%USERPROFILE%\.EasyOCR\model" bundle_models\easyocr\ >nul
 
 echo.
 echo [DONE] 번들 완성 — 이 프로젝트 폴더 전체를 zip으로 묶어 대상 PC로 옮긴 뒤

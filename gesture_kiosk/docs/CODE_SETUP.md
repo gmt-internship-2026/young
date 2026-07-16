@@ -50,13 +50,7 @@ pip install -r requirements.txt
 ```
 
 - rtmlib(포즈 — 쓸기·잠금)·mediapipe(손 — 선택 판정, 2026-07-16 재도입)·onnxruntime(실행기)·
-  opencv(카메라)·fastapi(서버)·easyocr(주민등록증 OCR) 등이 한 번에 설치된다
-  (약 2GB, 수 분 소요) — 라이선스 검토 필요 스택 (docs/TODO.md №9)
-- PyTorch는 easyocr가 의존성으로 끌고 온다 (OCR용 — 제스처·포즈는 torch 불필요)
-- 윈도우 + NVIDIA GPU에서 OCR까지 GPU로 확인하려면 CUDA torch를 별도 설치
-  (배포 기준 cu128 — install.bat이 자동 처리)
-- 리눅스 x86 PC는 기본 pip torch에 CUDA가 이미 포함 — NVIDIA 드라이버만 있으면 끝
-  (`nvidia-smi`가 정상 출력되는지, `python3 -c "import torch; print(torch.cuda.is_available())"`가 True인지 확인)
+  opencv(카메라)·fastapi(서버) 등이 한 번에 설치된다 — 라이선스 검토 완료 스택 (docs/TODO.md №9)
 
 ## 6. 동작 확인 (순서대로)
 
@@ -74,7 +68,7 @@ python scripts/run_demo.py
 #   macOS가 카메라 권한을 물으면 "허용"
 ```
 
-③에서 팔을 좌/우로 쓸면 `move_left`/`move_right`, 고개를 두 번 꾸벅하면 `select`가 뜨면 전체 파이프라인 정상.
+③에서 팔을 좌/우로 쓸면 `move_left`/`move_right`, 손가락 1개를 들면 `select`가 뜨면 전체 파이프라인 정상.
 
 ## 문제 해결
 
@@ -83,8 +77,6 @@ python scripts/run_demo.py
 | `ModuleNotFoundError: yaml` 등 | 가상환경 미활성 — 터미널에 `(venv)` 있는지 확인 후 `source venv/bin/activate` |
 | VS Code가 임포트에 빨간 줄 | 인터프리터가 venv가 아님 — 4단계의 Select Interpreter 다시 |
 | 카메라가 안 열림 | 맥: 시스템 설정 → 개인정보 보호 → 카메라에서 터미널/VS Code 허용. 리눅스: `sudo usermod -aG video $USER` 후 재로그인. 외장 캠이면 `config.yaml`의 `camera.device_id`를 1, 2로 변경 |
-| 맥에서 MPS 관련 연산 오류 | 터미널에서 `export PYTORCH_ENABLE_MPS_FALLBACK=1` 후 재실행 (미지원 연산만 CPU로 우회) |
-| 추론이 너무 느림 | `python3 -c "import torch; print(torch.backends.mps.is_available())"` 가 True인지 확인 |
 
 ## 개발 시 지켜야 할 것 (기획서 4장)
 

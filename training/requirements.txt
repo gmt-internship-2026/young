@@ -4,4 +4,3 @@ ultralytics==8.4.91
 opencv-python==5.0.0.93
 numpy==2.2.6
 pyyaml==6.0.3
-pillow==12.3.0          # idcard 합성 데이터 생성용

@@ -4,7 +4,8 @@
 기본이다. 아래 상황이 **실측으로 확인될 때만** 이 폴더로 학습을 시작한다.
 
 1. 신규 제스처 스펙(주먹→펴기 등)의 인식 정확도가 KPI(85%) 미달
-2. 주민등록증 카드/숫자 인식이 현장 조건(조명·거리)에서 미달
+
+(주민등록증 인식 학습 항목은 2026-07-16 OCR 기능 전면 제거로 삭제됨 — idcard/ 폴더도 함께 삭제)
 
 ## 환경 — OS 무관, 결과만 이식
 
@@ -32,13 +33,10 @@
 training/
 ├─ setup_windows.bat / setup_mac.sh / setup_linux.sh   # OS별 환경 구성 (코드는 공통)
 ├─ requirements.txt        # 학습 공통 의존성 (torch는 OS별 스크립트가 설치)
-├─ gesture/                # 1) 제스처 파인튜닝
+├─ gesture/                # 제스처 파인튜닝
 │   ├─ collect_frames.py   #    카메라로 학습 프레임 수집 (라벨링 전 단계)
 │   ├─ dataset_template.yaml  # YOLO 데이터셋 양식 — 라벨링 후 경로 채움
 │   └─ train.py            #    파인튜닝 (device 자동: cuda→mps→cpu)
-├─ idcard/                 # 2) 주민등록증 인식 학습 (조건부)
-│   ├─ README.md           #    접근 방향 — 합성 데이터 우선 (개인정보 회피)
-│   └─ make_synthetic.py   #    합성 카드 이미지 생성 골격 (가짜 이름·번호)
 └─ export/
     └─ to_inference.py     # 학습 결과 → gesture_kiosk/models/weights (기획서 4.8 명명규칙)
 ```
@@ -62,6 +60,4 @@ python export/to_inference.py --weights runs/pose/train/weights/best.pt --datase
 ## 주의
 
 - 데이터 수집·라벨링 시 **인물 단위 분할**(기획서 5.4) — 같은 사람이 train/val에 겹치면 안 됨
-- 주민등록증 학습 데이터는 **실물 촬영 금지 원칙** — 합성(idcard/make_synthetic.py) 우선,
-  실물이 불가피하면 회사 개인정보 절차(№11) 승인 후
 - HaGRID(CC BY-SA 4.0 변형)·ultralytics(AGPL-3.0) 라이선스 — 파인튜닝 결과물에도 승계됨 (№9)

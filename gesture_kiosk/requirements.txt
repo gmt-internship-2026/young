@@ -10,19 +10,18 @@
 #   강점이 있는 MediaPipe Tasks API(HandLandmarker)를 선택. Apache-2.0이라
 #   기존 "카피레프트 없음" 결론에 영향 없음.
 #
-# torch / torchvision은 EasyOCR(주민등록증)용 — 윈도우 PyPI 기본 휠이 CPU 빌드라 그대로 쓴다
-# (GPU판과 달리 별도 인덱스 설치·onnxruntime GPU판 복구 절차가 필요 없다)
-torch==2.11.0                      # EasyOCR용 (윈도우 기본 휠 = CPU 빌드)
-torchvision==0.26.0
+# 2026-07-16 주민등록증 인식(OCR) 기능 전면 제거 — easyocr과 그 전용 의존성인
+#   torch/torchvision을 함께 제거한다(계획 변경, 설치 용량 ~2GB 절감).
 onnxruntime==1.23.2                # CPU 실행 — 전 플랫폼 공통
 rtmlib==0.0.15                     # RTMPose 포즈 추정 (Apache-2.0) — 사용자 잠금용
 mediapipe==0.10.35                 # 손 랜드마크(HandLandmarker Tasks API, Apache-2.0) — 선택(select) 판정용
-opencv-python==5.0.0.93
-opencv-python-headless==5.0.0.93   # easyocr 의존성 — opencv-python과 반드시 같은 버전 (cv2 충돌 방지)
+opencv-python==5.0.0.93            # rtmlib 의존성 — 같은 "cv2" 경로를 공유하는 opencv
+opencv-contrib-python==5.0.0.93    # mediapipe 의존성 — 위와 반드시 같은 버전 (cv2 충돌 방지).
+                                    #   설치/제거를 따로 하면 파일이 뒤섞여 깨질 수 있다
+                                    #   (2026-07-16 실측: cv2.dnn 소실) — 한 번에 같이 설치할 것
 numpy==2.2.6
 pyyaml==6.0.3
 fastapi==0.139.0
 uvicorn==0.51.0
 psutil==7.2.2
-easyocr==1.7.2                     # 주민등록증 OCR (ocr.enabled=false면 미사용)
 pyttsx3==2.99                      # 음성 안내 TTS — 윈도우 SAPI (announce.backend=tts) — MPL-2.0: 무수정 사용이라 공개 의무 없음

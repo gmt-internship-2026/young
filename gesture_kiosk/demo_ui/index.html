@@ -32,31 +32,20 @@
   .menu { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
   .item { background: var(--panel2); border: 2px solid var(--line); border-radius: 10px; padding: 22px 10px; text-align: center; font-size: 14px; transition: 0.15s; }
   .item.hl { border-color: var(--focus); box-shadow: 0 0 12px rgba(77,163,255,0.35); }
-  .idform { display: flex; flex-direction: column; gap: 12px; margin-bottom: 14px; }
-  .idform label { font-size: 13px; color: var(--dim); }
-  .idform .field { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 16px; letter-spacing: 1px; min-height: 44px; }
-  .idform .field.filled { border-color: var(--accent); }
-  .scan-note { font-size: 13px; color: var(--warn); line-height: 1.7; margin-bottom: 14px; }
-  .btnrow { display: flex; gap: 10px; }
-  .btn { flex: 1; background: var(--panel2); border: 2px solid var(--line); border-radius: 10px; padding: 16px; text-align: center; font-weight: 700; }
-  .btn.hl { border-color: var(--focus); box-shadow: 0 0 12px rgba(77,163,255,0.35); }
   .done { text-align: center; padding: 40px 0; }
   .done .big { font-size: 22px; font-weight: 700; color: var(--accent); margin-bottom: 10px; }
   .done p { color: var(--dim); font-size: 13px; line-height: 1.8; }
   #evlog { list-style: none; font-size: 12px; color: var(--dim); max-height: 130px; overflow-y: auto; }
   #evlog li { padding: 3px 0; border-bottom: 1px solid var(--panel2); }
   #evlog b { color: var(--text); }
-  #toast { display: none; position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-           background: var(--accent); color: #10141c; font-weight: 700; padding: 10px 26px; border-radius: 30px; }
 </style>
 </head>
 <body>
-<div class="banner">⚠ 예시 UI — 회사 키오스크 프로그램으로 교체 예정 (연동 계약: /data 이벤트 · POST /announce · POST /ocr/start)</div>
+<div class="banner">⚠ 예시 UI — 회사 키오스크 프로그램으로 교체 예정 (연동 계약: /data 이벤트 · POST /announce)</div>
 <header>
   <h1>배리어프리 민원발급기 <small style="color:var(--dim);font-size:12px;">제스처 인식 데모</small></h1>
   <div class="stats">
     <span id="b-lock" class="badge off">사용자 인식 대기</span>
-    <span id="b-ocr" class="badge off">신분증 스캔</span>
     <span>추론 <b id="s-infer">-</b> FPS</span>
     <span>카메라 <b id="s-cap">-</b> FPS</span>
   </div>
@@ -67,7 +56,7 @@
     <img id="cam" src="/video_feed" alt="camera stream">
     <div class="guide">
       <span>👋 좌/우로 쓸기</span>포커스 이동 &nbsp; <span>⬇ 아래로 쓸기</span>이전 화면<br>
-      <span>⬆ 위로 쓸기</span>처음으로 &nbsp; <span>🙇 고개 꾸벅 2회</span>선택·확인
+      <span>⬆ 위로 쓸기</span>처음으로 &nbsp; <span>☝ 손가락 1개 들기</span>선택·확인
     </div>
     <div style="margin-top:12px;">
       <h2>이벤트 로그</h2>
@@ -76,36 +65,21 @@
   </section>
   <section class="panel" id="screen"></section>
 </main>
-<div id="toast"></div>
 
 <script>
-// ── 민원발급기 예시 화면 3단계: 증명서 선택 → 본인확인(주민등록증) → 발급 완료 ──
+// ── 민원발급기 예시 화면 2단계: 증명서 선택 → 발급 완료 ──
 const CERTS = ["주민등록표 등본", "주민등록표 초본", "가족관계증명서",
                "건축물대장", "토지(임야)대장", "지방세 납세증명"];
-const CONFIRM_BUTTONS = ["발급하기", "취소"];
 
-let screen = "home";        // home | confirm | done
+let screen = "home";        // home | done
 let focusIdx = 0;           // 현재 화면의 선형 포커스 위치 (줄 끝 랩은 인덱스 순회로 자동)
 let chosenCert = null;
-let idFields = null;        // fill_id_fields 수신 결과 {name, rrn}
 let lastEventTs = 0;
-let wasOcrMode = false;
 
 const $ = (id) => document.getElementById(id);
 
-function maskName(name) {
-  if (name.length <= 1) return "*";
-  if (name.length === 2) return name[0] + "*";
-  return name[0] + "*".repeat(name.length - 2) + name[name.length - 1];
-}
-function maskRrn(rrn) {  // "950101-1234567" -> "950101-1******"
-  const [front, back] = rrn.split("-");
-  return `${front}-${back[0]}******`;
-}
-
 function focusLabels() {
   if (screen === "home") return CERTS;
-  if (screen === "confirm") return CONFIRM_BUTTONS;
   return ["처음으로"];
 }
 
@@ -126,11 +100,7 @@ function setFocus(nextIdx, isAnnounce = true) {
 function enterScreen(nextScreen) {
   screen = nextScreen;
   focusIdx = 0;
-  if (screen === "confirm") {
-    idFields = null;
-    fetch("/ocr/start", { method: "POST" });
-    announce(`${chosenCert} 본인확인. 주민등록증을 카메라에 보여주세요`);
-  } else if (screen === "done") {
+  if (screen === "done") {
     announce(`${chosenCert} 발급이 완료되었습니다`);
   } else {
     announce("증명서 선택 화면. 발급할 증명서를 선택하세요");
@@ -144,19 +114,10 @@ function applyEvent(e) {
     if (screen !== "home") enterScreen("home");
     return;
   }
-  if (e.class_name === "fill_id_fields" && screen === "confirm") {
-    idFields = e.data; render(); return;
-  }
   if (e.class_name === "move_left")  setFocus(focusIdx - 1);
   if (e.class_name === "move_right") setFocus(focusIdx + 1);
   if (e.class_name === "select") {
-    if (screen === "home") { chosenCert = CERTS[focusIdx]; enterScreen("confirm"); }
-    else if (screen === "confirm") {
-      if (CONFIRM_BUTTONS[focusIdx] === "발급하기") {
-        if (!idFields) { showToast("주민등록증을 먼저 인식해 주세요"); announce("주민등록증을 먼저 인식해 주세요"); }
-        else enterScreen("done");
-      } else enterScreen("home");
-    }
+    if (screen === "home") { chosenCert = CERTS[focusIdx]; enterScreen("done"); }
     else enterScreen("home");
   }
 }
@@ -166,34 +127,14 @@ function render() {
   if (screen === "home") {
     s.innerHTML = `
       <div class="screen-head"><div class="title">증명서 선택</div>
-        <div class="hint">👋 좌/우 쓸기 이동 · 🙇 고개 꾸벅 2회 선택</div></div>
+        <div class="hint">👋 좌/우 쓸기 이동 · ☝ 손가락 1개 들기 선택</div></div>
       <div class="menu">${CERTS.map((c, i) =>
         `<div class="item ${i === focusIdx ? "hl" : ""}">${c}</div>`).join("")}</div>`;
-  } else if (screen === "confirm") {
-    s.innerHTML = `
-      <div class="screen-head"><div class="title">본인확인 — ${chosenCert}</div>
-        <div class="hint">주민등록증 자동 인식</div></div>
-      <div class="scan-note">📇 주민등록증을 카메라 중앙에 보여주세요.<br>
-        인식되면 아래 칸에 자동으로 입력됩니다. (화면 표시는 마스킹)</div>
-      <div class="idform">
-        <div><label>이름</label>
-          <div class="field ${idFields ? "filled" : ""}">${idFields ? maskName(idFields.name) : ""}</div></div>
-        <div><label>주민등록번호</label>
-          <div class="field ${idFields ? "filled" : ""}">${idFields ? maskRrn(idFields.rrn) : ""}</div></div>
-      </div>
-      <div class="btnrow">${CONFIRM_BUTTONS.map((b, i) =>
-        `<div class="btn ${i === focusIdx ? "hl" : ""}">${b}</div>`).join("")}</div>`;
   } else {
     s.innerHTML = `
       <div class="done"><div class="big">✅ ${chosenCert} 발급 완료</div>
-        <p>출력물을 받아 가세요.<br>⬆ 위로 쓸기 또는 🙇 고개 꾸벅 2회로 처음 화면으로 돌아갑니다.</p></div>`;
+        <p>출력물을 받아 가세요.<br>⬆ 위로 쓸기 또는 ☝ 손가락 1개 들기로 처음 화면으로 돌아갑니다.</p></div>`;
   }
-}
-
-function showToast(msg) {
-  const t = $("toast");
-  t.textContent = msg; t.style.display = "block";
-  setTimeout(() => { t.style.display = "none"; }, 1800);
 }
 
 async function poll() {
@@ -205,14 +146,6 @@ async function poll() {
     const lock = $("b-lock");
     lock.className = "badge " + (d.status.is_user_locked ? "on" : "off");
     lock.textContent = d.status.is_user_locked ? "사용자 고정됨" : "사용자 인식 대기";
-
-    const ocr = $("b-ocr");
-    ocr.className = "badge " + (d.status.is_ocr_mode ? "on" : "off");
-    ocr.textContent = d.status.is_ocr_mode ? "신분증 스캔 중" : "신분증 스캔";
-    if (wasOcrMode && !d.status.is_ocr_mode && screen === "confirm" && !idFields) {
-      showToast("인식 시간이 지났습니다 — 화면을 다시 선택하면 재시도합니다");
-    }
-    wasOcrMode = d.status.is_ocr_mode;
 
     const log = $("evlog");
     log.innerHTML = d.events.slice().reverse().map(e =>

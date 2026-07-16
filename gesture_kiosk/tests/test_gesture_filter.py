@@ -37,7 +37,7 @@ def make_config():
                 "min_track_frames": 4,
                 "elbow_gain": 2.0,
                 "switch_margin_y_shoulder": 0.2,
-                "body_scale": {"fallback_ratio": 0.25, "min_ratio": 0.08, "alpha": 0.1},
+                "body_scale": {"fallback_ratio": 0.25, "min_ratio": 0.08, "max_ratio": 0.4, "alpha": 0.1},
                 "double_within_sec": 1.2,
                 "return_suppress_sec": 2.5,
                 "stroke_gap_sec": 0.5,

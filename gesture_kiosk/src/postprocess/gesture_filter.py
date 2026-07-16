@@ -111,6 +111,7 @@ class GestureFilter:
         body_scale = swipe["body_scale"]
         self._scale_fallback_ratio = body_scale["fallback_ratio"]
         self._scale_min_ratio = body_scale["min_ratio"]
+        self._scale_max_ratio = body_scale["max_ratio"]
         self._scale_alpha = body_scale["alpha"]
         self._body_scale = None      # 평활된 어깨너비/프레임폭 — 카메라 거리 무관 판정의 자(尺)
         # 한 번에 한 팔만 인식(2026-07-16 사용자 결정) — 양팔 동시 추적은 쉬는 팔의
@@ -267,11 +268,14 @@ class GestureFilter:
         """어깨너비 관측으로 몸 크기 자(尺)를 갱신한다 — EMA 평활 + 하한 클램프.
 
         측면으로 돌면 화면상 어깨가 좁아져 임계가 과민해지므로 min_ratio로 받치고,
+        카메라에 바짝 붙으면 어깨가 화면을 채워 요구 이동량이 프레임을 넘어서므로
+        max_ratio로 캡을 씌운다 (2026-07-16 — 근거리에서도 프레임 안에서 확정되게).
         관측이 없으면 마지막 값을 유지한다 (최초부터 없으면 fallback_ratio —
         키오스크 표준 거리의 가정값이라 종전 화면 비율 임계와 등가로 동작).
         """
         if shoulder_width_ratio is not None:
-            clamped = max(shoulder_width_ratio, self._scale_min_ratio)
+            clamped = min(max(shoulder_width_ratio, self._scale_min_ratio),
+                          self._scale_max_ratio)
             if self._body_scale is None:
                 self._body_scale = clamped
             else:

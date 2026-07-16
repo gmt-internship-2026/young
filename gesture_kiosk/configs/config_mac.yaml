@@ -13,7 +13,7 @@ camera:
   fourcc: mjpg            # 캡처 픽셀 포맷 — 맥 내장 카메라는 무시될 수 있다 (무해)
 
 model:
-  # 라이선스(2026-07-15 2차): rtmlib RTMPose(Apache-2.0) 포즈 단일 모델. 맥은 CPU 실행(개발 확인용)
+  # 라이선스(2026-07-15 2차): rtmlib RTMPose(Apache-2.0) 포즈 단일 모델. 맥은 CPU 실행
   device: auto            # 맥: CUDA 없음 -> 자동으로 cpu
   use_tensorrt: false
   pose_mode: lightweight  # ★ 맥 CPU — 가벼운 포즈 모델로 개발 확인
@@ -45,6 +45,7 @@ gestures:
     body_scale:
       fallback_ratio: 0.22
       min_ratio: 0.08
+      max_ratio: 0.32         # 근거리 상한 — config.yaml 주석 참고
       alpha: 0.1
 announce:
   enabled: true

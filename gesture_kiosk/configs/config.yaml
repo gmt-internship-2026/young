@@ -19,7 +19,7 @@ camera:
 
 model:
   # 라이선스(2026-07-15 2차): rtmlib RTMPose(Apache-2.0) **포즈 단일 모델** —
-  # 손 검출(MediaPipe)·팔등 CNN 제거로 쓸기·끄덕임·잠금이 전부 이 키포인트로 판정된다
+  # 쓸기·사용자 잠금이 전부 이 키포인트로 판정된다 (구 방식 전부 제거)
   device: cpu             # CPU 추론판 고정 — GPU 가속판은 feat/think_win_gpu 브랜치
   use_tensorrt: false     # CPU판 — TensorRT 사용 불가 (GPU 가속은 feat/think_win_gpu)
   pose_mode: lightweight  # CPU 기본(30 FPS 확보용) — GPU판 기본은 balanced
@@ -67,6 +67,8 @@ gestures:
       fallback_ratio: 0.22    # 어깨 미검출 시 가정값(어깨너비/프레임폭) — 키오스크 표준 거리 기준.
                               #   이 값일 때 위 임계들이 종전 화면 비율 임계와 정확히 등가
       min_ratio: 0.08         # 하한 클램프 — 측면으로 돌아 어깨가 좁아져도 임계 과민 방지
+      max_ratio: 0.32         # 상한 클램프(2026-07-16) — 카메라 근접 시 요구 이동량이
+                              #   화면폭 ~26%를 넘지 않게: 팔이 프레임을 나가기 전에 확정된다
       alpha: 0.1              # EMA 평활 계수 — 프레임 단위 출렁임 흡수
 announce:                   # 토크백(보이스오버) — 현재 위치·기능 음성 안내
   enabled: true

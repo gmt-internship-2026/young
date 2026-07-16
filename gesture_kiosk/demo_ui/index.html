@@ -65,8 +65,8 @@
     <h2>실시간 인식 화면 (CAM)</h2>
     <img id="cam" src="/video_feed" alt="camera stream">
     <div class="guide">
-      <span>👋 좌/우 쓸기</span>포커스 이동 &nbsp; <span>⬆ 1회</span>확인(다시 읽기) &nbsp; <span>⬇ 1회</span>선택<br>
-      <span>⬆⬆ 2연속</span>처음으로 &nbsp; <span>⬇⬇ 2연속</span>이전 화면
+      <span>👋 좌/우 쓸기</span>포커스 이동 &nbsp; <span>⬆ 1회</span>선택·확인 &nbsp; <span>⬇ 1회</span>이전 화면<br>
+      <span>⬆⬆ 2연속</span>처음으로
     </div>
     <div class="guide" id="dbg" style="margin-top:6px;"></div>
     <div style="margin-top:12px;">
@@ -132,7 +132,6 @@ function applyEvent(e) {
     if (screen !== "home") enterScreen("home");
     return;
   }
-  if (e.class_name === "read_focus") { announce(focusLabels()[focusIdx]); return; }
   if (e.class_name === "move_left")  setFocus(focusIdx - 1);
   if (e.class_name === "move_right") setFocus(focusIdx + 1);
   if (e.class_name === "select") {
@@ -150,13 +149,13 @@ function render() {
   if (screen === "home") {
     s.innerHTML = `
       <div class="screen-head"><div class="title">증명서 선택</div>
-        <div class="hint">👋 좌/우 쓸기 이동 · ⬇ 아래로 1회 선택</div></div>
+        <div class="hint">👋 좌/우 쓸기 이동 · ⬆ 위로 1회 선택</div></div>
       <div class="menu">${CERTS.map((c, i) =>
         `<div class="item ${i === focusIdx ? "hl" : ""}">${c}</div>`).join("")}</div>`;
   } else if (screen === "confirm") {
     s.innerHTML = `
       <div class="screen-head"><div class="title">발급 확인 — ${chosenCert}</div>
-        <div class="hint">⬇ 아래로 쓸기 1회로 선택</div></div>
+        <div class="hint">⬆ 위로 쓸기 1회로 선택</div></div>
       <div class="btnrow">${CONFIRM_BUTTONS.map((b, i) =>
         `<div class="btn ${i === focusIdx ? "hl" : ""}">${b}</div>`).join("")}</div>`;
   } else {

@@ -91,6 +91,17 @@ class _SwipeTracker:
             return "down" if dy_ratio > 0 else "up"   # 화면 y는 아래로 증가
         return None   # 대각선(주축 불명) — 방향이 분명해질 때까지 보류
 
+    def has_point_near(self, point, radius):
+        """궤적이 point 반경 안을 지나는가 — 복귀(직전 획 끝 경유) 판정에 쓴다.
+
+        시작점 비교가 아니라 경유 검사인 이유: 보류 직후엔 직전 획의 꼬리 점이
+        궤적에 섞여 시작점이 밀리는데, 복귀라면 어쨌든 끝 근처를 지나간다.
+        """
+        return any(
+            max(abs(x - point[0]), abs(y - point[1])) <= radius
+            for _, x, y in self._track
+        )
+
     def reset(self):
         """추적점 소실·손목↔팔꿈치 전환·이벤트 확정 — 궤적을 비운다."""
         self._track.clear()
@@ -129,16 +140,21 @@ class GestureFilter:
         self._pending_side = None
         self._pending_deadline_sec = None
 
-        # 반대 방향 1회 삼킴(2026-07-16, 구 정지 재장전 대체) — 동작 직후 같은 축의
-        # 반대 방향 쓸기 1건은 팔 되돌리기(복귀 스트로크)로 보고 무시한다
+        # 반대 방향 1회 삼킴 — 동작 직후 같은 축의 반대 쓸기 1건을 복귀로 무시.
+        # 2026-07-16 실기 보완: 시간만 보면 의도적 반대 쓸기(예: 우 다음 좌)까지
+        # 먹으므로, **시작점이 직전 획의 끝 근처일 때만** 복귀로 인정한다
         self._return_suppress_sec = swipe["return_suppress_sec"]
+        self._return_origin_shoulder = swipe["return_origin_shoulder"]
         self._swallow_direction = None
         self._swallow_deadline_sec = None
-        # 획 분리 유예 — 수직 보류 등록 직후 잠깐은 모든 확정을 무시한다.
-        # 트래커를 리셋해도 같은 스윕의 꼬리 궤적이 다시 임계를 넘어
-        # 1회를 2연속으로 오인하는 것을 막는다 (이벤트 확정은 쿨다운이 담당)
-        self._stroke_gap_sec = swipe["stroke_gap_sec"]
-        self._stroke_block_until_sec = None
+        self._swallow_origin_point = None   # 직전 획의 끝 좌표 — 복귀 시작점 대조용
+        self._swallow_event_direction = None  # 직전 획의 방향 — 끝 좌표를 극값으로 추적
+        # 2연속 인정 전 복귀 확인(구 획 분리 유예 대체) — 같은 스윕의 꼬리가
+        # 2연속으로 오인되는 것을 시간이 아니라 "반대로 되돌아왔는가"로 막는다
+        # (시간 유예는 빠른 2연속을 차단하는 부작용이 실기에서 확인됨)
+        self._double_return_min_shoulder = swipe["double_return_min_shoulder"]
+        self._pending_return_seen = False
+        self._pending_extreme_y = None
 
         self._last_event_ts_sec = None
         self.debug = {}   # 실기 튜닝 계기판 — /data·화면 오버레이로 노출 (판정에 미사용)
@@ -155,11 +171,15 @@ class GestureFilter:
         좌/우·위(선택)는 즉시 확정, 아래는 1회/2연속 판정 창을 거친다 (모듈 주석 참고).
         """
         now_sec = self._clock()
-        if self._is_in_cooldown(now_sec):
-            # 쿨다운 중엔 궤적을 쌓지 않는다 — 남은 점은 시간 창이 걸러낸다
-            return None
-
         body_scale = self._update_body_scale(shoulder_width_ratio)
+        side, point_info = self._select_active_arm(swipe_points or {}, body_scale)
+
+        if self._is_in_cooldown(now_sec):
+            # 쿨다운 중엔 궤적을 쌓지 않는다 — 다만 획이 계속 뻗는 중이면
+            # 삼킴 기준점(직전 획의 끝)은 따라가야 복귀 판정이 정확하다
+            if point_info is not None:
+                self._update_swallow_origin(point_info[1])
+            return None
 
         # 보류 중인 수직 쓸기 — 판정 창이 지나도록 2회째가 없으면 1회 동작으로 확정
         if self._pending_direction is not None and now_sec >= self._pending_deadline_sec:
@@ -174,7 +194,6 @@ class GestureFilter:
             return event
 
         event = None
-        side, point_info = self._select_active_arm(swipe_points or {}, body_scale)
         if side is None:
             self._swipe_tracker.reset()   # 추적점 전무 — 끊긴 궤적을 이어 붙이지 않는다
             self._active_side = None
@@ -186,33 +205,32 @@ class GestureFilter:
                 self._active_side = side
                 self._active_source = source
             gain = self._elbow_gain if source == "elbow" else 1.0
+            self._update_swallow_origin(point)
+            self._watch_pending_return(point, body_scale)
             direction = self._swipe_tracker.update(
                 point[0], point[1], now_sec, gain, body_scale
             )
             if direction is not None:
-                event = self._judge_swipe(direction, side, now_sec)
+                event = self._judge_swipe(direction, side, now_sec, point, body_scale)
 
         self._update_debug(body_scale, shoulder_width_ratio)
         return event
 
-    def _judge_swipe(self, direction, side, now_sec):
-        """쓸기 방향 1건 -> 이벤트 | None (수직은 1회/2연속 분기).
+    def _judge_swipe(self, direction, side, now_sec, point, body_scale):
+        """쓸기 방향 1건 -> 이벤트 | None.
 
         - 좌/우/위(선택): 즉시 확정 (보류 중인 아래 쓸기는 폐기 — 의도 변경)
         - 아래 1회째: 보류 등록 (판정 창 경과 시 go_back으로 확정)
-        - 보류와 같은 방향(아래) 2회째: go_home 즉시 확정
+        - 보류와 같은 방향(아래) 2회째: 복귀 확인(return_seen) 후에만 go_home —
+          같은 스윕의 꼬리 궤적이 2연속으로 오인되는 것 방지
+        - 직전 동작의 반대 방향: 시작점이 직전 획 끝 근처면 복귀로 삼킴 (1회용)
         """
-        if (self._stroke_block_until_sec is not None
-                and now_sec < self._stroke_block_until_sec):
-            self._swipe_tracker.reset()   # 직전 획의 꼬리 궤적 — 새 획으로 치지 않는다
-            return None
-
         if (self._swallow_direction == direction
                 and self._swallow_deadline_sec is not None
-                and now_sec < self._swallow_deadline_sec):
-            # 직전 동작의 반대 방향 1회 — 복귀 스트로크로 보고 삼킨다 (1회용).
-            # 여기선 획 유예를 걸지 않는다: 삼킴은 복귀의 끝 무렵에 소비돼 꼬리 위험이
-            # 낮고, 유예를 걸면 곧바로 이어지는 연속 이동(우-복귀-우)이 막힌다 (실측)
+                and now_sec < self._swallow_deadline_sec
+                and self._is_return_from_origin(body_scale)):
+            # 직전 획의 끝을 지나온 반대 방향 — 복귀 스트로크로 보고 삼킨다 (1회용).
+            # 다른 위치에서 시작한 반대 쓸기는 의도적 동작이라 그대로 통과
             self._swallow_direction = None
             self._swipe_tracker.reset()
             return None
@@ -222,27 +240,71 @@ class GestureFilter:
             event = self._confirm(
                 IMMEDIATE_EVENT_BY_DIRECTION[direction], 1.0, now_sec, hand_side=side
             )
-            self._set_swallow(direction, now_sec)
+            self._set_swallow(direction, now_sec, point)
             return event
         if self._pending_direction == direction:
+            if not self._pending_return_seen:
+                self._swipe_tracker.reset()   # 같은 스윕의 꼬리 — 새 획으로 치지 않는다
+                return None
             self._clear_pending()
             event = self._confirm(
                 DOUBLE_EVENT_BY_DIRECTION[direction], 1.0, now_sec, hand_side=side
             )
-            self._set_swallow(direction, now_sec)
+            self._set_swallow(direction, now_sec, point)
             return event
         self._pending_direction = direction
         self._pending_side = side
         self._pending_deadline_sec = now_sec + self._double_within_sec
-        self._set_swallow(direction, now_sec)   # 1회째 복귀도 위/아래 오인 방지
+        self._pending_return_seen = False
+        self._pending_extreme_y = point[1]
+        self._set_swallow(direction, now_sec, point)   # 1회째 복귀의 위 오인 방지
         self._swipe_tracker.reset()
-        self._stroke_block_until_sec = now_sec + self._stroke_gap_sec   # 꼬리 재확정 방지
         return None
 
-    def _set_swallow(self, direction, now_sec):
-        """direction 동작 직후 — 그 반대 방향 1회를 복귀로 삼킬 준비."""
+    def _update_swallow_origin(self, point):
+        """직전 획이 이벤트 방향으로 계속 뻗으면 끝 좌표(복귀 대조 기준)를 갱신한다."""
+        if self._swallow_direction is None or self._swallow_origin_point is None:
+            return
+        ox, oy = self._swallow_origin_point
+        direction = self._swallow_event_direction
+        if direction == "right":
+            ox = max(ox, point[0])
+        elif direction == "left":
+            ox = min(ox, point[0])
+        elif direction == "down":
+            oy = max(oy, point[1])
+        elif direction == "up":
+            oy = min(oy, point[1])
+        self._swallow_origin_point = (ox, oy)
+
+    def _watch_pending_return(self, point, body_scale):
+        """보류 중 팔이 반대로 충분히 되돌아왔는지 감시 — 2연속 인정의 전제 조건."""
+        if self._pending_direction is None or self._pending_return_seen:
+            return
+        if self._pending_direction == "down":
+            self._pending_extreme_y = max(self._pending_extreme_y, point[1])
+            if point[1] <= self._pending_extreme_y - self._double_return_min_shoulder * body_scale:
+                self._pending_return_seen = True
+        else:   # "up" — 현재 배치에선 미사용이나 대칭 유지
+            self._pending_extreme_y = min(self._pending_extreme_y, point[1])
+            if point[1] >= self._pending_extreme_y + self._double_return_min_shoulder * body_scale:
+                self._pending_return_seen = True
+
+    def _is_return_from_origin(self, body_scale):
+        """반대 쓸기의 궤적이 직전 획의 끝 근처를 지나왔는가 — 복귀의 물리적 특징."""
+        if self._swallow_origin_point is None:
+            return True   # 판단 근거 없음 — 보수적으로 복귀로 본다
+        return self._swipe_tracker.has_point_near(
+            self._swallow_origin_point, self._return_origin_shoulder * body_scale
+        )
+
+
+    def _set_swallow(self, direction, now_sec, point):
+        """direction 동작 직후 — 그 반대 방향 1회를 복귀로 삼킬 준비 (끝 좌표 기록)."""
         self._swallow_direction = OPPOSITE_DIRECTION[direction]
         self._swallow_deadline_sec = now_sec + self._return_suppress_sec
+        self._swallow_origin_point = point
+        self._swallow_event_direction = direction
 
     def _clear_pending(self):
         self._pending_direction = None

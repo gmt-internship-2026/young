@@ -39,8 +39,9 @@ def make_config():
                 "switch_margin_y_shoulder": 0.2,
                 "body_scale": {"fallback_ratio": 0.25, "min_ratio": 0.08, "max_ratio": 0.4, "alpha": 0.1},
                 "double_within_sec": 1.2,
-                "return_suppress_sec": 2.5,
-                "stroke_gap_sec": 0.5,
+                "return_suppress_sec": 1.6,
+                "return_origin_shoulder": 0.6,
+                "double_return_min_shoulder": 0.15,
             },
         },
     }
@@ -139,7 +140,6 @@ class SwipeGestureTest(GestureFilterTestBase):
     def test_horizontal_swipe_drops_pending_vertical(self):
         # 아래 1회 보류 중 좌/우 쓸기 — 사용자가 의도를 바꾼 것: 이동만 발화
         self._feed_swipe("right", path(0.3, 0.8, 8, x_ratio=0.5))  # 아래 1회 보류
-        self.clock.tick(0.6)                                        # 획 분리 유예 경과
         event = self._feed_swipe("right", path(0.5, 0.9, 8, y_ratio=0.8))
         self.assertEqual(event.class_name, "move_right")
         self.clock.tick(1.2)                                       # 쿨다운 경과
@@ -206,10 +206,25 @@ class SwipeGestureTest(GestureFilterTestBase):
         # 복귀(삼킴) 후의 진짜 좌 쓸기는 정상 발화 — 삼킴은 1회용 (좌표는 연속)
         self._swipe_right_then_pass_cooldown()
         self._feed_swipe("right", path(0.8, 0.4, 8, y_ratio=0.4))   # 복귀 — 삼킴
-        self.clock.tick(0.6)                                         # 획 분리 유예 경과
         event = self._feed_swipe("right", path(0.4, 0.05, 8, y_ratio=0.4))
         self.assertIsNotNone(event)
         self.assertEqual(event.class_name, "move_left")
+
+    def test_deliberate_left_from_center_fires_within_window(self):
+        # 우로 쓸고(끝 0.8) — 팔을 중앙으로 옮겨 다시 좌로 — 시작점(0.45)이 직전 획
+        # 끝(0.8)에서 멀어 복귀가 아니라 의도적 쓸기: 삼킴 창 안이어도 발화
+        self._swipe_right_then_pass_cooldown()
+        event = self._feed_swipe("right", path(0.45, 0.1, 8, y_ratio=0.4))
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "move_left")
+
+    def test_fast_double_down_fires_go_home(self):
+        # 빠른 아래 2연속 — 사이에 짧은 복귀만 있으면 시간 제한 없이 인정
+        self._feed_swipe("right", path(0.3, 0.8, 8, x_ratio=0.5))      # 1회째 보류
+        self._feed_swipe("right", path(0.8, 0.6, 4, x_ratio=0.5))      # 짧은 복귀(0.2 되돌림)
+        event = self._feed_swipe("right", path(0.6, 0.95, 6, x_ratio=0.5))
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "go_home")
 
     def test_swallow_expires(self):
         # 삼킴 창(2.5초)이 지난 뒤의 좌 쓸기는 복귀가 아니다 — 정상 발화

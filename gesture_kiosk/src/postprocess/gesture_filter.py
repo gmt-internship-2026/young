@@ -1,7 +1,9 @@
 """postprocess 모듈 — 포즈 신호(손목 궤적·고개 끄덕임)를 동작 이벤트로 확정한다.
 
 동작 체계(2026-07-15 개편, 같은 날 2차: 선택 동작 재확정 — 장애인·비장애인 범용 설계):
-- move_left / move_right : 팔(손목)을 좌/우로 쓸기 — 포커스 1칸 이동
+- move_left / move_right : 팔(손목)을 좌/우로 쓸기 — 포커스 1칸 이동.
+  좌/우 어느 팔이든 방향만 맞으면 되지만, **한 번에 한 팔만 인식**한다
+  (활성 팔 = 더 높이 든 팔 — 쉬는 팔의 잡음 간섭 차단, 2026-07-16 사용자 결정)
 - go_back                : 아래로 쓸기 — 이전 화면
 - go_home                : 위로 쓸기 — 처음 화면으로
 - select                 : 고개를 두 번 꾸벅(끄덕) — 선택/확인.
@@ -218,15 +220,16 @@ class GestureFilter:
 
         swipe = gestures["swipe"]
         self._elbow_gain = swipe["elbow_gain"]
-        self._swipe_trackers = {
-            side: _SwipeTracker(
-                swipe["window_sec"], swipe["min_dist_x_ratio"], swipe["min_dist_y_ratio"],
-                swipe["axis_dominance"], swipe["min_track_frames"],
-                swipe["rearm_still_ratio"], swipe["rearm_still_frames"],
-            )
-            for side in ("left", "right")
-        }
-        self._swipe_sources = {"left": None, "right": None}   # "wrist" | "elbow" — 궤적 출처
+        self._switch_margin_y_ratio = swipe["switch_margin_y_ratio"]
+        # 한 번에 한 팔만 인식(2026-07-16 사용자 결정) — 양팔 동시 추적은 쉬는 팔의
+        # 잡음이 간섭한다. 활성 팔 = 더 높이 든 팔(제스처 팔은 들려 있다), 트래커는 1개
+        self._swipe_tracker = _SwipeTracker(
+            swipe["window_sec"], swipe["min_dist_x_ratio"], swipe["min_dist_y_ratio"],
+            swipe["axis_dominance"], swipe["min_track_frames"],
+            swipe["rearm_still_ratio"], swipe["rearm_still_frames"],
+        )
+        self._active_side = None     # 현재 인식 중인 팔 ("left"/"right")
+        self._active_source = None   # 그 팔의 추적점 출처 ("wrist"/"elbow")
         self._nod_tracker = _NodTracker(gestures["select"])
 
         self._last_event_ts_sec = None
@@ -245,27 +248,49 @@ class GestureFilter:
             # 쿨다운 중엔 궤적·꾸벅 상태를 쌓지 않는다 — 남은 점·숙임은 시간 창이 걸러낸다
             return None
 
-        if swipe_points:
-            for side, tracker in self._swipe_trackers.items():
-                point_info = swipe_points.get(side)
-                if point_info is None:
-                    tracker.reset()   # 추적점 소실 — 끊긴 궤적을 이어 붙이면 순간이동 오발
-                    self._swipe_sources[side] = None
-                    continue
-                source, point = point_info
-                if source != self._swipe_sources[side]:
-                    tracker.reset()   # 손목↔팔꿈치 전환 — 다른 위치의 점이라 궤적 연결 금지
-                    self._swipe_sources[side] = source
-                gain = self._elbow_gain if source == "elbow" else 1.0
-                direction = tracker.update(point[0], point[1], now_sec, gain)
-                if direction is not None:
-                    return self._confirm(
-                        SWIPE_EVENT_BY_DIRECTION[direction], 1.0, now_sec, hand_side=side
-                    )
+        side, point_info = self._select_active_arm(swipe_points or {})
+        if side is None:
+            self._swipe_tracker.reset()   # 추적점 전무 — 끊긴 궤적을 이어 붙이지 않는다
+            self._active_side = None
+            self._active_source = None
+        else:
+            source, point = point_info
+            if side != self._active_side or source != self._active_source:
+                self._swipe_tracker.reset()   # 팔 교체·손목↔팔꿈치 전환 — 궤적 연결 금지
+                self._active_side = side
+                self._active_source = source
+            gain = self._elbow_gain if source == "elbow" else 1.0
+            direction = self._swipe_tracker.update(point[0], point[1], now_sec, gain)
+            if direction is not None:
+                return self._confirm(
+                    SWIPE_EVENT_BY_DIRECTION[direction], 1.0, now_sec, hand_side=side
+                )
 
         if self._nod_tracker.update(neck_ratio, now_sec):
             return self._confirm("select", 1.0, now_sec)
         return None
+
+    def _select_active_arm(self, swipe_points):
+        """이번 프레임의 활성 팔 1개를 고른다 -> (side, (출처, 좌표)) 또는 (None, None).
+
+        한 번에 한 팔만 인식한다 — 양팔이 다 보이면 **더 높이 든 팔**(화면 y가 작은 쪽)을
+        택한다: 제스처하는 팔은 들려 있고 쉬는 팔은 내려가 있다. 높이 차가
+        switch_margin_y_ratio 미만이면 현재 활성 팔을 유지해 잦은 교체(궤적 리셋)를 막는다.
+        """
+        available = {s: info for s, info in swipe_points.items() if info is not None}
+        if not available:
+            return None, None
+        if len(available) == 1:
+            side = next(iter(available))
+            return side, available[side]
+
+        left_y = available["left"][1][1]
+        right_y = available["right"][1][1]
+        higher_side = "left" if left_y < right_y else "right"
+        is_near_tie = abs(left_y - right_y) < self._switch_margin_y_ratio
+        if self._active_side in available and is_near_tie:
+            return self._active_side, available[self._active_side]
+        return higher_side, available[higher_side]
 
     # ----- 공통 -----
 
@@ -277,8 +302,7 @@ class GestureFilter:
 
     def _confirm(self, class_name, conf, now_sec, hand_side=None, data=None):
         self._last_event_ts_sec = now_sec
-        for tracker in self._swipe_trackers.values():
-            tracker.disarm()   # 복귀 스트로크 무시 — 멈춰야 다음 쓸기 장전 (정지 재장전)
+        self._swipe_tracker.disarm()   # 복귀 스트로크 무시 — 멈춰야 다음 쓸기 장전 (정지 재장전)
         self._nod_tracker.reset()
 
         event = GestureEvent(

@@ -19,7 +19,8 @@ model:
   use_tensorrt: false
   pose_mode: lightweight  # ★ 맥 CPU — 가벼운 포즈 모델로 개발 확인
   input_size_px: 640
-  max_infer_fps: 60
+  max_infer_fps: 30       # 배포와 동일 30 고정(2026-07-16) — 60이면 추론 루프가 캡처
+                          #   스레드의 CPU/GIL을 빼앗아 캡처 FPS가 반토막 → 인식 저하
 
 person_lock:
   enabled: true
@@ -40,6 +41,7 @@ gestures:
     elbow_gain: 2.0         # 손목 미검출 시 팔꿈치 폴백 배율 — config.yaml 주석 참고
     rearm_still_ratio: 0.005    # 정지 재장전(복귀 스트로크 오탐 방지) — config.yaml 주석 참고
     rearm_still_frames: 5
+    switch_margin_y_ratio: 0.05 # 한 팔만 인식 — 활성 팔 교체 여유 (config.yaml 주석 참고)
   select:                 # 고개 꾸벅 2회 — config.yaml 주석 참고
     nod_dip_ratio: 0.12
     nod_return_ratio: 0.05

@@ -36,6 +36,7 @@ def make_config():
                 "elbow_gain": 2.0,
                 "rearm_still_ratio": 0.005,
                 "rearm_still_frames": 5,
+                "switch_margin_y_ratio": 0.05,
             },
             "select": {
                 "nod_dip_ratio": 0.12,
@@ -199,6 +200,34 @@ class SwipeGestureTest(GestureFilterTestBase):
         event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4))
         self.assertIsNotNone(event)
         self.assertEqual(event.class_name, "move_right")
+
+    def test_only_higher_arm_is_tracked(self):
+        # 한 번에 한 팔만 인식 — 내린 팔(쉬는 팔)이 흔들려도 무시된다
+        event = None
+        for i in range(9):
+            event = self._feed(swipe_points={
+                "right": ("wrist", (0.5, 0.3)),                  # 든 팔 — 제자리
+                "left": ("wrist", (0.6 - i * 0.05, 0.8)),        # 내린 팔 — 좌로 크게 이동
+            }) or event
+        self.assertIsNone(event)
+
+    def test_higher_arm_swipe_fires_with_its_side(self):
+        # 양팔이 보여도 든 팔의 쓸기는 정상 인식 — hand_side도 그 팔
+        event = None
+        for i in range(9):
+            event = self._feed(swipe_points={
+                "right": ("wrist", (0.2 + i * 0.05, 0.3)),       # 든 팔 — 우로 쓸기
+                "left": ("wrist", (0.4, 0.8)),                   # 내린 팔 — 정지
+            }) or event
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "move_right")
+        self.assertEqual(event.hand_side, "right")
+
+    def test_arm_switch_resets_track(self):
+        # 활성 팔 교체(오른팔↓ 왼팔↑) — 서로 다른 팔의 궤적을 이어 붙이면 안 된다
+        self._feed_swipe("right", path(0.2, 0.4, 4, y_ratio=0.3))
+        event = self._feed_swipe("left", path(0.4, 0.55, 4, y_ratio=0.3))
+        self.assertIsNone(event)   # 합치면 0.35 이동이지만 교체 리셋으로 각각 미달
 
     def test_waving_fires_only_once_until_pause(self):
         # 팔을 계속 왔다갔다 흔들기 — 멈추기 전까지는 첫 이벤트 1회만

@@ -29,12 +29,40 @@
   .screen-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
   .screen-head .title { font-size: 17px; font-weight: 700; }
   .screen-head .hint { color: var(--dim); font-size: 12px; }
+  .steps { display: flex; gap: 6px; margin-bottom: 14px; }
+  .steps .step { flex: 1; text-align: center; font-size: 11px; color: var(--dim); background: var(--panel2);
+                 border: 1px solid var(--line); border-radius: 6px; padding: 6px 4px; }
+  .steps .step.active { color: #10141c; background: var(--focus); border-color: var(--focus); font-weight: 700; }
+  .steps .step.done { color: var(--accent); border-color: var(--accent); }
   .menu { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
   .item { background: var(--panel2); border: 2px solid var(--line); border-radius: 10px; padding: 22px 10px; text-align: center; font-size: 14px; transition: 0.15s; }
   .item.hl { border-color: var(--focus); box-shadow: 0 0 12px rgba(77,163,255,0.35); }
-  .done { text-align: center; padding: 40px 0; }
-  .done .big { font-size: 22px; font-weight: 700; color: var(--accent); margin-bottom: 10px; }
-  .done p { color: var(--dim); font-size: 13px; line-height: 1.8; }
+  .copies-row { display: flex; gap: 10px; justify-content: center; margin: 30px 0; }
+  .copies-row .item { width: 64px; height: 64px; display: flex; align-items: center; justify-content: center;
+                       font-size: 20px; font-weight: 700; padding: 0; }
+  .fee-summary { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 18px; margin-bottom: 18px; }
+  .fee-summary .row { display: flex; justify-content: space-between; font-size: 14px; color: var(--dim); padding: 4px 0; }
+  .fee-summary .row.total { color: var(--text); font-weight: 700; font-size: 18px; border-top: 1px solid var(--line); margin-top: 8px; padding-top: 10px; }
+  .btnrow { display: flex; gap: 10px; }
+  .btn { flex: 1; background: var(--panel2); border: 2px solid var(--line); border-radius: 10px; padding: 16px; text-align: center; font-weight: 700; }
+  .btn.hl { border-color: var(--focus); box-shadow: 0 0 12px rgba(77,163,255,0.35); }
+  .btn.danger.hl { border-color: var(--danger); box-shadow: 0 0 12px rgba(224,85,85,0.35); }
+  .printing { text-align: center; padding: 50px 0; }
+  .printing .spinner { font-size: 40px; margin-bottom: 16px; animation: spin 1.2s linear infinite; display: inline-block; }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  .progress-track { background: var(--panel2); border-radius: 20px; height: 10px; overflow: hidden; margin: 18px auto; width: 80%; }
+  .progress-fill { background: var(--accent); height: 100%; width: 0%; transition: width 1.6s linear; }
+  .receipt { background: #f4f1e8; color: #1a1a1a; border-radius: 6px; padding: 20px; font-family: 'Courier New', monospace;
+             box-shadow: 0 6px 20px rgba(0,0,0,0.35); position: relative; }
+  .receipt::before, .receipt::after { content: ""; position: absolute; left: 0; right: 0; height: 8px;
+             background: repeating-linear-gradient(45deg, #f4f1e8 0 6px, var(--bg) 6px 12px); }
+  .receipt::before { top: -4px; } .receipt::after { bottom: -4px; }
+  .receipt .center { text-align: center; }
+  .receipt .big { font-size: 20px; font-weight: 700; margin: 8px 0; }
+  .receipt hr { border: none; border-top: 1px dashed #999; margin: 10px 0; }
+  .receipt .row { display: flex; justify-content: space-between; font-size: 13px; padding: 2px 0; }
+  .receipt .row.total { font-weight: 700; font-size: 15px; }
+  .done-note { color: var(--dim); font-size: 13px; line-height: 1.8; text-align: center; margin-top: 16px; }
   #evlog { list-style: none; font-size: 12px; color: var(--dim); max-height: 130px; overflow-y: auto; }
   #evlog li { padding: 3px 0; border-bottom: 1px solid var(--panel2); }
   #evlog b { color: var(--text); }
@@ -67,20 +95,41 @@
 </main>
 
 <script>
-// ── 민원발급기 예시 화면 2단계: 증명서 선택 → 발급 완료 ──
-const CERTS = ["주민등록표 등본", "주민등록표 초본", "가족관계증명서",
-               "건축물대장", "토지(임야)대장", "지방세 납세증명"];
+// ── 민원발급기 예시 화면 5단계: 증명서 선택 → 부수 선택 → 결제 확인 → 발급 중 → 완료 ──
+const CERTS = [
+  { name: "주민등록표 등본", fee: 400 },
+  { name: "주민등록표 초본", fee: 400 },
+  { name: "가족관계증명서", fee: 1000 },
+  { name: "건축물대장", fee: 500 },
+  { name: "토지(임야)대장", fee: 500 },
+  { name: "지방세 납세증명", fee: 0 },
+];
+const COPIES_OPTIONS = [1, 2, 3, 4, 5];
+const PAY_BUTTONS = ["발급하기", "취소"];
+const STEPS = ["증명서 선택", "부수 선택", "결제 확인", "발급 중"];
+const STEP_INDEX = { home: 0, copies: 1, pay: 2, printing: 3 };
+const PRINT_DURATION_MS = 1800;
 
-let screen = "home";        // home | done
-let focusIdx = 0;           // 현재 화면의 선형 포커스 위치 (줄 끝 랩은 인덱스 순회로 자동)
+// 화면마다 {name, focusIdx}를 스택에 쌓는다 — go_back으로 돌아왔을 때 그 화면에서
+// 마지막으로 고르고 있던 포커스(예: 부수 3개)가 그대로 복원되게 하기 위해서다
+// (단일 focusIdx였다면 뒤로 가기가 포커스를 0으로 되돌려 선택이 조용히 바뀌는 문제가 있었다)
+let screenStack = [{ name: "home", focusIdx: 0 }];
 let chosenCert = null;
+let copiesCount = 1;
 let lastEventTs = 0;
 
 const $ = (id) => document.getElementById(id);
+const screen = () => screenStack[screenStack.length - 1].name;
+const focusIdx = () => screenStack[screenStack.length - 1].focusIdx;
+const won = (n) => (n === 0 ? "무료" : `${n.toLocaleString()}원`);
 
 function focusLabels() {
-  if (screen === "home") return CERTS;
-  return ["처음으로"];
+  const s = screen();
+  if (s === "home") return CERTS.map((c) => c.name);
+  if (s === "copies") return COPIES_OPTIONS.map(String);
+  if (s === "pay") return PAY_BUTTONS;
+  if (s === "printing") return [];       // 발급 중 — 입력 무시
+  return ["처음으로"];                    // done
 }
 
 async function announce(text) {  // 화면 맥락 안내는 UI가 요청한다 (연동 계약 시연)
@@ -90,50 +139,133 @@ async function announce(text) {  // 화면 맥락 안내는 UI가 요청한다 (
   } catch (err) { /* 엔진 재시작 중 실패는 무시 */ }
 }
 
-function setFocus(nextIdx, isAnnounce = true) {
+function setFocus(nextIdx) {
   const labels = focusLabels();
-  focusIdx = (nextIdx + labels.length) % labels.length;  // 끝에서 다음 줄 첫째칸(토크백식 랩)
+  if (labels.length === 0) return;        // printing 등 포커스 없는 화면
+  const idx = (nextIdx + labels.length) % labels.length;  // 끝에서 다음 줄 첫째칸(토크백식 랩)
+  screenStack[screenStack.length - 1].focusIdx = idx;
   render();
-  if (isAnnounce) announce(labels[focusIdx]);
+  announce(labels[idx]);
 }
 
-function enterScreen(nextScreen) {
-  screen = nextScreen;
-  focusIdx = 0;
-  if (screen === "done") {
-    announce(`${chosenCert} 발급이 완료되었습니다`);
-  } else {
-    announce("증명서 선택 화면. 발급할 증명서를 선택하세요");
+function goForward(nextScreen) {
+  screenStack.push({ name: nextScreen, focusIdx: 0 });
+  onEnterScreen(nextScreen);
+}
+
+function goBack() {
+  if (screenStack.length <= 1) return;    // home에서는 무시
+  screenStack.pop();                      // 이전 화면의 focusIdx가 그대로 복원된다
+  onEnterScreen(screen());
+}
+
+function goHome() {
+  screenStack = [{ name: "home", focusIdx: 0 }];
+  chosenCert = null;
+  copiesCount = 1;
+  onEnterScreen("home");
+}
+
+function onEnterScreen(s) {
+  if (s === "home") announce("증명서 선택 화면. 발급할 증명서를 선택하세요");
+  else if (s === "copies") announce("발급 부수를 선택하세요");
+  else if (s === "pay") announce(`총 ${won(chosenCert.fee * copiesCount)}입니다. 발급하시겠습니까?`);
+  else if (s === "printing") {
+    announce("발급 처리 중입니다. 잠시만 기다려 주세요");
+    setTimeout(() => {
+      screenStack.push({ name: "done", focusIdx: 0 });
+      render();
+      announce(`${chosenCert.name} 발급이 완료되었습니다`);
+    }, PRINT_DURATION_MS);
   }
   render();
+  if (s === "printing") {
+    requestAnimationFrame(() => {
+      const fill = document.querySelector(".progress-fill");
+      if (fill) fill.style.width = "100%";
+    });
+  }
 }
 
 function applyEvent(e) {
-  if (e.class_name === "go_home") { enterScreen("home"); return; }
-  if (e.class_name === "go_back") {   // 이전 화면 — 아래로 쓸기 (home에서는 무시)
-    if (screen !== "home") enterScreen("home");
-    return;
-  }
-  if (e.class_name === "move_left")  setFocus(focusIdx - 1);
-  if (e.class_name === "move_right") setFocus(focusIdx + 1);
+  const s = screen();
+  if (s === "printing") return;           // 발급 중엔 모든 입력 무시
+  if (e.class_name === "go_home") { goHome(); return; }
+  if (e.class_name === "go_back") { goBack(); return; }
+  if (e.class_name === "move_left")  setFocus(focusIdx() - 1);
+  if (e.class_name === "move_right") setFocus(focusIdx() + 1);
   if (e.class_name === "select") {
-    if (screen === "home") { chosenCert = CERTS[focusIdx]; enterScreen("done"); }
-    else enterScreen("home");
+    const idx = focusIdx();
+    if (s === "home") { chosenCert = CERTS[idx]; goForward("copies"); }
+    else if (s === "copies") { copiesCount = COPIES_OPTIONS[idx]; goForward("pay"); }
+    else if (s === "pay") {
+      if (PAY_BUTTONS[idx] === "발급하기") goForward("printing");
+      else goHome();
+    }
+    else goHome();                        // done에서 select — 처음으로
   }
+}
+
+function stepsHtml() {
+  const activeIdx = STEP_INDEX[screen()];
+  if (activeIdx === undefined) return "";  // done — 단계 표시 없음
+  return `<div class="steps">${STEPS.map((label, i) => {
+    const cls = i === activeIdx ? "active" : i < activeIdx ? "done" : "";
+    return `<div class="step ${cls}">${i + 1}. ${label}</div>`;
+  }).join("")}</div>`;
 }
 
 function render() {
   const s = $("screen");
-  if (screen === "home") {
+  const scr = screen();
+  const fIdx = focusIdx();
+  const steps = stepsHtml();
+
+  if (scr === "home") {
+    // 처음 화면은 원래 데모 UI처럼 단계 표시줄·수수료 없이 단순하게 유지한다
     s.innerHTML = `
       <div class="screen-head"><div class="title">증명서 선택</div>
         <div class="hint">👋 좌/우 쓸기 이동 · ☝ 손가락 1개 들기 선택</div></div>
       <div class="menu">${CERTS.map((c, i) =>
-        `<div class="item ${i === focusIdx ? "hl" : ""}">${c}</div>`).join("")}</div>`;
+        `<div class="item ${i === fIdx ? "hl" : ""}">${c.name}</div>`).join("")}</div>`;
+  } else if (scr === "copies") {
+    s.innerHTML = steps + `
+      <div class="screen-head"><div class="title">발급 부수 선택 — ${chosenCert.name}</div>
+        <div class="hint">👋 좌/우 쓸기 이동 · ☝ 손가락 1개 들기 선택</div></div>
+      <div class="copies-row">${COPIES_OPTIONS.map((n, i) =>
+        `<div class="item ${i === fIdx ? "hl" : ""}">${n}부</div>`).join("")}</div>`;
+  } else if (scr === "pay") {
+    const total = chosenCert.fee * copiesCount;
+    s.innerHTML = steps + `
+      <div class="screen-head"><div class="title">결제 확인</div>
+        <div class="hint">☝ 손가락 1개 들기 선택</div></div>
+      <div class="fee-summary">
+        <div class="row"><span>${chosenCert.name}</span><span>${won(chosenCert.fee)} × ${copiesCount}부</span></div>
+        <div class="row total"><span>결제 금액</span><span>${won(total)}</span></div>
+      </div>
+      <div class="btnrow">${PAY_BUTTONS.map((b, i) =>
+        `<div class="btn ${b === "취소" ? "danger" : ""} ${i === fIdx ? "hl" : ""}">${b}</div>`).join("")}</div>`;
+  } else if (scr === "printing") {
+    s.innerHTML = steps + `
+      <div class="printing">
+        <div class="spinner">🖨️</div>
+        <div>${chosenCert.name} ${copiesCount}부 발급 처리 중...</div>
+        <div class="progress-track"><div class="progress-fill"></div></div>
+      </div>`;
   } else {
+    const total = chosenCert.fee * copiesCount;
     s.innerHTML = `
-      <div class="done"><div class="big">✅ ${chosenCert} 발급 완료</div>
-        <p>출력물을 받아 가세요.<br>⬆ 위로 쓸기 또는 ☝ 손가락 1개 들기로 처음 화면으로 돌아갑니다.</p></div>`;
+      <div class="receipt">
+        <div class="center">✅ 발급 완료</div>
+        <div class="center big">${chosenCert.name}</div>
+        <hr>
+        <div class="row"><span>수량</span><span>${copiesCount}부</span></div>
+        <div class="row"><span>단가</span><span>${won(chosenCert.fee)}</span></div>
+        <div class="row total"><span>결제 금액</span><span>${won(total)}</span></div>
+        <hr>
+        <div class="row"><span>발급 시각</span><span>${new Date().toLocaleTimeString("ko-KR")}</span></div>
+      </div>
+      <div class="done-note">출력물을 받아 가세요.<br>⬆ 위로 쓸기 또는 ☝ 손가락 1개 들기로 처음 화면으로 돌아갑니다.</div>`;
   }
 }
 

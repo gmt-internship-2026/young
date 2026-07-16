@@ -1,8 +1,9 @@
 """pipeline 모듈 — 캡처·추론·판정·안내를 연결해 실시간 루프를 구동한다 (기획서 2.2, 3.2).
 
-프레임 흐름 (윈도우 + NVIDIA GPU 기준 — 2026-07-15 2차: 포즈 단일 엔진):
+프레임 흐름 (2026-07-16: 선택 판정에 손 모델 추가):
   카메라(스레드) → 거울 반전 → 사람 포즈(RTMPose) → 사용자 잠금(person_lock)
-  → 동작 판정(gesture_filter: 손목 쓸기 궤적 + 고개 꾸벅 2회)
+  → 잠긴 사용자 bbox 크롭 → 손 랜드마크(MediaPipe HandLandmarker)
+  → 동작 판정(gesture_filter: 손목 쓸기 궤적 + 손가락 1개 인식)
   → 이벤트 전송 + 음성 안내
 
 주민등록증 OCR은 별도 워커 스레드에서 돈다 — EasyOCR 1회가 수백 ms라
@@ -16,6 +17,7 @@ import time
 
 from src.announce.announcer import Announcer
 from src.capture.camera_stream import CameraStream
+from src.inference.hand_estimator import HandEstimator, count_extended_fingers
 from src.inference.pose_estimator import PoseEstimator
 from src.inference.preprocessor import Preprocessor
 from src.pipeline.event_sender import create_event_sender
@@ -31,6 +33,15 @@ EVENT_LOG_MAX_COUNT = 200
 EVENT_OVERLAY_HOLD_SEC = 1.5
 OCR_IDLE_POLL_SEC = 0.2
 ASSUMED_CAMERA_FPS = 30.0  # ocr.interval_frames를 워커의 폴링 주기로 환산할 때의 기준
+
+
+def _crop_bbox(frame, bbox):
+    """bbox(x1, y1, x2, y2) 픽셀 좌표로 프레임을 잘라낸다 — 프레임 경계로 clamp."""
+    h_px, w_px = frame.shape[:2]
+    x1, y1, x2, y2 = bbox
+    x1, y1 = max(0, int(x1)), max(0, int(y1))
+    x2, y2 = min(w_px, int(x2)), min(h_px, int(y2))
+    return frame[y1:y2, x1:x2]
 
 
 class PipelineState:
@@ -126,7 +137,8 @@ def run_pipeline(config):
     state = PipelineState()
     camera = CameraStream(config).start()
     preprocessor = Preprocessor(config)
-    pose_estimator = PoseEstimator(config)   # 유일한 추론 모델 — 모든 판정의 입력
+    pose_estimator = PoseEstimator(config)   # 쓸기·사용자 잠금 — 프레임 전체 추론
+    hand_estimator = HandEstimator(config)   # 선택(손가락 인식) — 잠긴 사용자 bbox 크롭만 추론
 
     first_frame = camera.capture_frame()
     frame_height_px, frame_width_px = first_frame.shape[:2]
@@ -163,9 +175,16 @@ def run_pipeline(config):
                 else (info[0], (info[1][0] / frame_width_px, info[1][1] / frame_height_px))
                 for side, info in person_lock.user_swipe_points().items()
             }
-            gesture_event = gesture_filter.filter_signals(
-                swipe_points_ratio, person_lock.user_neck_ratio()
-            )
+
+            # 선택 판정용 손가락 개수 — 잠긴 사용자 bbox 크롭만 봐서 다른 사람 손을 거른다
+            finger_count = None
+            if person_lock.locked_person is not None:
+                hand_crop = _crop_bbox(input_tensor, person_lock.locked_person.bbox)
+                hands = hand_estimator.infer(hand_crop)
+                if hands:
+                    finger_count = count_extended_fingers(hands[0])
+
+            gesture_event = gesture_filter.filter_signals(swipe_points_ratio, finger_count)
 
             if gesture_event is not None:
                 event_sender.send(gesture_event)
@@ -176,7 +195,7 @@ def run_pipeline(config):
             state.capture_fps = camera.fps_meter.avg_fps
             state.infer_fps = infer_fps_meter.avg_fps
 
-            annotated = draw_person_lock(input_tensor, person_lock)
+            annotated = draw_person_lock(input_tensor, person_lock, finger_count)
             if state.is_ocr_mode_active():
                 annotated = draw_ocr_mode(annotated, ocr_guide_region)
             overlay_event = state.last_event

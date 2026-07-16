@@ -4,12 +4,19 @@
 # 2026-07-11 라이선스 B안: ultralytics(AGPL-3.0) 제거 —
 #   실행기 = ONNX Runtime(MIT), 포즈 = rtmlib/RTMPose(Apache-2.0)
 #
+# 2026-07-16 mediapipe 재도입: 선택(select)이 고개 꾸벅 2회 → 손가락 1개 인식으로
+#   바뀌면서 손 랜드마크 검출이 다시 필요해졌다(무손 접근성 요건 제외 — 회사 확인).
+#   rtmlib의 Hand/Wholebody(mmpose 2단계: 검출+포즈)보다 CPU 실시간 손 추적에
+#   강점이 있는 MediaPipe Tasks API(HandLandmarker)를 선택. Apache-2.0이라
+#   기존 "카피레프트 없음" 결론에 영향 없음.
+#
 # torch / torchvision은 EasyOCR(주민등록증)용 — 윈도우 PyPI 기본 휠이 CPU 빌드라 그대로 쓴다
 # (GPU판과 달리 별도 인덱스 설치·onnxruntime GPU판 복구 절차가 필요 없다)
 torch==2.11.0                      # EasyOCR용 (윈도우 기본 휠 = CPU 빌드)
 torchvision==0.26.0
 onnxruntime==1.23.2                # CPU 실행 — 전 플랫폼 공통
 rtmlib==0.0.15                     # RTMPose 포즈 추정 (Apache-2.0) — 사용자 잠금용
+mediapipe==0.10.35                 # 손 랜드마크(HandLandmarker Tasks API, Apache-2.0) — 선택(select) 판정용
 opencv-python==5.0.0.93
 opencv-python-headless==5.0.0.93   # easyocr 의존성 — opencv-python과 반드시 같은 버전 (cv2 충돌 방지)
 numpy==2.2.6

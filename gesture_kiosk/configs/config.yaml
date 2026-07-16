@@ -5,6 +5,9 @@
 #   팔 좌/우 쓸기=포커스 이동 · 아래로 쓸기=이전 화면(go_back) · 위로 쓸기=처음으로 /
 #   고개 꾸벅 2회=선택. 모든 판정이 RTMPose 키포인트 하나로 끝난다 —
 #   같은 날 2차에서 선택을 손등/팔등→꾸벅으로 재확정, 손 검출(MediaPipe)·팔등 CNN 제거.
+# 2026-07-16 선택 동작 재확정 — 무손·무지 접근성 요건 제외(회사 확인), 꾸벅임은 UX 부담
+#   으로 기각. 선택 = 손가락 1개(엄지 제외) 인식으로 교체, MediaPipe HandLandmarker 재도입
+#   (hand_model 섹션 신설). 쓸기·잠금은 그대로 RTMPose 단일 엔진 유지.
 
 camera:
   device_id: 0            # USB 웹캠 장치 번호
@@ -18,8 +21,8 @@ camera:
                           #   (msmf는 이 설정을 무시하기도 한다 — dshow 계열 카메라용)
 
 model:
-  # 라이선스(2026-07-15 2차): rtmlib RTMPose(Apache-2.0) **포즈 단일 모델** —
-  # 손 검출(MediaPipe)·팔등 CNN 제거로 쓸기·끄덕임·잠금이 전부 이 키포인트로 판정된다
+  # 라이선스(2026-07-15 2차): rtmlib RTMPose(Apache-2.0) — 쓸기(손목 궤적)·사용자 잠금
+  # 담당. 선택(select)은 손가락 인식이라 아래 hand_model이 별도로 맡는다(2026-07-16)
   device: cpu             # CPU 추론판 고정 — GPU 가속판은 feat/think_win_gpu 브랜치
   use_tensorrt: false     # CPU판 — TensorRT 사용 불가 (GPU 가속은 feat/think_win_gpu)
   pose_mode: lightweight  # CPU 기본(30 FPS 확보용) — GPU판 기본은 balanced
@@ -27,6 +30,15 @@ model:
   max_infer_fps: 30       # 추론 루프 FPS 상한 — 초과분은 대기 (GPU 낭비 방지)
                           #   KPI가 30 FPS — 60으로 두면 추론 루프가 캡처 스레드의
                           #   CPU/GIL을 빼앗아 캡처가 30→15 FPS로 반토막난다 (2026-07-10 실측)
+
+hand_model:                # 손 랜드마크(MediaPipe HandLandmarker, Apache-2.0) — 선택(select)
+                          # 판정 전용(2026-07-16 재도입). person_lock이 잠근 사용자의 bbox로
+                          # 크롭한 영역만 추론해 CPU 30 FPS 예산·다른 사람 손 오인식을 막는다
+  weights_path: models/weights/hand_landmarker.task  # 저장소에 포함 — 재다운로드 불필요
+  num_hands: 1              # 크롭 안에서 손 1개만 보면 충분 — 오탐·연산 절약
+  min_hand_detection_conf: 0.5
+  min_hand_presence_conf: 0.5
+  min_tracking_conf: 0.5
 
 person_lock:              # 오토포커스 카메라 — 초점 맞은 사용자에게 잠금, 다른 사람 무시
   enabled: true
@@ -49,15 +61,12 @@ gestures:
     elbow_gain: 2.0           # 팔꿈치 폴백(손목 신뢰도 미달 — 손 절단 등) 진행도 배율.
                               #   팔꿈치는 어깨 기준 회전 반경이 손목의 절반쯤이라 같은
                               #   팔 휘두름에도 이동량이 절반 — 같은 기준으로 판정되게 보정
-  select:                     # 고개 꾸벅 2회 = 선택/확인 — "끄덕임=예"라 안내 없이 직관적이고,
-                              #   팔이 전혀 없는 사용자도 가능. 2회 요구는 무의식 끄덕임 오탐 방지.
-                              #   신호 = 목 길이 비율: (어깨중점 y - 코 y) / 어깨 너비
-    nod_dip_ratio: 0.12       # 기준선 대비 이만큼 줄면 "숙임" — 어깨 너비 40cm 기준 약 5cm
-    nod_return_ratio: 0.05    # 기준선에서 이 이내로 돌아오면 꾸벅 1회 완료
-    nod_return_within_sec: 0.8    # 이 안에 못 돌아오면 내려다보기(지갑·신분증) — 무효
-    double_within_sec: 1.6    # 1회째 완료 후 2회째 완료까지 허용 시간
-    rebase_after_sec: 3.0     # 기준선과 계속 어긋나면(사용자 교대 등) 이 시간 후 재학습
-    baseline_alpha: 0.05      # 평시 목 길이 기준선 EMA 계수 (평시 자세에서만 갱신)
+  select:                     # 손가락 1개(엄지 제외) 인식 = 선택/확인 (2026-07-16 재확정 —
+                              #   무손·무지 접근성 요건 제외, 꾸벅임은 UX 부담으로 기각)
+    required_finger_count: 1  # 검지~새끼 중 정확히 이 개수만 편 상태 — 엄지는 손 방향
+                              #   (좌/우 손·거울 반전)에 따라 판정 축이 달라져 집계에서 제외
+    hold_sec: 0.6             # 이 시간 이상 끊기지 않고 유지해야 확정 — 순간 오탐 방지
+                              #   (구 꾸벅 2회 요구와 같은 목적을 "유지 시간"으로 대체)
 
 ocr:                        # 주민등록증 인식 — 이름·주민등록번호 자동 입력
   enabled: true

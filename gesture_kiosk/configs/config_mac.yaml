@@ -14,12 +14,19 @@ camera:
   fourcc: mjpg            # 캡처 픽셀 포맷 — 맥 내장 카메라는 무시될 수 있다 (무해)
 
 model:
-  # 라이선스(2026-07-15 2차): rtmlib RTMPose(Apache-2.0) 포즈 단일 모델. 맥은 CPU 실행(개발 확인용)
+  # 라이선스(2026-07-15 2차): rtmlib RTMPose(Apache-2.0) — 쓸기·잠금. 맥은 CPU 실행(개발 확인용)
   device: auto            # 맥: CUDA 없음 -> 자동으로 cpu
   use_tensorrt: false
   pose_mode: lightweight  # ★ 맥 CPU — 가벼운 포즈 모델로 개발 확인
   input_size_px: 640
   max_infer_fps: 60
+
+hand_model:                # MediaPipe HandLandmarker(Apache-2.0) — 선택 판정 (2026-07-16 재도입)
+  weights_path: models/weights/hand_landmarker.task
+  num_hands: 1
+  min_hand_detection_conf: 0.5
+  min_hand_presence_conf: 0.5
+  min_tracking_conf: 0.5
 
 person_lock:
   enabled: true
@@ -38,13 +45,9 @@ gestures:
     axis_dominance: 1.5
     min_track_frames: 4
     elbow_gain: 2.0         # 손목 미검출 시 팔꿈치 폴백 배율 — config.yaml 주석 참고
-  select:                 # 고개 꾸벅 2회 — config.yaml 주석 참고
-    nod_dip_ratio: 0.12
-    nod_return_ratio: 0.05
-    nod_return_within_sec: 0.8
-    double_within_sec: 1.6
-    rebase_after_sec: 3.0
-    baseline_alpha: 0.05
+  select:                 # 손가락 1개(엄지 제외) 인식 — config.yaml 주석 참고 (2026-07-16 재확정)
+    required_finger_count: 1
+    hold_sec: 0.6
 
 ocr:
   enabled: true

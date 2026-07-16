@@ -12,8 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 
 from src.postprocess.person_lock import (
-    KPT_LEFT_ELBOW, KPT_LEFT_SHOULDER, KPT_LEFT_WRIST, KPT_NOSE,
-    KPT_RIGHT_ELBOW, KPT_RIGHT_SHOULDER, KPT_RIGHT_WRIST, PersonLock,
+    KPT_LEFT_ELBOW, KPT_LEFT_WRIST, KPT_RIGHT_ELBOW, KPT_RIGHT_WRIST, PersonLock,
 )
 
 FRAME_WIDTH_PX = 1280
@@ -25,15 +24,13 @@ class FakePerson:
 
     def __init__(self, center_x, center_y, size_px=200.0,
                  left_wrist=None, right_wrist=None, left_elbow=None, right_elbow=None,
-                 nose=None, left_shoulder=None, right_shoulder=None, head_points=None):
+                 head_points=None):
         half = size_px / 2.0
         self.bbox = (center_x - half, center_y - half, center_x + half, center_y + half)
         self.conf = 0.9
         self.keypoints = np.zeros((17, 3))
         for index, point in ((KPT_LEFT_WRIST, left_wrist), (KPT_RIGHT_WRIST, right_wrist),
-                             (KPT_LEFT_ELBOW, left_elbow), (KPT_RIGHT_ELBOW, right_elbow),
-                             (KPT_NOSE, nose), (KPT_LEFT_SHOULDER, left_shoulder),
-                             (KPT_RIGHT_SHOULDER, right_shoulder)):
+                             (KPT_LEFT_ELBOW, left_elbow), (KPT_RIGHT_ELBOW, right_elbow)):
             if point is not None:
                 self.keypoints[index] = (*point, 0.9)
         self.head_points = head_points if head_points is not None else [
@@ -135,7 +132,7 @@ class LockSelectionTest(unittest.TestCase):
         self.assertIsNone(lock.locked_person)
 
     def test_disabled_lock_tracks_best_person_for_signals(self):
-        # 잠금 비활성 — 쓸기·끄덕임 신호용으로 최고 신뢰도 사람을 추적한다
+        # 잠금 비활성 — 쓸기 신호용으로 최고 신뢰도 사람을 추적한다
         lock, _ = make_lock(make_config(enabled=False))
         person = FakePerson(640, 360, left_wrist=(500, 400))
         lock.update(FRAME, [person])
@@ -178,44 +175,6 @@ class SwipePointTest(unittest.TestCase):
     def test_missing_arm_returns_none(self):
         lock = self._locked(right_wrist=(800, 400))   # 모델 왼팔 키포인트 전무
         self.assertIsNone(lock.user_swipe_points()["right"])
-
-
-class UserNeckRatioTest(unittest.TestCase):
-    """끄덕임(select) 신호 — (어깨 중점 y - 코 y) / 어깨 너비 (2026-07-15 2차)."""
-
-    def _locked(self, **person_kwargs):
-        lock, clock = make_lock()
-        person = FakePerson(640, 360, **person_kwargs)
-        lock_person(lock, clock, person)
-        return lock
-
-    def test_ratio_from_nose_and_shoulders(self):
-        # 어깨 너비 200px, 코가 어깨 중점보다 180px 위 → 0.9
-        lock = self._locked(nose=(640, 300),
-                            left_shoulder=(540, 480), right_shoulder=(740, 480))
-        self.assertAlmostEqual(lock.user_neck_ratio(), 0.9)
-
-    def test_nod_lowers_ratio(self):
-        # 고개를 숙이면(코 y 증가) 비율이 준다 — _NodTracker가 보는 방향성
-        upright = self._locked(nose=(640, 300),
-                               left_shoulder=(540, 480), right_shoulder=(740, 480))
-        nodding = self._locked(nose=(640, 360),
-                               left_shoulder=(540, 480), right_shoulder=(740, 480))
-        self.assertLess(nodding.user_neck_ratio(), upright.user_neck_ratio())
-
-    def test_missing_keypoint_returns_none(self):
-        lock = self._locked(nose=(640, 300), left_shoulder=(540, 480))  # 오른어깨 없음
-        self.assertIsNone(lock.user_neck_ratio())
-
-    def test_narrow_shoulders_returns_none(self):
-        # 측면 자세 — 어깨 너비가 좁으면 정규화 분모로 못 쓴다
-        lock = self._locked(nose=(640, 300),
-                            left_shoulder=(635, 480), right_shoulder=(645, 480))
-        self.assertIsNone(lock.user_neck_ratio())
-
-    def test_no_lock_returns_none(self):
-        lock, _ = make_lock()
-        self.assertIsNone(lock.user_neck_ratio())
 
 
 if __name__ == "__main__":

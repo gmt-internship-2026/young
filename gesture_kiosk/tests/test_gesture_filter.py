@@ -36,12 +36,8 @@ def make_config():
                 "elbow_gain": 2.0,
             },
             "select": {
-                "nod_dip_ratio": 0.12,
-                "nod_return_ratio": 0.05,
-                "nod_return_within_sec": 0.8,
-                "double_within_sec": 1.6,
-                "rebase_after_sec": 3.0,
-                "baseline_alpha": 0.05,
+                "required_finger_count": 1,
+                "hold_sec": 0.3,
             },
         },
     }
@@ -49,8 +45,12 @@ def make_config():
 
 FRAME_DT_SEC = 1.0 / 30.0  # 30 FPS 가정
 
-NEUTRAL_RATIO = 1.0   # 평시 목 길이 비율 (기준선)
-DIP_RATIO = 0.8       # 고개 숙임 (기준선 - 0.2 < 기준선 - nod_dip_ratio)
+ONE_FINGER = 1
+TWO_FINGERS = 2
+ZERO_FINGERS = 0
+
+HOLD_FRAME_COUNT = 15    # hold_sec(0.3초)를 넉넉히 넘기는 프레임 수 (15 * 1/30 = 0.5초)
+BRIEF_FRAME_COUNT = 5    # hold_sec 미달 (5 * 1/30 ≈ 0.17초)
 
 
 class GestureFilterTestBase(unittest.TestCase):
@@ -58,10 +58,10 @@ class GestureFilterTestBase(unittest.TestCase):
         self.clock = FakeClock()
         self.filter = GestureFilter(make_config(), clock=self.clock)
 
-    def _feed(self, swipe_points=None, neck_ratio=None, frame_count=1, dt_sec=FRAME_DT_SEC):
+    def _feed(self, swipe_points=None, finger_count=None, frame_count=1, dt_sec=FRAME_DT_SEC):
         """frame_count 프레임 공급 — 첫 확정 이벤트를 즉시 돌려준다 (없으면 None)."""
         for _ in range(frame_count):
-            event = self.filter.filter_signals(swipe_points or {}, neck_ratio)
+            event = self.filter.filter_signals(swipe_points or {}, finger_count)
             self.clock.tick(dt_sec)
             if event is not None:
                 return event
@@ -78,10 +78,10 @@ class GestureFilterTestBase(unittest.TestCase):
                 return event
         return None
 
-    def _feed_nod_sequence(self, ratios, dt_sec=FRAME_DT_SEC):
-        """목 길이 비율 시퀀스 공급 — 첫 확정 이벤트를 돌려준다."""
-        for ratio in ratios:
-            event = self._feed(neck_ratio=ratio, dt_sec=dt_sec)
+    def _feed_fingers(self, counts, dt_sec=FRAME_DT_SEC):
+        """손가락 개수 시퀀스 공급 — 첫 확정 이벤트를 돌려준다."""
+        for count in counts:
+            event = self._feed(finger_count=count, dt_sec=dt_sec)
             if event is not None:
                 return event
         return None
@@ -94,14 +94,6 @@ def path(start, end, step_count, y_ratio=None, x_ratio=None):
         value = start + (end - start) * step_idx / step_count
         points.append((value, y_ratio) if y_ratio is not None else (x_ratio, value))
     return points
-
-
-def nod(dip_frames=3):
-    """꾸벅 1회 시퀀스 — 숙임 N프레임 + 복귀 1프레임."""
-    return [DIP_RATIO] * dip_frames + [NEUTRAL_RATIO]
-
-
-BASELINE_WARMUP = [NEUTRAL_RATIO] * 5   # 기준선 학습용 평시 프레임
 
 
 class SwipeGestureTest(GestureFilterTestBase):
@@ -170,77 +162,56 @@ class SwipeGestureTest(GestureFilterTestBase):
         self.assertIsNone(event)
 
 
-class NodSelectTest(GestureFilterTestBase):
-    """고개 꾸벅 2회 = 선택 (2026-07-15 2차 — 사용자 결정: 2회로 보수적으로)."""
+class FingerSelectTest(GestureFilterTestBase):
+    """손가락 1개(엄지 제외) 인식을 hold_sec 이상 유지 = 선택 (2026-07-16 재확정 —
+    무손·무지 접근성 요건 제외, 꾸벅임은 UX 부담으로 기각)."""
 
-    def test_double_nod_fires_select(self):
-        event = self._feed_nod_sequence(BASELINE_WARMUP + nod() + nod())
+    def test_hold_one_finger_fires_select(self):
+        event = self._feed_fingers([ONE_FINGER] * HOLD_FRAME_COUNT)
         self.assertIsNotNone(event)
         self.assertEqual(event.class_name, "select")
 
-    def test_single_nod_does_not_fire(self):
-        event = self._feed_nod_sequence(BASELINE_WARMUP + nod() + [NEUTRAL_RATIO] * 20)
+    def test_brief_one_finger_does_not_fire(self):
+        # hold_sec(0.3초) 미달 — 순간 오탐 방지
+        event = self._feed_fingers([ONE_FINGER] * BRIEF_FRAME_COUNT)
         self.assertIsNone(event)
 
-    def test_slow_second_nod_does_not_fire(self):
-        # 1회째 완료 후 double_within_sec(1.6초) 넘겨서 2회째 — 처음부터 다시
-        self._feed_nod_sequence(BASELINE_WARMUP + nod())
-        self.clock.tick(2.0)
-        event = self._feed_nod_sequence(nod())
+    def test_two_fingers_does_not_fire(self):
+        event = self._feed_fingers([TWO_FINGERS] * HOLD_FRAME_COUNT)
         self.assertIsNone(event)
 
-    def test_sustained_look_down_does_not_fire(self):
-        # 지갑·신분증 내려다보기 — nod_return_within_sec(0.8초) 안에 복귀하지 않으면 무효
-        look_down = [DIP_RATIO] * 40   # ≈ 1.3초 유지
-        event = self._feed_nod_sequence(BASELINE_WARMUP + look_down + [NEUTRAL_RATIO] * 5)
+    def test_zero_fingers_does_not_fire(self):
+        event = self._feed_fingers([ZERO_FINGERS] * HOLD_FRAME_COUNT)
         self.assertIsNone(event)
 
-    def test_look_down_tail_plus_one_nod_does_not_fire(self):
-        # 긴 내려다보기의 복귀 꼬리는 꾸벅으로 세지 않는다 — 이후 꾸벅 1회로는 미달
-        look_down = [DIP_RATIO] * 40
-        event = self._feed_nod_sequence(
-            BASELINE_WARMUP + look_down + [NEUTRAL_RATIO] * 3 + nod()
-        )
-        self.assertIsNone(event)
+    def test_hand_loss_resets_hold(self):
+        # hold_sec 미달까지 유지하다 손 소실(None) — 유지 시간이 끊긴다
+        self._feed_fingers([ONE_FINGER] * BRIEF_FRAME_COUNT)
+        self._feed(finger_count=None)
+        event = self._feed_fingers([ONE_FINGER] * BRIEF_FRAME_COUNT)
+        self.assertIsNone(event)   # 리셋 후 다시 미달만큼만 유지 — 아직 확정 안 됨
+        event = self._feed_fingers([ONE_FINGER] * HOLD_FRAME_COUNT)
+        self.assertIsNotNone(event)   # 이어서 충분히 유지 — 확정
 
-    def test_keypoint_loss_voids_current_nod(self):
-        # 숙임 도중 키포인트 소실 — 그 꾸벅은 무효, 이후 정상 2회는 확정
-        self._feed_nod_sequence(BASELINE_WARMUP + [DIP_RATIO] * 2)
-        self._feed(neck_ratio=None)
-        event = self._feed_nod_sequence([NEUTRAL_RATIO] * 2 + nod())
-        self.assertIsNone(event)   # 소실된 첫 숙임은 집계되지 않았다
-        event = self._feed_nod_sequence(nod())
-        self.assertIsNotNone(event)   # 온전한 2회째로 확정
-        self.assertEqual(event.class_name, "select")
-
-    def test_baseline_rebases_for_new_user(self):
-        # 체형이 다른 새 사용자(평시 0.7) — rebase_after_sec(3초) 후 기준선 재학습돼 동작
-        self._feed_nod_sequence(BASELINE_WARMUP)              # 기준선 1.0 학습
-        self._feed(neck_ratio=0.7, frame_count=100)           # ≈ 3.3초 — 재학습 발생
-        event = self._feed_nod_sequence(
-            [0.7] * 3 + [0.5] * 3 + [0.7] + [0.5] * 3 + [0.7]  # 새 기준선 대비 꾸벅 2회
-        )
-        self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "select")
-
-    def test_shallow_bob_does_not_fire(self):
-        # nod_dip_ratio(0.12) 미만의 얕은 끄덕임(대화 중 습관) — 숙임으로 안 본다
-        shallow = [0.93] * 3 + [NEUTRAL_RATIO]
-        event = self._feed_nod_sequence(BASELINE_WARMUP + shallow + shallow + shallow)
-        self.assertIsNone(event)
+    def test_finger_count_change_resets_hold(self):
+        # 유지 중 개수가 바뀌면(2개로) 타이머가 끊긴다
+        self._feed_fingers([ONE_FINGER] * BRIEF_FRAME_COUNT)
+        self._feed_fingers([TWO_FINGERS] * BRIEF_FRAME_COUNT)
+        event = self._feed_fingers([ONE_FINGER] * BRIEF_FRAME_COUNT)
+        self.assertIsNone(event)   # 다시 1개로 돌아왔지만 아직 hold_sec 미달
 
 
 class CooldownTest(GestureFilterTestBase):
     def test_cooldown_blocks_repeat_event(self):
-        self._feed_nod_sequence(BASELINE_WARMUP + nod() + nod())   # select 확정
-        event = self._feed_nod_sequence(nod() + nod())             # 쿨다운(1초) 내
+        self._feed_fingers([ONE_FINGER] * HOLD_FRAME_COUNT)   # select 확정
+        event = self._feed_fingers([ONE_FINGER] * HOLD_FRAME_COUNT)   # 쿨다운(1초) 내
         self.assertIsNone(event)
         self.clock.tick(1.0)
-        event = self._feed_nod_sequence([NEUTRAL_RATIO] * 3 + nod() + nod())
+        event = self._feed_fingers([ONE_FINGER] * HOLD_FRAME_COUNT)
         self.assertIsNotNone(event)
 
     def test_cooldown_blocks_swipe_after_select(self):
-        self._feed_nod_sequence(BASELINE_WARMUP + nod() + nod())   # select 확정
+        self._feed_fingers([ONE_FINGER] * HOLD_FRAME_COUNT)   # select 확정
         event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4))
         self.assertIsNone(event)                                   # 쿨다운 내 쓸기 무시
 

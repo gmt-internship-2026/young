@@ -49,8 +49,9 @@ source venv/bin/activate        # 맥·리눅스 공통 / 윈도우: venv\Script
 pip install -r requirements.txt
 ```
 
-- rtmlib(포즈 — 유일한 모델)·onnxruntime(실행기)·opencv(카메라)·fastapi(서버)·easyocr(주민등록증 OCR)
-  등이 한 번에 설치된다 (약 2GB, 수 분 소요) — 라이선스 검토 완료 스택 (docs/TODO.md №9)
+- rtmlib(포즈 — 쓸기·잠금)·mediapipe(손 — 선택 판정, 2026-07-16 재도입)·onnxruntime(실행기)·
+  opencv(카메라)·fastapi(서버)·easyocr(주민등록증 OCR) 등이 한 번에 설치된다
+  (약 2GB, 수 분 소요) — 라이선스 검토 필요 스택 (docs/TODO.md №9)
 - PyTorch는 easyocr가 의존성으로 끌고 온다 (OCR용 — 제스처·포즈는 torch 불필요)
 - 윈도우 + NVIDIA GPU에서 OCR까지 GPU로 확인하려면 CUDA torch를 별도 설치
   (배포 기준 cu128 — install.bat이 자동 처리)

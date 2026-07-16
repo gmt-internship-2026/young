@@ -2,9 +2,9 @@
 
 install.bat 마지막 단계에서 자동 실행된다. 확인 항목:
 1. 파이썬 버전 (배포 기준 3.11.5 — 시험 장비의 다른 버전은 경고만)
-2. 핵심 패키지 임포트 (onnxruntime·rtmlib·cv2·fastapi / 선택: easyocr·pyttsx3·torch)
+2. 핵심 패키지 임포트 (onnxruntime·rtmlib·mediapipe·cv2·fastapi / 선택: easyocr·pyttsx3·torch)
 3. GPU 가속 확인 (onnxruntime CUDA — 맥 시험 장비는 CPU 안내)
-4. 더미 프레임 추론 (포즈 — 유일한 모델: 쓸기·끄덕임·잠금 전부 이걸로 판정)
+4. 더미 프레임 추론 (포즈 — 쓸기·잠금 담당 / 손 — 선택(손가락 인식) 담당, 2026-07-16)
 
 사용법 (프로젝트 루트에서):
     python scripts/smoke_test.py
@@ -13,6 +13,11 @@ install.bat 마지막 단계에서 자동 실행된다. 확인 항목:
 import os
 import platform
 import sys
+
+if sys.platform.startswith("win"):
+    # 윈도우 콘솔(cp949) — em-dash(—) 등 출력 시 UnicodeEncodeError 방지 (2026-07-13)
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
@@ -45,7 +50,7 @@ def main():
         f"현재 {actual_python}" + ("" if actual_python == expected_python else " ← 배포 기준과 다름 (시험 장비면 무시)"),
     )
 
-    for module_name in ("onnxruntime", "rtmlib", "cv2", "fastapi", "yaml", "numpy"):
+    for module_name in ("onnxruntime", "rtmlib", "mediapipe", "cv2", "fastapi", "yaml", "numpy"):
         try:
             __import__(module_name)
             check(f"{module_name} 임포트", True)
@@ -77,7 +82,7 @@ def main():
         except ImportError as error:
             check("pyttsx3 임포트 (음성 안내)", False, str(error))
 
-    # 포즈가 유일한 모델 — 쓸기(손목 궤적)·선택(끄덕임)·잠금이 전부 이걸로 판정 (2026-07-15 2차)
+    # 포즈 — 쓸기(손목 궤적)·잠금 담당 (2026-07-15 2차)
     try:
         import numpy as np
 
@@ -86,9 +91,22 @@ def main():
         pose = PoseEstimator(config)
         dummy = np.zeros((480, 640, 3), dtype=np.uint8)
         pose.infer(dummy)
-        check("더미 프레임 추론 (포즈 — 쓸기·끄덕임·잠금)", True)
+        check("더미 프레임 추론 (포즈 — 쓸기·잠금)", True)
     except Exception as error:  # 모델 누락·드라이버 문제 등 — 원인 그대로 보여준다
-        check("더미 프레임 추론 (포즈 — 쓸기·끄덕임·잠금)", False, repr(error))
+        check("더미 프레임 추론 (포즈 — 쓸기·잠금)", False, repr(error))
+
+    # 손 — 선택(손가락 1개 인식) 담당 (2026-07-16)
+    try:
+        import numpy as np
+
+        from src.inference.hand_estimator import HandEstimator
+
+        hand = HandEstimator(config)
+        dummy = np.zeros((200, 200, 3), dtype=np.uint8)
+        hand.infer(dummy)
+        check("더미 프레임 추론 (손 — 선택)", True)
+    except Exception as error:
+        check("더미 프레임 추론 (손 — 선택)", False, repr(error))
 
     print()
     if is_all_passed:

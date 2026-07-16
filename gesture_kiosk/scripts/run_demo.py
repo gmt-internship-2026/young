@@ -12,6 +12,11 @@ import os
 import sys
 import time
 
+if sys.platform.startswith("win"):
+    # 윈도우 콘솔(cp949) — em-dash(—) 등 출력 시 UnicodeEncodeError 방지 (2026-07-13)
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
 

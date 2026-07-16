@@ -1,7 +1,7 @@
 # gesture_kiosk — 제스처 인식 배리어프리 민원발급기 (추론)
 
-(주)광명테크 인턴 프로젝트. USB 카메라 1대로 손 제스처와 주민등록증을 실시간
-인식해 키오스크 프로그램으로 이벤트를 전달한다. **기획서(기획서.docx)의
+(주)광명테크 인턴 프로젝트. USB 카메라 1대로 제스처를 실시간 인식해
+키오스크 프로그램으로 이벤트를 전달한다. (2026-07-16 주민등록증 OCR 제거 — 제스처 집중) **기획서(기획서.docx)의
 2.3 디렉터리 구조와 4장 코딩 컨벤션을 따른다.**
 
 - 실행 환경: **윈도우 CPU(GPU 불필요) + Python 3.11.5** — CPU 추론판 (정부 민원발급기)
@@ -32,7 +32,6 @@ run.bat            :: 실행 — 브라우저 http://localhost:5000
 | go_back | 팔을 **아래로 쓸기** | 〃 | 이전 화면 |
 | go_home | 팔을 **위로 쓸기** | 〃 | 처음 화면으로 |
 | select | **고개 꾸벅 2회** | 목 길이 비율(코~어깨, 어깨 너비 정규화) 숙임→복귀 ×2 | 선택·확인 |
-| fill_id_fields | 주민등록증 제시 | OCR 모드에서 EasyOCR 판독 | 이름·주민번호 자동 입력 |
 
 - **범용 설계 근거**: 쓸기는 손이 아니라 **손목 키포인트(포즈)** 궤적이라 손·손가락이
   없어도 동작하고 — 손목 키포인트가 신뢰도 미달(절단 등)이면 **팔꿈치로 자동 폴백**
@@ -51,7 +50,6 @@ run.bat            :: 실행 — 브라우저 http://localhost:5000
 카메라(스레드) → 거울 반전 → 사람 포즈(rtmlib RTMPose — 유일한 모델)
   → 사용자 잠금(person_lock: 얼굴 선명도×크기) → 손목 좌/우 보정·목 길이 비율
   → 동작 판정(gesture_filter: 손목 쓸기 궤적 + 고개 꾸벅 2회) → 이벤트 전송(event_sender) + 음성 안내(announce)
-주민등록증 OCR(easyocr)은 별도 워커 스레드 — UI가 /ocr/start로 요청할 때만
 ```
 
 ## 폴더 구조 (기획서 2.3 + 신규 모듈)
@@ -66,13 +64,12 @@ gesture_kiosk/
 │   ├─ inference/pose_estimator.py   # 사람 포즈 (rtmlib RTMPose) — 유일한 추론 모델
 │   ├─ postprocess/person_lock.py    # 사용자 잠금 + 쓸기 추적점(손목→팔꿈치 폴백)·목 길이 신호
 │   ├─ postprocess/gesture_filter.py # 동작 판정 — 손목 쓸기 궤적 + 고개 꾸벅 2회
-│   ├─ ocr/idcard_reader.py          # 주민등록증 이름·주민번호 (마스킹 로그)
 │   ├─ announce/announcer.py         # 토크백 TTS (pyttsx3 — SAPI/nsss)
 │   ├─ pipeline/realtime_loop.py     # 실시간 루프 조립 (멀티스레딩)
 │   ├─ pipeline/event_sender.py      # ★ 회사 프로그램 연동 접점 (console/udp)
-│   └─ pipeline/demo_server.py       # ★ 예시 UI 서버 + /announce·/ocr 계약
+│   └─ pipeline/demo_server.py       # ★ 예시 UI 서버 + /announce 계약
 ├─ scripts/                 # run_demo · download_weights · benchmark · smoke_test
-├─ tests/                   # 단위 테스트 43건 (카메라·모델 없이 실행 가능)
+├─ tests/                   # 단위 테스트 46건 (카메라·모델 없이 실행 가능)
 ├─ demo_ui/index.html       # ★ 예시 민원발급기 화면 (회사 UI 수령 시 교체)
 └─ docs/TODO.md             # 작업 분해 및 회사 확인 필요 항목
 ```
@@ -93,8 +90,7 @@ gesture_kiosk/
 1. 이벤트(엔진→UI): `event_output.mode`(console/udp) 또는 `/data` 폴링 —
    JSON `{"class_name": "move_right", "conf": 0.87, "ts_sec": ..., "hand_side": "right"}`
 2. 음성 안내(UI→엔진): `POST /announce {"text": "발급하기 버튼"}` — 포커스 항목을 TTS로
-3. 주민등록증(UI→엔진): `POST /ocr/start` → 성공 시 `fill_id_fields` 이벤트(data에 이름·주민번호)
-4. 새 수신 규격 확정 시 `event_sender.py`에 Sender 1개 추가 — 파이프라인 수정 불필요
+3. 새 수신 규격 확정 시 `event_sender.py`에 Sender 1개 추가 — 파이프라인 수정 불필요
 5. 연동 완료 후 `demo_server.py`·`demo_ui/`는 제거
 
 ## 개인정보·라이선스 주의
@@ -111,4 +107,3 @@ gesture_kiosk/
 ## 참고 링크
 
 - rtmlib (RTMPose, Apache-2.0): https://github.com/Tau-J/rtmlib
-- EasyOCR: https://github.com/JaidedAI/EasyOCR

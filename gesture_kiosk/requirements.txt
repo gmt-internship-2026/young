@@ -3,19 +3,15 @@
 #
 # 2026-07-11 라이선스 B안: ultralytics(AGPL-3.0) 제거 —
 #   실행기 = ONNX Runtime(MIT), 포즈 = rtmlib/RTMPose(Apache-2.0)
+# 2026-07-16: EasyOCR(주민등록증 OCR) 제거 — 제스처 집중, 관련 의존성 삭제
 #
-# torch / torchvision은 EasyOCR(주민등록증)용 — 윈도우 PyPI 기본 휠이 CPU 빌드라 그대로 쓴다
 # (GPU판과 달리 별도 인덱스 설치·onnxruntime GPU판 복구 절차가 필요 없다)
-torch==2.11.0                      # EasyOCR용 (윈도우 기본 휠 = CPU 빌드)
-torchvision==0.26.0
 onnxruntime==1.23.2                # CPU 실행 — 전 플랫폼 공통
 rtmlib==0.0.15                     # RTMPose 포즈 추정 (Apache-2.0) — 사용자 잠금용
 opencv-python==5.0.0.93
-opencv-python-headless==5.0.0.93   # easyocr 의존성 — opencv-python과 반드시 같은 버전 (cv2 충돌 방지)
 numpy==2.2.6
 pyyaml==6.0.3
 fastapi==0.139.0
 uvicorn==0.51.0
 psutil==7.2.2
-easyocr==1.7.2                     # 주민등록증 OCR (ocr.enabled=false면 미사용)
 pyttsx3==2.99                      # 음성 안내 TTS — 윈도우 SAPI (announce.backend=tts) — MPL-2.0: 무수정 사용이라 공개 의무 없음

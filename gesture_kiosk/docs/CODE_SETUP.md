@@ -49,11 +49,10 @@ source venv/bin/activate        # 맥·리눅스 공통 / 윈도우: venv\Script
 pip install -r requirements.txt
 ```
 
-- rtmlib(포즈 — 유일한 모델)·onnxruntime(실행기)·opencv(카메라)·fastapi(서버)·easyocr(주민등록증 OCR)
-  등이 한 번에 설치된다 (약 2GB, 수 분 소요) — 라이선스 검토 완료 스택 (docs/TODO.md №9)
-- PyTorch는 easyocr가 의존성으로 끌고 온다 (OCR용 — 제스처·포즈는 torch 불필요)
-- 윈도우 + NVIDIA GPU에서 OCR까지 GPU로 확인하려면 CUDA torch를 별도 설치
-  (배포 기준 cu128 — install.bat이 자동 처리)
+- rtmlib(포즈 — 유일한 모델)·onnxruntime(실행기)·opencv(카메라)·fastapi(서버) 등이
+  한 번에 설치된다 — 라이선스 검토 완료 스택 (docs/TODO.md №9). 2026-07-16 OCR 제거로 가벼워짐
+- 윈도우 + NVIDIA GPU는 onnxruntime-gpu의 CUDA DLL 등록용 torch를 별도 설치
+  (배포 기준 cu128 — feat/think_win_gpu의 install.bat이 자동 처리)
 - 리눅스 x86 PC는 기본 pip torch에 CUDA가 이미 포함 — NVIDIA 드라이버만 있으면 끝
   (`nvidia-smi`가 정상 출력되는지, `python3 -c "import torch; print(torch.cuda.is_available())"`가 True인지 확인)
 

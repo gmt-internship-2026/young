@@ -2,7 +2,7 @@
 
 install.bat 마지막 단계에서 자동 실행된다. 확인 항목:
 1. 파이썬 버전 (배포 기준 3.11.5 — 시험 장비의 다른 버전은 경고만)
-2. 핵심 패키지 임포트 (onnxruntime·rtmlib·cv2·fastapi / 선택: easyocr·pyttsx3·torch)
+2. 핵심 패키지 임포트 (onnxruntime·rtmlib·cv2·fastapi / 선택: pyttsx3)
 3. GPU 가속 확인 (onnxruntime CUDA — 맥 시험 장비는 CPU 안내)
 4. 더미 프레임 추론 (포즈 — 유일한 모델: 쓸기·끄덕임·잠금 전부 이걸로 판정)
 
@@ -63,13 +63,6 @@ def main():
     except ImportError:
         pass  # 위 임포트 검사에서 이미 FAIL 처리됨
 
-    if config["ocr"]["enabled"]:
-        for module_name, label in (("torch", "torch (EasyOCR용)"), ("easyocr", "easyocr (주민등록증 OCR)")):
-            try:
-                __import__(module_name)
-                check(f"{label} 임포트", True)
-            except ImportError as error:
-                check(f"{label} 임포트", False, str(error))
     if config["announce"]["enabled"] and config["announce"]["backend"] == "tts":
         try:
             __import__("pyttsx3")

@@ -44,7 +44,6 @@ class UdpEventSender:
         if gesture_event.hand_side is not None:
             payload["hand_side"] = gesture_event.hand_side
         if gesture_event.data is not None:
-            # fill_id_fields의 이름·주민번호 원문이 실린다 — 수신 UI의 처리 책임 범위.
             # 로그에는 어떤 경우에도 payload 내용물을 남기지 않는다 (개인정보 원칙)
             payload["data"] = gesture_event.data
         self._sock.sendto(json.dumps(payload, ensure_ascii=False).encode("utf-8"), self._addr)

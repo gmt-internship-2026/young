@@ -55,11 +55,6 @@ echo [INFO] 포즈 모델 캐시 복사 (오프라인)
 xcopy /y /q /e bundle_models\rtmlib "%USERPROFILE%\.cache\rtmlib\" >nul
 
 :skip_rtmlib_cache
-if not exist bundle_models\easyocr goto :skip_easyocr_cache
-echo [INFO] EasyOCR 한국어 모델 복사 (오프라인)
-xcopy /y /q /e bundle_models\easyocr "%USERPROFILE%\.EasyOCR\model\" >nul
-
-:skip_easyocr_cache
 python scripts\download_weights.py || goto :model_fail
 
 REM ---- 5) 스모크 테스트 ---------------------------------------

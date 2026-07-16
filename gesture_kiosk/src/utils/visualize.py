@@ -5,7 +5,6 @@ EVENT_COLOR = (0, 160, 255)
 TEXT_COLOR = (255, 255, 255)
 LOCK_COLOR = (255, 200, 0)       # 잠긴 사용자 얼굴 박스
 WRIST_COLOR = {"left": (255, 120, 60), "right": (60, 120, 255)}
-OCR_COLOR = (80, 200, 255)       # OCR 모드 안내 영역
 
 
 def draw_person_lock(frame, person_lock):
@@ -32,19 +31,6 @@ def draw_person_lock(frame, person_lock):
         )
     return frame
 
-
-def draw_ocr_mode(frame, guide_region_ratio):
-    """OCR 모드 표시 — 주민등록증을 비출 안내 영역을 그린다."""
-    h_px, w_px = frame.shape[:2]
-    x1_r, y1_r, x2_r, y2_r = guide_region_ratio
-    p1 = (int(w_px * x1_r), int(h_px * y1_r))
-    p2 = (int(w_px * x2_r), int(h_px * y2_r))
-    cv2.rectangle(frame, p1, p2, OCR_COLOR, 2)
-    cv2.putText(
-        frame, "ID CARD SCAN", (p1[0], p1[1] - 10),
-        cv2.FONT_HERSHEY_SIMPLEX, 0.7, OCR_COLOR, 2,
-    )
-    return frame
 
 
 def draw_status(frame, avg_fps, gesture_event=None):

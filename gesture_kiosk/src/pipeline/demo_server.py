@@ -5,11 +5,10 @@ TODO(기획서 9장 №7·№8): 회사 프로그램(UI) 파일을 받으면 이
 
 회사 프로그램 연동 계약(이 서버가 시연하는 것):
 - 이벤트(엔진→UI): /data 폴링 또는 event_output(udp) — move_left/right, select,
-  go_back, go_home, fill_id_fields(이름·주민번호) 등 config classes 목록
+  go_back, go_home (config classes 목록)
 - 음성 안내(UI→엔진): POST /announce {"text": "발급하기 버튼"} — 포커스 항목
   설명처럼 화면 구조를 아는 쪽(UI)이 문구를 만들어 엔진 TTS로 읽힌다
-- 주민등록증 인식(UI→엔진): POST /ocr/start — 본인확인 화면 진입 시 요청,
-  인식 성공 시 fill_id_fields 이벤트가 온다. POST /ocr/stop으로 중단
+(2026-07-16: 주민등록증 OCR 기능 제거 — 제스처 집중, /ocr/* 엔드포인트 삭제)
 """
 import asyncio
 import os
@@ -37,7 +36,6 @@ def create_app(state, config):
     index_path = os.path.join(config["root_dir"], DEMO_UI_HTML)
     stream_interval_sec = 1.0 / config["demo_ui"]["stream_fps"]
     jpeg_quality = config["demo_ui"]["jpeg_quality"]
-    ocr_timeout_sec = config["ocr"]["timeout_sec"]
 
     @app.get("/")
     async def serve_index():
@@ -81,7 +79,6 @@ def create_app(state, config):
             },
             "status": {
                 "is_user_locked": state.is_user_locked,
-                "is_ocr_mode": state.is_ocr_mode_active(),
             },
             "classes": config["classes"],
             "events": events,
@@ -95,15 +92,5 @@ def create_app(state, config):
         state.announcer.announce(body.text)
         return {"ok": True}
 
-    @app.post("/ocr/start")
-    async def ocr_start():
-        """본인확인 화면 진입 — 주민등록증 인식 모드를 켠다."""
-        state.start_ocr_mode(ocr_timeout_sec)
-        return {"ok": True, "timeout_sec": ocr_timeout_sec}
-
-    @app.post("/ocr/stop")
-    async def ocr_stop():
-        state.stop_ocr_mode()
-        return {"ok": True}
 
     return app

@@ -51,12 +51,11 @@
 </style>
 </head>
 <body>
-<div class="banner">⚠ 예시 UI — 회사 키오스크 프로그램으로 교체 예정 (연동 계약: /data 이벤트 · POST /announce · POST /ocr/start)</div>
+<div class="banner">⚠ 예시 UI — 회사 키오스크 프로그램으로 교체 예정 (연동 계약: /data 이벤트 · POST /announce)</div>
 <header>
   <h1>배리어프리 민원발급기 <small style="color:var(--dim);font-size:12px;">제스처 인식 데모</small></h1>
   <div class="stats">
     <span id="b-lock" class="badge off">사용자 인식 대기</span>
-    <span id="b-ocr" class="badge off">신분증 스캔</span>
     <span>추론 <b id="s-infer">-</b> FPS</span>
     <span>카메라 <b id="s-cap">-</b> FPS</span>
   </div>
@@ -79,7 +78,8 @@
 <div id="toast"></div>
 
 <script>
-// ── 민원발급기 예시 화면 3단계: 증명서 선택 → 본인확인(주민등록증) → 발급 완료 ──
+// ── 민원발급기 예시 화면 3단계: 증명서 선택 → 발급 확인 → 발급 완료 ──
+// (2026-07-16 주민등록증 OCR 제거 — 본인확인 절차는 회사 프로그램 담당)
 const CERTS = ["주민등록표 등본", "주민등록표 초본", "가족관계증명서",
                "건축물대장", "토지(임야)대장", "지방세 납세증명"];
 const CONFIRM_BUTTONS = ["발급하기", "취소"];
@@ -87,21 +87,10 @@ const CONFIRM_BUTTONS = ["발급하기", "취소"];
 let screen = "home";        // home | confirm | done
 let focusIdx = 0;           // 현재 화면의 선형 포커스 위치 (줄 끝 랩은 인덱스 순회로 자동)
 let chosenCert = null;
-let idFields = null;        // fill_id_fields 수신 결과 {name, rrn}
 let lastEventTs = 0;
-let wasOcrMode = false;
 
 const $ = (id) => document.getElementById(id);
 
-function maskName(name) {
-  if (name.length <= 1) return "*";
-  if (name.length === 2) return name[0] + "*";
-  return name[0] + "*".repeat(name.length - 2) + name[name.length - 1];
-}
-function maskRrn(rrn) {  // "950101-1234567" -> "950101-1******"
-  const [front, back] = rrn.split("-");
-  return `${front}-${back[0]}******`;
-}
 
 function focusLabels() {
   if (screen === "home") return CERTS;
@@ -127,9 +116,7 @@ function enterScreen(nextScreen) {
   screen = nextScreen;
   focusIdx = 0;
   if (screen === "confirm") {
-    idFields = null;
-    fetch("/ocr/start", { method: "POST" });
-    announce(`${chosenCert} 본인확인. 주민등록증을 카메라에 보여주세요`);
+    announce(`${chosenCert} 발급 확인. 발급하기 또는 취소를 선택하세요`);
   } else if (screen === "done") {
     announce(`${chosenCert} 발급이 완료되었습니다`);
   } else {
@@ -144,18 +131,13 @@ function applyEvent(e) {
     if (screen !== "home") enterScreen("home");
     return;
   }
-  if (e.class_name === "fill_id_fields" && screen === "confirm") {
-    idFields = e.data; render(); return;
-  }
   if (e.class_name === "move_left")  setFocus(focusIdx - 1);
   if (e.class_name === "move_right") setFocus(focusIdx + 1);
   if (e.class_name === "select") {
     if (screen === "home") { chosenCert = CERTS[focusIdx]; enterScreen("confirm"); }
     else if (screen === "confirm") {
-      if (CONFIRM_BUTTONS[focusIdx] === "발급하기") {
-        if (!idFields) { showToast("주민등록증을 먼저 인식해 주세요"); announce("주민등록증을 먼저 인식해 주세요"); }
-        else enterScreen("done");
-      } else enterScreen("home");
+      if (CONFIRM_BUTTONS[focusIdx] === "발급하기") enterScreen("done");
+      else enterScreen("home");
     }
     else enterScreen("home");
   }
@@ -171,16 +153,8 @@ function render() {
         `<div class="item ${i === focusIdx ? "hl" : ""}">${c}</div>`).join("")}</div>`;
   } else if (screen === "confirm") {
     s.innerHTML = `
-      <div class="screen-head"><div class="title">본인확인 — ${chosenCert}</div>
-        <div class="hint">주민등록증 자동 인식</div></div>
-      <div class="scan-note">📇 주민등록증을 카메라 중앙에 보여주세요.<br>
-        인식되면 아래 칸에 자동으로 입력됩니다. (화면 표시는 마스킹)</div>
-      <div class="idform">
-        <div><label>이름</label>
-          <div class="field ${idFields ? "filled" : ""}">${idFields ? maskName(idFields.name) : ""}</div></div>
-        <div><label>주민등록번호</label>
-          <div class="field ${idFields ? "filled" : ""}">${idFields ? maskRrn(idFields.rrn) : ""}</div></div>
-      </div>
+      <div class="screen-head"><div class="title">발급 확인 — ${chosenCert}</div>
+        <div class="hint">🙇 고개 꾸벅 2회로 선택</div></div>
       <div class="btnrow">${CONFIRM_BUTTONS.map((b, i) =>
         `<div class="btn ${i === focusIdx ? "hl" : ""}">${b}</div>`).join("")}</div>`;
   } else {
@@ -206,13 +180,6 @@ async function poll() {
     lock.className = "badge " + (d.status.is_user_locked ? "on" : "off");
     lock.textContent = d.status.is_user_locked ? "사용자 고정됨" : "사용자 인식 대기";
 
-    const ocr = $("b-ocr");
-    ocr.className = "badge " + (d.status.is_ocr_mode ? "on" : "off");
-    ocr.textContent = d.status.is_ocr_mode ? "신분증 스캔 중" : "신분증 스캔";
-    if (wasOcrMode && !d.status.is_ocr_mode && screen === "confirm" && !idFields) {
-      showToast("인식 시간이 지났습니다 — 화면을 다시 선택하면 재시도합니다");
-    }
-    wasOcrMode = d.status.is_ocr_mode;
 
     const log = $("evlog");
     log.innerHTML = d.events.slice().reverse().map(e =>

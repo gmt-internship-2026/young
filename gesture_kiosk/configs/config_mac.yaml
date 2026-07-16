@@ -2,7 +2,6 @@
 # 사용: python scripts/run_demo.py --config configs/config_mac.yaml
 # 원본과 다른 점 (docs/MAC_RUN_LOG.md 참고):
 #   demo_ui.port: 5000 → 5001   (맥 AirPlay 수신기(ControlCenter)가 5000 선점)
-#   ocr.gpu: true → false       (맥은 CUDA 없음 — EasyOCR CPU 동작)
 #   announce.backend: tts       (pyttsx3가 맥 nsss로 동작 — 미설치면 자동 log 폴백)
 
 camera:
@@ -54,15 +53,6 @@ gestures:
     rebase_after_sec: 3.0
     baseline_alpha: 0.05
 
-ocr:
-  enabled: true
-  engine: easyocr
-  languages: [ko, en]
-  gpu: false              # ★ 맥: CUDA 없음 — CPU (개발 확인용, 느리다)
-  interval_frames: 15
-  timeout_sec: 30.0
-  min_text_conf: 0.4
-  guide_region_ratio: [0.15, 0.15, 0.85, 0.85]
 
 announce:
   enabled: true
@@ -75,10 +65,9 @@ announce:
     select: "선택했습니다"
     go_back: "이전 화면으로 이동합니다"
     go_home: "처음 화면으로 돌아갑니다"
-    fill_id_fields: "주민등록증 인식 완료. 이름과 주민등록번호가 입력되었습니다"
 
 classes:
-  [move_left, move_right, select, go_back, go_home, fill_id_fields]
+  [move_left, move_right, select, go_back, go_home]
 
 event_output:
   mode: console

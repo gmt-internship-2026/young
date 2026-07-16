@@ -46,7 +46,7 @@ class GestureEvent:
     conf: float
     ts_sec: float
     hand_side: str = None   # 쓸기 계열만 값이 있다 ("left"/"right" — 궤적을 만든 손목)
-    data: dict = None       # 부가 정보 (예: fill_id_fields의 이름·주민번호)
+    data: dict = None       # 부가 정보 확장용 (현재 미사용)
 
 
 class _SwipeTracker:

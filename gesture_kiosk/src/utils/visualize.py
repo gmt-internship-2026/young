@@ -36,16 +36,17 @@ def draw_person_lock(frame, person_lock):
 def draw_debug_panel(frame, debug):
     """판정 계기판 — 좌하단에 내부값 표시 (실기 튜닝용, 2026-07-16).
 
-    SCALE=어깨 스케일 / SWIPE=진행도(±1.0 판정)+장전 상태 / PEND=수직 1회 보류.
+    SCALE=어깨 스케일 / RET=복귀 삼킴 예약 방향 / SWIPE=진행도(±1.0 판정) / PEND=수직 1회 보류.
     """
     if not debug:
         return frame
     h_px = frame.shape[0]
-    armed_tag = "" if debug.get("is_armed", True) else " [REARM]"
+    swallow = debug.get("swallow")
+    swallow_tag = f" [RET:{swallow}]" if swallow else ""
     side = debug.get("active_side") or "-"
     source_tag = "(E)" if debug.get("active_source") == "elbow" else ""
     lines = [
-        f"SCALE {debug.get('body_scale', 0):.2f}  ARM {side}{source_tag}{armed_tag}",
+        f"SCALE {debug.get('body_scale', 0):.2f}  ARM {side}{source_tag}{swallow_tag}",
         f"SWIPE x{debug.get('swipe_progress_x', 0):+.2f} y{debug.get('swipe_progress_y', 0):+.2f}",
     ]
     if debug.get("pending"):

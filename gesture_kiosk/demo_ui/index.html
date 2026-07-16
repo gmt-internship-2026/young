@@ -184,7 +184,7 @@ async function poll() {
 
 
     const g = d.debug || {};
-    $("dbg").textContent = `계기판 — 스케일 ${g.body_scale ?? "-"} · 팔 ${g.active_side ?? "-"}${g.active_source === "elbow" ? "(팔꿈치)" : ""}${g.is_armed === false ? " · 재장전 대기" : ""} · 쓸기 x ${g.swipe_progress_x ?? 0} / y ${g.swipe_progress_y ?? 0}${g.pending ? ` · ${g.pending === "up" ? "위" : "아래"} 1회 보류(한 번 더=홈/이전)` : ""}`;
+    $("dbg").textContent = `계기판 — 스케일 ${g.body_scale ?? "-"} · 팔 ${g.active_side ?? "-"}${g.active_source === "elbow" ? "(팔꿈치)" : ""}${g.swallow ? ` · 복귀무시 예약(${g.swallow === "left" ? "좌" : g.swallow === "right" ? "우" : g.swallow === "up" ? "위" : "아래"})` : ""} · 쓸기 x ${g.swipe_progress_x ?? 0} / y ${g.swipe_progress_y ?? 0}${g.pending ? ` · ${g.pending === "up" ? "위" : "아래"} 1회 보류(한 번 더=홈/이전)` : ""}`;
 
     const log = $("evlog");
     log.innerHTML = d.events.slice().reverse().map(e =>

@@ -36,11 +36,11 @@ def make_config():
                 "axis_dominance": 1.5,
                 "min_track_frames": 4,
                 "elbow_gain": 2.0,
-                "rearm_still_shoulder": 0.02,
-                "rearm_still_frames": 5,
                 "switch_margin_y_shoulder": 0.2,
                 "body_scale": {"fallback_ratio": 0.25, "min_ratio": 0.08, "alpha": 0.1},
                 "double_within_sec": 1.2,
+                "return_suppress_sec": 2.5,
+                "stroke_gap_sec": 0.5,
             },
         },
     }
@@ -107,11 +107,10 @@ class SwipeGestureTest(GestureFilterTestBase):
         self.assertEqual(event.class_name, "move_left")
 
     def _double_swipe_vertical(self, start, end):
-        """수직 쓸기 2연속 — 복귀·멈춤(재장전)을 물리적으로 연속되게 끼워 넣는다."""
+        """수직 쓸기 2연속 — 사이의 복귀는 반대 방향 삼킴이 소화한다."""
         event = self._feed_swipe("right", path(start, end, 8, x_ratio=0.5))
         self.assertIsNone(event)                                   # 1회째는 보류
-        self._feed_swipe("right", path(end, start, 8, x_ratio=0.5))  # 복귀 — 해제 중이라 무시
-        self._feed_swipe("right", [(0.5, start)] * 7)              # 시작점에서 멈춤 — 재장전
+        self._feed_swipe("right", path(end, start, 8, x_ratio=0.5))  # 복귀 — 삼킴
         return self._feed_swipe("right", path(start, end, 8, x_ratio=0.5))
 
     def test_double_swipe_up_fires_go_home(self):
@@ -130,6 +129,14 @@ class SwipeGestureTest(GestureFilterTestBase):
         self.assertIsNotNone(event)
         self.assertEqual(event.class_name, "read_focus")
 
+    def test_long_sweep_tail_does_not_double(self):
+        # 임계의 2배가 넘는 긴 아래 스윕 한 번 — 꼬리 재확정으로 go_back이 되면 안 된다
+        long_down = path(0.1, 0.95, 16, x_ratio=0.5)   # 0.85 이동 (임계 0.25의 3.4배)
+        self.assertIsNone(self._feed_swipe("right", long_down))
+        event = self._feed(frame_count=45)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "select")   # 1회로만 집계
+
     def test_single_swipe_down_fires_select_after_window(self):
         # 아래로 1회 = 선택 — 보이스오버 더블탭 대응
         self.assertIsNone(self._feed_swipe("right", path(0.3, 0.8, 8, x_ratio=0.5)))
@@ -140,7 +147,7 @@ class SwipeGestureTest(GestureFilterTestBase):
     def test_horizontal_swipe_drops_pending_vertical(self):
         # 수직 1회 보류 중 좌/우 쓸기 — 사용자가 의도를 바꾼 것: 이동만 발화
         self._feed_swipe("right", path(0.3, 0.8, 8, x_ratio=0.5))  # 아래 1회 보류
-        self._feed_swipe("right", [(0.5, 0.8)] * 7)                # 멈춤 — 재장전
+        self.clock.tick(0.6)                                        # 획 분리 유예 경과
         event = self._feed_swipe("right", path(0.5, 0.9, 8, y_ratio=0.8))
         self.assertEqual(event.class_name, "move_right")
         self.clock.tick(1.2)                                       # 쿨다운 경과
@@ -193,89 +200,32 @@ class SwipeGestureTest(GestureFilterTestBase):
 
     def _swipe_right_then_pass_cooldown(self):
         """우로 쓸기 확정 후 쿨다운(1초)까지 지난 상태를 만든다 — 복귀 시나리오용."""
-        event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4))
+        event = self._feed_swipe("right", path(0.4, 0.8, 8, y_ratio=0.4))
         self.assertEqual(event.class_name, "move_right")
         self.clock.tick(1.2)
 
-    def test_return_stroke_does_not_fire_left(self):
-        # 우로 쓸고 (화면 확인 후) 원위치 복귀 — 연속 동작은 재장전이 안 돼 무시된다
+    def test_return_stroke_is_swallowed_once(self):
+        # 우로 쓸고 (화면 확인 후) 원위치 복귀 — 반대 방향 1회는 복귀로 보고 삼킨다
         self._swipe_right_then_pass_cooldown()
-        event = self._feed_swipe("right", path(0.6, 0.2, 8, y_ratio=0.4))
+        event = self._feed_swipe("right", path(0.8, 0.4, 8, y_ratio=0.4))
         self.assertIsNone(event)
 
-    def test_vertical_return_stroke_is_ignored(self):
-        # 아래 1회 보류 직후 팔을 올리는 복귀 — 위 쓸기로 오인해 보류를 바꾸면 안 된다
-        self._feed_swipe("right", path(0.3, 0.8, 8, x_ratio=0.5))   # 아래 1회 보류
-        self._feed_swipe("right", path(0.8, 0.3, 8, x_ratio=0.5))   # 복귀(연속 동작 — 무시)
-        event = self._feed(frame_count=40)                          # 판정 창 만료
-        self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "select")                # 보류가 select로 확정
-
-    def test_pause_rearms_next_swipe(self):
-        # 복귀 후 잠깐 멈추면(rearm_still_frames) 다음 쓸기는 정상 인식
+    def test_real_left_after_return_fires(self):
+        # 복귀(삼킴) 후의 진짜 좌 쓸기는 정상 발화 — 삼킴은 1회용 (좌표는 연속)
         self._swipe_right_then_pass_cooldown()
-        self._feed_swipe("right", path(0.6, 0.2, 8, y_ratio=0.4))   # 복귀 — 무시됨
-        self._feed_swipe("right", [(0.2, 0.4)] * 7)                 # 원점에서 멈춤 — 재장전
-        event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4))
+        self._feed_swipe("right", path(0.8, 0.4, 8, y_ratio=0.4))   # 복귀 — 삼킴
+        self.clock.tick(0.6)                                         # 획 분리 유예 경과
+        event = self._feed_swipe("right", path(0.4, 0.05, 8, y_ratio=0.4))
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "move_right")
+        self.assertEqual(event.class_name, "move_left")
 
-    def test_only_higher_arm_is_tracked(self):
-        # 한 번에 한 팔만 인식 — 내린 팔(쉬는 팔)이 흔들려도 무시된다
-        event = None
-        for i in range(9):
-            event = self._feed(swipe_points={
-                "right": ("wrist", (0.5, 0.3)),                  # 든 팔 — 제자리
-                "left": ("wrist", (0.6 - i * 0.05, 0.8)),        # 내린 팔 — 좌로 크게 이동
-            }) or event
-        self.assertIsNone(event)
-
-    def test_higher_arm_swipe_fires_with_its_side(self):
-        # 양팔이 보여도 든 팔의 쓸기는 정상 인식 — hand_side도 그 팔
-        event = None
-        for i in range(9):
-            event = self._feed(swipe_points={
-                "right": ("wrist", (0.2 + i * 0.05, 0.3)),       # 든 팔 — 우로 쓸기
-                "left": ("wrist", (0.4, 0.8)),                   # 내린 팔 — 정지
-            }) or event
+    def test_swallow_expires(self):
+        # 삼킴 창(2.5초)이 지난 뒤의 좌 쓸기는 복귀가 아니다 — 정상 발화
+        self._swipe_right_then_pass_cooldown()
+        self.clock.tick(2.0)                                        # 확정 후 총 3.2초 경과
+        event = self._feed_swipe("right", path(0.8, 0.4, 8, y_ratio=0.4))
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "move_right")
-        self.assertEqual(event.hand_side, "right")
-
-    def test_arm_switch_resets_track(self):
-        # 활성 팔 교체(오른팔↓ 왼팔↑) — 서로 다른 팔의 궤적을 이어 붙이면 안 된다
-        self._feed_swipe("right", path(0.2, 0.4, 4, y_ratio=0.3))
-        event = self._feed_swipe("left", path(0.4, 0.55, 4, y_ratio=0.3))
-        self.assertIsNone(event)   # 합치면 0.35 이동이지만 교체 리셋으로 각각 미달
-
-    def test_far_user_same_gesture_fires(self):
-        # 멀리 선 사용자(어깨너비 절반) — 화면상 절반 거리의 같은 동작이 그대로 인식
-        event = self._feed_swipe("right", path(0.2, 0.4, 8, y_ratio=0.3),
-                                 shoulder_width_ratio=0.125)
-        self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "move_right")
-
-    def test_close_user_small_motion_ignored(self):
-        # 가까이 선 사용자(어깨너비 2배) — 종전이면 확정됐을 이동도 몸 기준으로는 미달
-        event = self._feed_swipe("right", path(0.2, 0.5, 8, y_ratio=0.3),
-                                 shoulder_width_ratio=0.5)
-        self.assertIsNone(event)
-
-    def test_sideways_shoulder_is_clamped(self):
-        # 측면 회전으로 어깨가 극단적으로 좁아져도 하한(0.08)이 임계 과민을 막는다
-        event = self._feed_swipe("right", path(0.4, 0.45, 8, y_ratio=0.3),
-                                 shoulder_width_ratio=0.01)
-        self.assertIsNone(event)   # 0.05 이동 < 1.0 × 0.08
-
-    def test_waving_fires_only_once_until_pause(self):
-        # 팔을 계속 왔다갔다 흔들기 — 멈추기 전까지는 첫 이벤트 1회만
-        event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4))
-        self.assertEqual(event.class_name, "move_right")
-        self.clock.tick(1.2)
-        wave = (path(0.6, 0.2, 8, y_ratio=0.4) + path(0.2, 0.6, 8, y_ratio=0.4)) * 2
-        event = self._feed_swipe("right", wave)
-        self.assertIsNone(event)
-
+        self.assertEqual(event.class_name, "move_left")
 
 
 class DebugPanelTest(GestureFilterTestBase):
@@ -286,32 +236,29 @@ class DebugPanelTest(GestureFilterTestBase):
         debug = self.filter.debug
         self.assertGreater(debug["swipe_progress_x"], 0.3)   # 우측(+) 진행 중
         self.assertEqual(debug["active_side"], "right")
-        self.assertTrue(debug["is_armed"])
+        self.assertIsNone(debug["swallow"])
         self.assertAlmostEqual(debug["body_scale"], 0.25)    # 테스트 폴백 스케일
 
     def test_pending_is_exposed(self):
         self._feed_swipe("right", path(0.3, 0.8, 8, x_ratio=0.5))   # 아래 1회 보류
         self.assertEqual(self.filter.debug["pending"], "down")
 
-    def test_disarmed_after_confirm_is_visible(self):
-        self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.3))    # 확정
+    def test_swallow_is_exposed(self):
+        self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.3))    # 확정 — 좌 삼킴 예약
         self._feed(frame_count=1)
-        self.clock.tick(1.2)
-        self._feed_swipe("right", [(0.6, 0.3)])                      # 쿨다운 후 1프레임
-        self.assertFalse(self.filter.debug["is_armed"])              # 재장전 대기 노출
+        self.assertEqual(self.filter.debug["swallow"], "left")
 
 
 class CooldownTest(GestureFilterTestBase):
     def test_cooldown_blocks_repeat_event(self):
         event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4))
         self.assertEqual(event.class_name, "move_right")           # 확정 → 쿨다운 시작
-        self._feed_swipe("right", [(0.6, 0.4)] * 7)                # 쿨다운 중 — 전부 무시
         event = self._feed_swipe("right", path(0.6, 0.2, 8, y_ratio=0.4))
-        self.assertIsNone(event)
+        self.assertIsNone(event)                                   # 쿨다운 중 — 무시
         self.clock.tick(1.0)                                       # 쿨다운 경과
-        self._feed_swipe("right", [(0.2, 0.4)] * 7)                # 멈춤 — 재장전
         event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4))
-        self.assertIsNotNone(event)
+        self.assertIsNotNone(event)                                # 같은 방향 — 삼킴 무관
+        self.assertEqual(event.class_name, "move_right")
 
 
 class MetricsTest(unittest.TestCase):

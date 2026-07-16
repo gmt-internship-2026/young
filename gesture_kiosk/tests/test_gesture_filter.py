@@ -28,15 +28,18 @@ def make_config():
         "gestures": {
             "cooldown_sec": 1.0,
             "swipe": {
+                # 임계 단위 = 어깨너비 배수. 테스트 기본 어깨너비(0.25)와 곱하면
+                # x/y 0.25·정지 0.005·교체 0.05 — 종전 화면 비율 임계와 동일 수치
                 "window_sec": 0.6,
-                "min_dist_x_ratio": 0.25,
-                "min_dist_y_ratio": 0.25,
+                "min_dist_x_shoulder": 1.0,
+                "min_dist_y_shoulder": 1.0,
                 "axis_dominance": 1.5,
                 "min_track_frames": 4,
                 "elbow_gain": 2.0,
-                "rearm_still_ratio": 0.005,
+                "rearm_still_shoulder": 0.02,
                 "rearm_still_frames": 5,
-                "switch_margin_y_ratio": 0.05,
+                "switch_margin_y_shoulder": 0.2,
+                "body_scale": {"fallback_ratio": 0.25, "min_ratio": 0.08, "alpha": 0.1},
             },
             "select": {
                 "nod_dip_ratio": 0.12,
@@ -61,21 +64,28 @@ class GestureFilterTestBase(unittest.TestCase):
         self.clock = FakeClock()
         self.filter = GestureFilter(make_config(), clock=self.clock)
 
-    def _feed(self, swipe_points=None, neck_ratio=None, frame_count=1, dt_sec=FRAME_DT_SEC):
-        """frame_count 프레임 공급 — 첫 확정 이벤트를 즉시 돌려준다 (없으면 None)."""
+    def _feed(self, swipe_points=None, neck_ratio=None, frame_count=1, dt_sec=FRAME_DT_SEC,
+              shoulder_width_ratio=None):
+        """frame_count 프레임 공급 — 첫 확정 이벤트를 즉시 돌려준다 (없으면 None).
+
+        shoulder_width_ratio 미지정 시 None — 필터가 fallback_ratio(0.25)를 쓴다.
+        """
         for _ in range(frame_count):
-            event = self.filter.filter_signals(swipe_points or {}, neck_ratio)
+            event = self.filter.filter_signals(swipe_points or {}, neck_ratio,
+                                               shoulder_width_ratio)
             self.clock.tick(dt_sec)
             if event is not None:
                 return event
         return None
 
-    def _feed_swipe(self, side, points, source="wrist", dt_sec=FRAME_DT_SEC):
+    def _feed_swipe(self, side, points, source="wrist", dt_sec=FRAME_DT_SEC,
+                    shoulder_width_ratio=None):
         """한 팔의 궤적 점들을 순서대로 공급 — 첫 확정 이벤트를 돌려준다."""
         other = "right" if side == "left" else "left"
         for point in points:
             event = self._feed(
-                swipe_points={side: (source, point), other: None}, dt_sec=dt_sec
+                swipe_points={side: (source, point), other: None}, dt_sec=dt_sec,
+                shoulder_width_ratio=shoulder_width_ratio,
             )
             if event is not None:
                 return event
@@ -228,6 +238,25 @@ class SwipeGestureTest(GestureFilterTestBase):
         self._feed_swipe("right", path(0.2, 0.4, 4, y_ratio=0.3))
         event = self._feed_swipe("left", path(0.4, 0.55, 4, y_ratio=0.3))
         self.assertIsNone(event)   # 합치면 0.35 이동이지만 교체 리셋으로 각각 미달
+
+    def test_far_user_same_gesture_fires(self):
+        # 멀리 선 사용자(어깨너비 절반) — 화면상 절반 거리의 같은 동작이 그대로 인식
+        event = self._feed_swipe("right", path(0.2, 0.4, 8, y_ratio=0.3),
+                                 shoulder_width_ratio=0.125)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "move_right")
+
+    def test_close_user_small_motion_ignored(self):
+        # 가까이 선 사용자(어깨너비 2배) — 종전이면 확정됐을 이동도 몸 기준으로는 미달
+        event = self._feed_swipe("right", path(0.2, 0.5, 8, y_ratio=0.3),
+                                 shoulder_width_ratio=0.5)
+        self.assertIsNone(event)
+
+    def test_sideways_shoulder_is_clamped(self):
+        # 측면 회전으로 어깨가 극단적으로 좁아져도 하한(0.08)이 임계 과민을 막는다
+        event = self._feed_swipe("right", path(0.4, 0.45, 8, y_ratio=0.3),
+                                 shoulder_width_ratio=0.01)
+        self.assertIsNone(event)   # 0.05 이동 < 1.0 × 0.08
 
     def test_waving_fires_only_once_until_pause(self):
         # 팔을 계속 왔다갔다 흔들기 — 멈추기 전까지는 첫 이벤트 1회만

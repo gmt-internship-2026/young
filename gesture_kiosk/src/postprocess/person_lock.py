@@ -211,6 +211,23 @@ class PersonLock:
             self._is_mirror,
         )
 
+    def user_shoulder_width_ratio(self):
+        """잠긴 사용자의 어깨너비 / 프레임 폭 — 쓸기 임계의 몸 크기 정규화 자(尺). 불가 시 None.
+
+        카메라 거리·설치 위치가 달라져도 "자기 어깨너비의 몇 배를 움직였나"로
+        판정하기 위한 기준 (2026-07-16 — 화면 비율 임계의 거리 의존 문제 해결).
+        """
+        if self.locked_person is None:
+            return None
+        left = self.locked_person.keypoint(KPT_LEFT_SHOULDER, self._kpt_conf)
+        right = self.locked_person.keypoint(KPT_RIGHT_SHOULDER, self._kpt_conf)
+        if left is None or right is None:
+            return None
+        shoulder_width_px = math.dist(left, right)
+        if shoulder_width_px < MIN_SHOULDER_WIDTH_PX:
+            return None   # 측면 자세·검출 불량 — 정규화 자로 못 쓴다
+        return shoulder_width_px / self._frame_width_px
+
     def user_neck_ratio(self):
         """잠긴 사용자의 목 길이 비율 — (어깨 중점 y - 코 y) / 어깨 너비. 불가 시 None.
 

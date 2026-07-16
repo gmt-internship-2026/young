@@ -32,16 +32,20 @@ person_lock:
 
 gestures:
   cooldown_sec: 1.0       # swipe.window_sec보다 길게 (config.yaml 주석 참고)
-  swipe:
+  swipe:                    # 임계 단위 = 어깨너비 배수(카메라 거리 무관) — config.yaml 주석 참고
     window_sec: 0.6
-    min_dist_x_ratio: 0.25
-    min_dist_y_ratio: 0.25
+    min_dist_x_shoulder: 1.1
+    min_dist_y_shoulder: 0.65
     axis_dominance: 1.5
     min_track_frames: 4
     elbow_gain: 2.0         # 손목 미검출 시 팔꿈치 폴백 배율 — config.yaml 주석 참고
-    rearm_still_ratio: 0.005    # 정지 재장전(복귀 스트로크 오탐 방지) — config.yaml 주석 참고
+    rearm_still_shoulder: 0.02  # 정지 재장전(복귀 스트로크 오탐 방지) — config.yaml 주석 참고
     rearm_still_frames: 5
-    switch_margin_y_ratio: 0.05 # 한 팔만 인식 — 활성 팔 교체 여유 (config.yaml 주석 참고)
+    switch_margin_y_shoulder: 0.2   # 한 팔만 인식 — 활성 팔 교체 여유 (config.yaml 주석 참고)
+    body_scale:
+      fallback_ratio: 0.22
+      min_ratio: 0.08
+      alpha: 0.1
   select:                 # 고개 꾸벅 2회 — config.yaml 주석 참고
     nod_dip_ratio: 0.12
     nod_return_ratio: 0.05

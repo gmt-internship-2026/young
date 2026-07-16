@@ -59,26 +59,28 @@ class _SwipeTracker:
     좌우·상하·대각 복귀와 팔 왕복 흔들기 연발 오탐까지 같은 원리로 막는다.
     """
 
-    def __init__(self, window_sec, min_dist_x_ratio, min_dist_y_ratio,
+    def __init__(self, window_sec, min_dist_x_shoulder, min_dist_y_shoulder,
                  axis_dominance, min_track_frames,
-                 rearm_still_ratio, rearm_still_frames):
+                 rearm_still_shoulder, rearm_still_frames):
         self._window_sec = window_sec
-        self._min_dist_x_ratio = min_dist_x_ratio
-        self._min_dist_y_ratio = min_dist_y_ratio
+        self._min_dist_x_shoulder = min_dist_x_shoulder   # 임계 단위: 어깨너비 배수
+        self._min_dist_y_shoulder = min_dist_y_shoulder
         self._axis_dominance = axis_dominance
         self._min_track_frames = min_track_frames
-        self._rearm_still_ratio = rearm_still_ratio
+        self._rearm_still_shoulder = rearm_still_shoulder
         self._rearm_still_frames = rearm_still_frames
         self._track = deque()   # (ts_sec, x_ratio, y_ratio)
         self._is_armed = True   # 첫 쓸기는 멈춤 조건 없이 — 이벤트 확정 후부터 재장전 요구
         self._still_count = 0
         self._last_point = None
 
-    def update(self, x_ratio, y_ratio, now_sec, gain=1.0):
+    def update(self, x_ratio, y_ratio, now_sec, gain=1.0, body_scale=1.0):
         """관측 1건을 반영하고, 쓸기 확정이면 방향("left"/"right"/"up"/"down").
 
         gain: 진행도 보정 배율 — 팔꿈치 추적(elbow_gain)처럼 같은 팔 휘두름에도
         이동량이 작은 추적점을 손목과 같은 기준으로 판정하기 위한 값.
+        body_scale: 어깨너비/프레임폭 — 임계값(어깨너비 배수)을 화면 비율로 환산하는
+        자(尺). 카메라 거리·위치가 달라져도 같은 팔 동작이 같은 판정을 받는다.
         """
         prev_point = self._last_point
         self._last_point = (x_ratio, y_ratio)
@@ -86,7 +88,7 @@ class _SwipeTracker:
         if not self._is_armed:
             is_still = prev_point is not None and (
                 max(abs(x_ratio - prev_point[0]), abs(y_ratio - prev_point[1]))
-                <= self._rearm_still_ratio
+                <= self._rearm_still_shoulder * body_scale
             )
             self._still_count = self._still_count + 1 if is_still else 0
             if self._still_count >= self._rearm_still_frames:
@@ -102,9 +104,9 @@ class _SwipeTracker:
 
         dx_ratio = x_ratio - self._track[0][1]
         dy_ratio = y_ratio - self._track[0][2]
-        # 축마다 임계가 달라(폭/높이 비율) 무단위 진행도(이동량/임계)로 맞춰 비교한다
-        progress_x = abs(dx_ratio) / self._min_dist_x_ratio * gain
-        progress_y = abs(dy_ratio) / self._min_dist_y_ratio * gain
+        # 무단위 진행도(이동량/임계)로 축 비교 — 임계는 어깨너비 배수 × body_scale
+        progress_x = abs(dx_ratio) / (self._min_dist_x_shoulder * body_scale) * gain
+        progress_y = abs(dy_ratio) / (self._min_dist_y_shoulder * body_scale) * gain
         if progress_x >= 1.0 and progress_x >= progress_y * self._axis_dominance:
             return "right" if dx_ratio > 0 else "left"
         if progress_y >= 1.0 and progress_y >= progress_x * self._axis_dominance:
@@ -220,13 +222,18 @@ class GestureFilter:
 
         swipe = gestures["swipe"]
         self._elbow_gain = swipe["elbow_gain"]
-        self._switch_margin_y_ratio = swipe["switch_margin_y_ratio"]
+        self._switch_margin_y_shoulder = swipe["switch_margin_y_shoulder"]
+        body_scale = swipe["body_scale"]
+        self._scale_fallback_ratio = body_scale["fallback_ratio"]
+        self._scale_min_ratio = body_scale["min_ratio"]
+        self._scale_alpha = body_scale["alpha"]
+        self._body_scale = None      # 평활된 어깨너비/프레임폭 — 카메라 거리 무관 판정의 자(尺)
         # 한 번에 한 팔만 인식(2026-07-16 사용자 결정) — 양팔 동시 추적은 쉬는 팔의
         # 잡음이 간섭한다. 활성 팔 = 더 높이 든 팔(제스처 팔은 들려 있다), 트래커는 1개
         self._swipe_tracker = _SwipeTracker(
-            swipe["window_sec"], swipe["min_dist_x_ratio"], swipe["min_dist_y_ratio"],
+            swipe["window_sec"], swipe["min_dist_x_shoulder"], swipe["min_dist_y_shoulder"],
             swipe["axis_dominance"], swipe["min_track_frames"],
-            swipe["rearm_still_ratio"], swipe["rearm_still_frames"],
+            swipe["rearm_still_shoulder"], swipe["rearm_still_frames"],
         )
         self._active_side = None     # 현재 인식 중인 팔 ("left"/"right")
         self._active_source = None   # 그 팔의 추적점 출처 ("wrist"/"elbow")
@@ -234,13 +241,16 @@ class GestureFilter:
 
         self._last_event_ts_sec = None
 
-    def filter_signals(self, swipe_points, neck_ratio):
+    def filter_signals(self, swipe_points, neck_ratio, shoulder_width_ratio=None):
         """포즈 신호 -> gesture_event | None (기획서 4.6 계약).
 
         swipe_points: {"left": (출처, (x_ratio, y_ratio)) | None, ...} — 잠긴 사용자의
         쓸기 추적점(person_lock.user_swipe_points — 손목, 없으면 팔꿈치 폴백).
-        사용자 기준 좌/우, 프레임 폭/높이 비율 좌표.
+        사용자 기준 좌/우, **x·y 모두 프레임 폭으로 나눈** 비율 좌표(등방 단위 —
+        어깨너비 정규화와 단위를 맞추기 위해, 2026-07-16).
         neck_ratio: 목 길이 비율(person_lock.user_neck_ratio) — 없으면 None.
+        shoulder_width_ratio: 어깨너비/프레임폭(person_lock.user_shoulder_width_ratio)
+        — 쓸기 임계를 몸 크기 기준으로 환산. 없으면 마지막 값, 최초부터 없으면 기본값.
         우선순위: 쓸기(이동·이전·처음) > 선택(꾸벅) — 판정 부위가 달라 실충돌은 없다.
         """
         now_sec = self._clock()
@@ -248,7 +258,9 @@ class GestureFilter:
             # 쿨다운 중엔 궤적·꾸벅 상태를 쌓지 않는다 — 남은 점·숙임은 시간 창이 걸러낸다
             return None
 
-        side, point_info = self._select_active_arm(swipe_points or {})
+        body_scale = self._update_body_scale(shoulder_width_ratio)
+
+        side, point_info = self._select_active_arm(swipe_points or {}, body_scale)
         if side is None:
             self._swipe_tracker.reset()   # 추적점 전무 — 끊긴 궤적을 이어 붙이지 않는다
             self._active_side = None
@@ -260,7 +272,9 @@ class GestureFilter:
                 self._active_side = side
                 self._active_source = source
             gain = self._elbow_gain if source == "elbow" else 1.0
-            direction = self._swipe_tracker.update(point[0], point[1], now_sec, gain)
+            direction = self._swipe_tracker.update(
+                point[0], point[1], now_sec, gain, body_scale
+            )
             if direction is not None:
                 return self._confirm(
                     SWIPE_EVENT_BY_DIRECTION[direction], 1.0, now_sec, hand_side=side
@@ -270,12 +284,28 @@ class GestureFilter:
             return self._confirm("select", 1.0, now_sec)
         return None
 
-    def _select_active_arm(self, swipe_points):
+    def _update_body_scale(self, shoulder_width_ratio):
+        """어깨너비 관측으로 몸 크기 자(尺)를 갱신한다 — EMA 평활 + 하한 클램프.
+
+        측면으로 돌면 화면상 어깨가 좁아져 임계가 과민해지므로 min_ratio로 받치고,
+        관측이 없으면 마지막 값을 유지한다 (최초부터 없으면 fallback_ratio —
+        키오스크 표준 거리의 가정값이라 종전 화면 비율 임계와 등가로 동작).
+        """
+        if shoulder_width_ratio is not None:
+            clamped = max(shoulder_width_ratio, self._scale_min_ratio)
+            if self._body_scale is None:
+                self._body_scale = clamped
+            else:
+                self._body_scale += self._scale_alpha * (clamped - self._body_scale)
+        return self._body_scale if self._body_scale is not None else self._scale_fallback_ratio
+
+    def _select_active_arm(self, swipe_points, body_scale):
         """이번 프레임의 활성 팔 1개를 고른다 -> (side, (출처, 좌표)) 또는 (None, None).
 
         한 번에 한 팔만 인식한다 — 양팔이 다 보이면 **더 높이 든 팔**(화면 y가 작은 쪽)을
         택한다: 제스처하는 팔은 들려 있고 쉬는 팔은 내려가 있다. 높이 차가
-        switch_margin_y_ratio 미만이면 현재 활성 팔을 유지해 잦은 교체(궤적 리셋)를 막는다.
+        switch_margin_y_shoulder(어깨너비 배수) 미만이면 현재 활성 팔을 유지해
+        잦은 교체(궤적 리셋)를 막는다.
         """
         available = {s: info for s, info in swipe_points.items() if info is not None}
         if not available:
@@ -287,7 +317,7 @@ class GestureFilter:
         left_y = available["left"][1][1]
         right_y = available["right"][1][1]
         higher_side = "left" if left_y < right_y else "right"
-        is_near_tie = abs(left_y - right_y) < self._switch_margin_y_ratio
+        is_near_tie = abs(left_y - right_y) < self._switch_margin_y_shoulder * body_scale
         if self._active_side in available and is_near_tie:
             return self._active_side, available[self._active_side]
         return higher_side, available[higher_side]

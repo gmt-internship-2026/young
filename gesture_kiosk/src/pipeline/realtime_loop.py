@@ -157,14 +157,17 @@ def run_pipeline(config):
                 person_lock.enabled and person_lock.locked_person is not None
             )
 
-            # 쓸기 판정용 추적점(손목 — 없으면 팔꿈치) — 프레임 폭/높이 비율 좌표로 넘긴다
+            # 쓸기 판정용 추적점(손목 — 없으면 팔꿈치) — x·y 모두 프레임 폭으로 나눈
+            # 등방 좌표 (어깨너비 정규화와 단위 일치, 2026-07-16)
             swipe_points_ratio = {
                 side: None if info is None
-                else (info[0], (info[1][0] / frame_width_px, info[1][1] / frame_height_px))
+                else (info[0], (info[1][0] / frame_width_px, info[1][1] / frame_width_px))
                 for side, info in person_lock.user_swipe_points().items()
             }
             gesture_event = gesture_filter.filter_signals(
-                swipe_points_ratio, person_lock.user_neck_ratio()
+                swipe_points_ratio,
+                person_lock.user_neck_ratio(),
+                person_lock.user_shoulder_width_ratio(),
             )
 
             if gesture_event is not None:

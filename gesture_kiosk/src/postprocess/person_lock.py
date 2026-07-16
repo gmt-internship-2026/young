@@ -9,7 +9,7 @@
 2. 최고 점수 후보가 lock_frame_count 프레임 연속이면 그 사람에게 잠금
 3. 잠금 중에는 follow_radius 안에서 같은 사람을 추적, release_sec 이상
    사라지면 해제하고 다음 사용자를 받는다
-4. 잠긴 사용자의 쓸기 추적점(손목 — 없으면 팔꿈치 폴백)·목 길이 비율(끄덕임 select)을
+4. 잠긴 사용자의 쓸기 추적점(손목 — 없으면 팔꿈치 폴백)·어깨너비(임계 정규화 자)를
    gesture_filter에 공급한다
 
 거울 반전 주의: 포즈 모델의 왼/오른손목 라벨은 화면에 보이는 해부학 기준이라
@@ -123,7 +123,7 @@ class PersonLock:
         """프레임의 사람 목록으로 잠금 상태를 갱신한다. 잠긴 사람(or None)을 돌려준다."""
         if not self.enabled:
             # 잠금 비활성이어도 쓸기(손목 궤적)·끄덕임은 기준 인물이 필요하다 —
-            # 최고 신뢰도 사람을 추적해 user_swipe_points()/user_neck_ratio()가 동작하게 한다
+            # 최고 신뢰도 사람을 추적해 user_swipe_points()가 동작하게 한다
             self.locked_person = max(persons, key=lambda p: p.conf) if persons else None
             return self.locked_person
         now_sec = self._clock()
@@ -228,22 +228,3 @@ class PersonLock:
             return None   # 측면 자세·검출 불량 — 정규화 자로 못 쓴다
         return shoulder_width_px / self._frame_width_px
 
-    def user_neck_ratio(self):
-        """잠긴 사용자의 목 길이 비율 — (어깨 중점 y - 코 y) / 어깨 너비. 불가 시 None.
-
-        끄덕임(select) 판정 신호: 고개를 숙이면 코가 어깨선으로 내려와 값이 준다.
-        어깨 너비로 정규화해 거리·체격에 불변이고, 몸 전체 이동·허리 굽힘은
-        코·어깨가 같이 움직여 값이 변하지 않는다. 좌/우 대칭 신호라 거울 보정 불필요.
-        """
-        if self.locked_person is None:
-            return None
-        nose = self.locked_person.keypoint(KPT_NOSE, self._kpt_conf)
-        left = self.locked_person.keypoint(KPT_LEFT_SHOULDER, self._kpt_conf)
-        right = self.locked_person.keypoint(KPT_RIGHT_SHOULDER, self._kpt_conf)
-        if nose is None or left is None or right is None:
-            return None
-        shoulder_width_px = math.dist(left, right)
-        if shoulder_width_px < MIN_SHOULDER_WIDTH_PX:
-            return None   # 측면 자세·검출 불량 — 정규화 분모로 못 쓴다
-        shoulders_mid_y = (left[1] + right[1]) / 2.0
-        return (shoulders_mid_y - nose[1]) / shoulder_width_px

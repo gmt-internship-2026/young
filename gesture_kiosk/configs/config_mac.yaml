@@ -41,19 +41,11 @@ gestures:
     rearm_still_shoulder: 0.02  # 정지 재장전(복귀 스트로크 오탐 방지) — config.yaml 주석 참고
     rearm_still_frames: 5
     switch_margin_y_shoulder: 0.2   # 한 팔만 인식 — 활성 팔 교체 여유 (config.yaml 주석 참고)
+    double_within_sec: 1.2      # 수직 쓸기 1회/2연속 판정 창 — config.yaml 주석 참고
     body_scale:
       fallback_ratio: 0.22
       min_ratio: 0.08
       alpha: 0.1
-  select:                 # 고개 꾸벅 2회 — config.yaml 주석 참고
-    nod_dip_ratio: 0.12
-    nod_return_ratio: 0.05
-    nod_return_within_sec: 0.8
-    double_within_sec: 1.6
-    rebase_after_sec: 3.0
-    baseline_alpha: 0.05
-
-
 announce:
   enabled: true
   backend: tts            # 맥 nsss — pyttsx3 미설치 시 자동 log 폴백
@@ -65,9 +57,11 @@ announce:
     select: "선택했습니다"
     go_back: "이전 화면으로 이동합니다"
     go_home: "처음 화면으로 돌아갑니다"
+    # read_focus(위로 1회 — 확인)는 템플릿 없음: 포커스 문구를 아는 UI가
+    # POST /announce로 다시 읽어 준다 (연동 계약)
 
 classes:
-  [move_left, move_right, select, go_back, go_home]
+  [move_left, move_right, read_focus, select, go_back, go_home]
 
 event_output:
   mode: console

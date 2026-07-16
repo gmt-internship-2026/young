@@ -1,26 +1,21 @@
-"""postprocess 모듈 — 포즈 신호(손목 궤적·고개 끄덕임)를 동작 이벤트로 확정한다.
+"""postprocess 모듈 — 포즈 신호(손목 궤적)를 동작 이벤트로 확정한다.
 
-동작 체계(2026-07-15 개편, 같은 날 2차: 선택 동작 재확정 — 장애인·비장애인 범용 설계):
-- move_left / move_right : 팔(손목)을 좌/우로 쓸기 — 포커스 1칸 이동.
-  좌/우 어느 팔이든 방향만 맞으면 되지만, **한 번에 한 팔만 인식**한다
-  (활성 팔 = 더 높이 든 팔 — 쉬는 팔의 잡음 간섭 차단, 2026-07-16 사용자 결정)
-- go_back                : 아래로 쓸기 — 이전 화면
-- go_home                : 위로 쓸기 — 처음 화면으로
-- select                 : 고개를 두 번 꾸벅(끄덕) — 선택/확인.
-  "끄덕임=예"는 몸에 밴 동작이라 안내 없이 통하고, 팔이 전혀 없는 사용자도
-  선택할 수 있다. 2회 연속 요구는 대화 중 무의식적 끄덕임 오탐 방지(사용자 결정).
+동작 체계(2026-07-16 토크백/보이스오버 문법 정렬 — 사용자 결정):
+- move_left / move_right : 팔을 좌/우로 쓸기 — 포커스 1칸 이동 (한 번에 한 팔만 인식)
+- read_focus             : 위로 쓸기 1회 — 확인(현재 포커스 항목 다시 읽기).
+  문구는 화면 구조를 아는 UI가 POST /announce로 재안내한다 (엔진 템플릿 없음)
+- select                 : 아래로 쓸기 1회 — 선택/실행 (보이스오버 더블탭 대응)
+- go_home / go_back      : 위/아래로 **2연속** 쓸기 — 화면을 이탈하는 파괴적 동작이라
+  안전장치로 2번 인식을 요구한다 (사용자 결정)
 
-모든 판정이 포즈 키포인트 하나로 끝난다 — 2차 개편에서 손 검출(MediaPipe)·
-팔등 CNN을 제거해 포즈 단일 엔진이 됐다. 손이 없는 사용자는 팔 궤적으로
-(손목 키포인트가 신뢰도 미달이면 팔꿈치 폴백 — 상완만 있어도 동작),
-팔이 없는 사용자는 고개로 조작한다.
+1회/2연속 구분 때문에 수직 쓸기는 double_within_sec 판정 창이 지나야 1회 동작으로
+확정된다 — 선택·확인 반응이 그만큼 늦는 트레이드오프 (config 주석 참고).
+고개 꾸벅 선택은 2026-07-16 제거(쓸기 일원화) — 양팔이 없는 사용자의 선택 수단이
+사라지는 한계는 회사 협의 №1에 기록.
 
-끄덕임 신호 = "목 길이 비율" (person_lock.user_neck_ratio):
-(어깨 중점 y - 코 y) / 어깨 너비. 고개를 숙이면 코가 어깨선으로 내려와 값이 줄고,
-몸 전체 이동·허리 굽힘은 코·어깨가 같이 움직여 값이 유지된다 (오인 방지).
-
-이벤트 확정 직후 cooldown_sec 동안 모든 입력을 무시한다 (연타 방지).
-모든 수치는 config에서 읽는다 (기획서 4.7).
+모든 판정이 포즈 키포인트 하나로 끝난다. 손이 없는 사용자는 팔꿈치 폴백으로
+동일하게 조작한다. 쓸기 임계는 어깨너비 배수(카메라 거리 무관), 이벤트 확정 직후
+cooldown_sec 동안 입력 무시 + 정지 재장전. 모든 수치는 config에서 읽는다 (기획서 4.7).
 """
 import time
 from collections import deque
@@ -30,12 +25,9 @@ from src.utils.logger import get_logger
 
 logger = get_logger("postprocess")
 
-SWIPE_EVENT_BY_DIRECTION = {
-    "left": "move_left",
-    "right": "move_right",
-    "up": "go_home",
-    "down": "go_back",
-}
+HORIZONTAL_EVENT_BY_DIRECTION = {"left": "move_left", "right": "move_right"}
+SINGLE_EVENT_BY_DIRECTION = {"up": "read_focus", "down": "select"}   # 1회 — 확인/선택
+DOUBLE_EVENT_BY_DIRECTION = {"up": "go_home", "down": "go_back"}     # 2연속 — 안전장치
 
 
 @dataclass
@@ -134,94 +126,6 @@ class _SwipeTracker:
         self._is_armed = False
 
 
-class _NodTracker:
-    """고개 꾸벅 2회 판정 — 평시 목 길이(적응 기준선) 대비 '숙였다 제때 복귀' 2회.
-
-    지갑·신분증을 보느라 숙인 채 머무는 동작은 nod_return_within_sec 안에
-    복귀하지 못해 걸러진다 — 꾸벅과 '내려다보기'를 가르는 핵심 조건.
-    """
-
-    def __init__(self, select_cfg):
-        self._dip_ratio = select_cfg["nod_dip_ratio"]
-        self._return_ratio = select_cfg["nod_return_ratio"]
-        self._return_within_sec = select_cfg["nod_return_within_sec"]
-        self._double_within_sec = select_cfg["double_within_sec"]
-        self._rebase_after_sec = select_cfg["rebase_after_sec"]
-        self._baseline_alpha = select_cfg["baseline_alpha"]
-        self._baseline = None          # 평시 목 길이 비율 — 사용자 체형·자세 적응값
-        self._is_dipping = False
-        self._dip_start_sec = None
-        self._first_nod_sec = None
-        self._is_awaiting_return = False   # 지속 숙임 무효 후 복귀 대기 — 꼬리 오탐 방지
-        self._off_band_since_sec = None
-
-    def update(self, neck_ratio, now_sec):
-        """목 길이 비율 1건을 반영하고, 꾸벅 2회 확정이면 True."""
-        if neck_ratio is None:
-            self._is_dipping = False   # 키포인트 소실 — 진행 중 꾸벅만 무효 (기준선 유지)
-            self._dip_start_sec = None
-            return False
-        if self._baseline is None:
-            self._baseline = neck_ratio
-            return False
-
-        if self._first_nod_sec is not None and (
-            now_sec - self._first_nod_sec > self._double_within_sec
-        ):
-            self._first_nod_sec = None   # 두 번째 꾸벅이 늦었다 — 처음부터
-
-        is_near_baseline = abs(neck_ratio - self._baseline) <= self._return_ratio
-        # 기준선 재학습 타이머 — 사용자 교대·큰 자세 변화로 기준선이 계속 어긋나면
-        # rebase_after_sec 후 새 평시값을 채택한다 (그동안 끄덕임 불응은 감수).
-        # 정상 꾸벅의 이탈은 return_within_sec(<rebase)라 타이머에 걸리지 않는다
-        if is_near_baseline:
-            self._off_band_since_sec = None
-        elif self._off_band_since_sec is None:
-            self._off_band_since_sec = now_sec
-        elif now_sec - self._off_band_since_sec > self._rebase_after_sec:
-            self._baseline = neck_ratio
-            self._off_band_since_sec = None
-            self._is_dipping = False
-            self._is_awaiting_return = False
-            self._first_nod_sec = None
-            return False
-
-        if self._is_dipping:
-            if now_sec - self._dip_start_sec > self._return_within_sec:
-                # 지속 숙임(지갑·신분증 내려다보기) — 꾸벅이 아니고, 복귀하는
-                # 꼬리 동작도 꾸벅으로 세지 않도록 기준선 복귀까지 판정을 멈춘다
-                self._is_dipping = False
-                self._is_awaiting_return = True
-                self._first_nod_sec = None
-                return False
-            if neck_ratio >= self._baseline - self._return_ratio:
-                self._is_dipping = False   # 제때 복귀 — 꾸벅 1회 완료
-                if self._first_nod_sec is not None:
-                    self._first_nod_sec = None
-                    return True            # 2회째 — 선택 확정
-                self._first_nod_sec = now_sec
-            return False
-
-        if self._is_awaiting_return:
-            if neck_ratio >= self._baseline - self._return_ratio:
-                self._is_awaiting_return = False
-            return False
-
-        if neck_ratio < self._baseline - self._dip_ratio:
-            self._is_dipping = True
-            self._dip_start_sec = now_sec
-        elif is_near_baseline:
-            # 평시 자세일 때만 기준선을 천천히 따라간다 (자세 변화·미세 오차 적응)
-            self._baseline += self._baseline_alpha * (neck_ratio - self._baseline)
-        return False
-
-    def reset(self):
-        """이벤트 확정 후 진행 상태만 비운다 — 기준선(체형 정보)은 유지."""
-        self._is_dipping = False
-        self._dip_start_sec = None
-        self._first_nod_sec = None
-        self._is_awaiting_return = False
-
 
 class GestureFilter:
     def __init__(self, config, clock=time.monotonic):
@@ -246,30 +150,46 @@ class GestureFilter:
         )
         self._active_side = None     # 현재 인식 중인 팔 ("left"/"right")
         self._active_source = None   # 그 팔의 추적점 출처 ("wrist"/"elbow")
-        self._nod_tracker = _NodTracker(gestures["select"])
+
+        # 수직 쓸기 1회/2연속 분기 — 1회째는 보류했다가 판정 창이 지나면 단발로 확정
+        self._double_within_sec = swipe["double_within_sec"]
+        self._pending_direction = None   # "up"/"down" — 보류 중인 수직 쓸기
+        self._pending_side = None
+        self._pending_deadline_sec = None
 
         self._last_event_ts_sec = None
         self.debug = {}   # 실기 튜닝 계기판 — /data·화면 오버레이로 노출 (판정에 미사용)
 
-    def filter_signals(self, swipe_points, neck_ratio, shoulder_width_ratio=None):
+    def filter_signals(self, swipe_points, shoulder_width_ratio=None):
         """포즈 신호 -> gesture_event | None (기획서 4.6 계약).
 
         swipe_points: {"left": (출처, (x_ratio, y_ratio)) | None, ...} — 잠긴 사용자의
         쓸기 추적점(person_lock.user_swipe_points — 손목, 없으면 팔꿈치 폴백).
         사용자 기준 좌/우, **x·y 모두 프레임 폭으로 나눈** 비율 좌표(등방 단위 —
         어깨너비 정규화와 단위를 맞추기 위해, 2026-07-16).
-        neck_ratio: 목 길이 비율(person_lock.user_neck_ratio) — 없으면 None.
         shoulder_width_ratio: 어깨너비/프레임폭(person_lock.user_shoulder_width_ratio)
         — 쓸기 임계를 몸 크기 기준으로 환산. 없으면 마지막 값, 최초부터 없으면 기본값.
-        우선순위: 쓸기(이동·이전·처음) > 선택(꾸벅) — 판정 부위가 달라 실충돌은 없다.
+        좌/우 쓸기는 즉시 확정, 위/아래 쓸기는 2연속 판정 창을 거친다 (모듈 주석 참고).
         """
         now_sec = self._clock()
         if self._is_in_cooldown(now_sec):
-            # 쿨다운 중엔 궤적·꾸벅 상태를 쌓지 않는다 — 남은 점·숙임은 시간 창이 걸러낸다
+            # 쿨다운 중엔 궤적을 쌓지 않는다 — 남은 점은 시간 창이 걸러낸다
             return None
 
         body_scale = self._update_body_scale(shoulder_width_ratio)
 
+        # 보류 중인 수직 쓸기 — 판정 창이 지나도록 2회째가 없으면 1회 동작으로 확정
+        if self._pending_direction is not None and now_sec >= self._pending_deadline_sec:
+            direction = self._pending_direction
+            pending_side = self._pending_side
+            self._clear_pending()
+            event = self._confirm(
+                SINGLE_EVENT_BY_DIRECTION[direction], 1.0, now_sec, hand_side=pending_side
+            )
+            self._update_debug(body_scale, shoulder_width_ratio)
+            return event
+
+        event = None
         side, point_info = self._select_active_arm(swipe_points or {}, body_scale)
         if side is None:
             self._swipe_tracker.reset()   # 추적점 전무 — 끊긴 궤적을 이어 붙이지 않는다
@@ -286,22 +206,43 @@ class GestureFilter:
                 point[0], point[1], now_sec, gain, body_scale
             )
             if direction is not None:
-                event = self._confirm(
-                    SWIPE_EVENT_BY_DIRECTION[direction], 1.0, now_sec, hand_side=side
-                )
-                self._update_debug(body_scale, neck_ratio, shoulder_width_ratio)
-                return event
+                event = self._judge_swipe(direction, side, now_sec)
 
-        event = None
-        if self._nod_tracker.update(neck_ratio, now_sec):
-            event = self._confirm("select", 1.0, now_sec)
-        self._update_debug(body_scale, neck_ratio, shoulder_width_ratio)
+        self._update_debug(body_scale, shoulder_width_ratio)
         return event
 
-    def _update_debug(self, body_scale, neck_ratio, shoulder_width_ratio):
+    def _judge_swipe(self, direction, side, now_sec):
+        """쓸기 방향 1건 -> 이벤트 | None (수직은 1회/2연속 분기).
+
+        - 좌/우: 즉시 확정 (보류 중인 수직 쓸기는 폐기 — 사용자가 의도를 바꾼 것)
+        - 위/아래 1회째: 보류 등록 + 트래커 해제(같은 궤적 재발화 방지·멈춤 요구)
+        - 보류와 같은 방향 2회째: 2연속 동작(go_home/go_back) 즉시 확정
+        - 보류와 다른 수직 방향: 이전 보류 폐기, 새 방향으로 다시 보류
+        """
+        if direction in HORIZONTAL_EVENT_BY_DIRECTION:
+            self._clear_pending()
+            return self._confirm(
+                HORIZONTAL_EVENT_BY_DIRECTION[direction], 1.0, now_sec, hand_side=side
+            )
+        if self._pending_direction == direction:
+            self._clear_pending()
+            return self._confirm(
+                DOUBLE_EVENT_BY_DIRECTION[direction], 1.0, now_sec, hand_side=side
+            )
+        self._pending_direction = direction
+        self._pending_side = side
+        self._pending_deadline_sec = now_sec + self._double_within_sec
+        self._swipe_tracker.disarm()   # 이벤트는 아직 아니지만 궤적은 끊는다 (복귀 무시)
+        return None
+
+    def _clear_pending(self):
+        self._pending_direction = None
+        self._pending_side = None
+        self._pending_deadline_sec = None
+
+    def _update_debug(self, body_scale, shoulder_width_ratio):
         """판정 내부값 스냅샷 — 실기에서 임계가 왜 안/잘 넘는지 숫자로 보기 위한 계기판."""
         tracker = self._swipe_tracker
-        nod = self._nod_tracker
         self.debug = {
             "body_scale": round(body_scale, 3),               # 어깨너비/프레임폭 (평활 후)
             "shoulder_raw": None if shoulder_width_ratio is None else round(shoulder_width_ratio, 3),
@@ -309,11 +250,8 @@ class GestureFilter:
             "active_source": self._active_source,
             "is_armed": tracker._is_armed,                    # False면 정지 재장전 대기
             "swipe_progress_x": round(tracker.progress_x, 2), # ±1.0 도달 시 좌/우 확정
-            "swipe_progress_y": round(tracker.progress_y, 2), # ±1.0 도달 시 상/하 확정
-            "neck_ratio": None if neck_ratio is None else round(neck_ratio, 3),
-            "nod_baseline": None if nod._baseline is None else round(nod._baseline, 3),
-            "is_dipping": nod._is_dipping,
-            "has_first_nod": nod._first_nod_sec is not None,
+            "swipe_progress_y": round(tracker.progress_y, 2), # ±1.0 도달 시 상/하 판정
+            "pending": self._pending_direction,               # 보류 중 수직 쓸기 (1회/2연속 분기 대기)
         }
 
     def _update_body_scale(self, shoulder_width_ratio):
@@ -365,7 +303,6 @@ class GestureFilter:
     def _confirm(self, class_name, conf, now_sec, hand_side=None, data=None):
         self._last_event_ts_sec = now_sec
         self._swipe_tracker.disarm()   # 복귀 스트로크 무시 — 멈춰야 다음 쓸기 장전 (정지 재장전)
-        self._nod_tracker.reset()
 
         event = GestureEvent(
             class_name=class_name, conf=conf, ts_sec=now_sec, hand_side=hand_side, data=data

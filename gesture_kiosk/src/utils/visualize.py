@@ -36,7 +36,7 @@ def draw_person_lock(frame, person_lock):
 def draw_debug_panel(frame, debug):
     """판정 계기판 — 좌하단에 내부값 표시 (실기 튜닝용, 2026-07-16).
 
-    SCALE=어깨 스케일 / SWIPE=진행도(±1.0 확정)+장전 상태 / NOD=목길이·기준선.
+    SCALE=어깨 스케일 / SWIPE=진행도(±1.0 판정)+장전 상태 / PEND=수직 1회 보류.
     """
     if not debug:
         return frame
@@ -48,12 +48,8 @@ def draw_debug_panel(frame, debug):
         f"SCALE {debug.get('body_scale', 0):.2f}  ARM {side}{source_tag}{armed_tag}",
         f"SWIPE x{debug.get('swipe_progress_x', 0):+.2f} y{debug.get('swipe_progress_y', 0):+.2f}",
     ]
-    neck_ratio = debug.get("neck_ratio")
-    baseline = debug.get("nod_baseline")
-    if neck_ratio is not None and baseline is not None:
-        dip_tag = " DIP" if debug.get("is_dipping") else ""
-        nod_tag = " 1/2" if debug.get("has_first_nod") else ""
-        lines.append(f"NOD {neck_ratio:.2f}/{baseline:.2f}{dip_tag}{nod_tag}")
+    if debug.get("pending"):
+        lines.append(f"PEND {debug['pending']} (1/2)")
     for line_idx, line in enumerate(lines):
         y_px = h_px - 14 - 24 * (len(lines) - 1 - line_idx)
         cv2.putText(frame, line, (10, y_px),

@@ -180,8 +180,8 @@ class SwipePointTest(unittest.TestCase):
         self.assertIsNone(lock.user_swipe_points()["right"])
 
 
-class UserNeckRatioTest(unittest.TestCase):
-    """끄덕임(select) 신호 — (어깨 중점 y - 코 y) / 어깨 너비 (2026-07-15 2차)."""
+class UserShoulderWidthRatioTest(unittest.TestCase):
+    """어깨너비/프레임폭 — 쓸기 임계의 몸 크기 정규화 자 (2026-07-16)."""
 
     def _locked(self, **person_kwargs):
         lock, clock = make_lock()
@@ -189,33 +189,23 @@ class UserNeckRatioTest(unittest.TestCase):
         lock_person(lock, clock, person)
         return lock
 
-    def test_ratio_from_nose_and_shoulders(self):
-        # 어깨 너비 200px, 코가 어깨 중점보다 180px 위 → 0.9
-        lock = self._locked(nose=(640, 300),
-                            left_shoulder=(540, 480), right_shoulder=(740, 480))
-        self.assertAlmostEqual(lock.user_neck_ratio(), 0.9)
+    def test_ratio_from_shoulders(self):
+        # 어깨 너비 200px / 프레임 폭 1280px = 0.15625
+        lock = self._locked(left_shoulder=(540, 480), right_shoulder=(740, 480))
+        self.assertAlmostEqual(lock.user_shoulder_width_ratio(), 200 / 1280)
 
-    def test_nod_lowers_ratio(self):
-        # 고개를 숙이면(코 y 증가) 비율이 준다 — _NodTracker가 보는 방향성
-        upright = self._locked(nose=(640, 300),
-                               left_shoulder=(540, 480), right_shoulder=(740, 480))
-        nodding = self._locked(nose=(640, 360),
-                               left_shoulder=(540, 480), right_shoulder=(740, 480))
-        self.assertLess(nodding.user_neck_ratio(), upright.user_neck_ratio())
-
-    def test_missing_keypoint_returns_none(self):
-        lock = self._locked(nose=(640, 300), left_shoulder=(540, 480))  # 오른어깨 없음
-        self.assertIsNone(lock.user_neck_ratio())
+    def test_missing_shoulder_returns_none(self):
+        lock = self._locked(left_shoulder=(540, 480))   # 오른어깨 없음
+        self.assertIsNone(lock.user_shoulder_width_ratio())
 
     def test_narrow_shoulders_returns_none(self):
-        # 측면 자세 — 어깨 너비가 좁으면 정규화 분모로 못 쓴다
-        lock = self._locked(nose=(640, 300),
-                            left_shoulder=(635, 480), right_shoulder=(645, 480))
-        self.assertIsNone(lock.user_neck_ratio())
+        # 측면 자세 — 어깨 너비가 좁으면 정규화 자로 못 쓴다
+        lock = self._locked(left_shoulder=(635, 480), right_shoulder=(645, 480))
+        self.assertIsNone(lock.user_shoulder_width_ratio())
 
     def test_no_lock_returns_none(self):
         lock, _ = make_lock()
-        self.assertIsNone(lock.user_neck_ratio())
+        self.assertIsNone(lock.user_shoulder_width_ratio())
 
 
 if __name__ == "__main__":

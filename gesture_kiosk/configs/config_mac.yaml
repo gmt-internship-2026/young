@@ -37,6 +37,7 @@ gestures:
     min_dist_y_ratio: 0.25
     axis_dominance: 1.5
     min_track_frames: 4
+    elbow_gain: 2.0         # 손목 미검출 시 팔꿈치 폴백 배율 — config.yaml 주석 참고
   select:                 # 고개 꾸벅 2회 — config.yaml 주석 참고
     nod_dip_ratio: 0.12
     nod_return_ratio: 0.05

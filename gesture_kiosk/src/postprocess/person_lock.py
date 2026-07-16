@@ -9,7 +9,8 @@
 2. 최고 점수 후보가 lock_frame_count 프레임 연속이면 그 사람에게 잠금
 3. 잠금 중에는 follow_radius 안에서 같은 사람을 추적, release_sec 이상
    사라지면 해제하고 다음 사용자를 받는다
-4. 잠긴 사용자의 손목(쓸기)·목 길이 비율(끄덕임 select)을 gesture_filter에 공급한다
+4. 잠긴 사용자의 쓸기 추적점(손목 — 없으면 팔꿈치 폴백)·목 길이 비율(끄덕임 select)을
+   gesture_filter에 공급한다
 
 거울 반전 주의: 포즈 모델의 왼/오른손목 라벨은 화면에 보이는 해부학 기준이라
 mirror=true 프레임에서는 사용자 실제 좌/우와 반대다. 이 모듈이 뒤집어
@@ -29,6 +30,8 @@ logger = get_logger("postprocess")
 KPT_NOSE = 0
 KPT_LEFT_SHOULDER = 5
 KPT_RIGHT_SHOULDER = 6
+KPT_LEFT_ELBOW = 7
+KPT_RIGHT_ELBOW = 8
 KPT_LEFT_WRIST = 9
 KPT_RIGHT_WRIST = 10
 
@@ -120,7 +123,7 @@ class PersonLock:
         """프레임의 사람 목록으로 잠금 상태를 갱신한다. 잠긴 사람(or None)을 돌려준다."""
         if not self.enabled:
             # 잠금 비활성이어도 쓸기(손목 궤적)·끄덕임은 기준 인물이 필요하다 —
-            # 최고 신뢰도 사람을 추적해 user_wrists()/user_neck_ratio()가 동작하게 한다
+            # 최고 신뢰도 사람을 추적해 user_swipe_points()/user_neck_ratio()가 동작하게 한다
             self.locked_person = max(persons, key=lambda p: p.conf) if persons else None
             return self.locked_person
         now_sec = self._clock()
@@ -182,13 +185,29 @@ class PersonLock:
 
     # ----- 잠긴 사용자의 판정 신호 (gesture_filter 입력) -----
 
-    def user_wrists(self):
-        """잠긴 사용자의 손목 좌표를 '사용자 기준' 좌/우로 돌려준다: {"left": (x,y)|None, ...}"""
+    def user_swipe_points(self):
+        """잠긴 사용자의 쓸기 추적점 — 사용자 기준 좌/우: {"left": (출처, (x,y)) | None, ...}.
+
+        출처 = "wrist" | "elbow". 손이 없는(절단) 사용자는 포즈 모델의 손목
+        키포인트 신뢰도가 낮게 나오므로, 손목이 신뢰도 미달이면 팔꿈치로 폴백해
+        상완만 있어도 쓸기가 된다 (2026-07-16 범용 설계 보완 — 사용자 지적).
+        출처가 바뀌면 gesture_filter가 궤적을 리셋한다 (두 점의 좌표가 달라서).
+        """
         if self.locked_person is None:
             return {"left": None, "right": None}
+
+        def swipe_point(wrist_idx, elbow_idx):
+            wrist = self.locked_person.keypoint(wrist_idx, self._kpt_conf)
+            if wrist is not None:
+                return ("wrist", wrist)
+            elbow = self.locked_person.keypoint(elbow_idx, self._kpt_conf)
+            if elbow is not None:
+                return ("elbow", elbow)
+            return None
+
         return user_side_points(
-            self.locked_person.keypoint(KPT_LEFT_WRIST, self._kpt_conf),
-            self.locked_person.keypoint(KPT_RIGHT_WRIST, self._kpt_conf),
+            swipe_point(KPT_LEFT_WRIST, KPT_LEFT_ELBOW),
+            swipe_point(KPT_RIGHT_WRIST, KPT_RIGHT_ELBOW),
             self._is_mirror,
         )
 

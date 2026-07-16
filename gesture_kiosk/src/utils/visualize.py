@@ -9,20 +9,25 @@ OCR_COLOR = (80, 200, 255)       # OCR 모드 안내 영역
 
 
 def draw_person_lock(frame, person_lock):
-    """잠긴 사용자의 얼굴 박스와 손목(사용자 기준 좌/우)을 그린다."""
+    """잠긴 사용자의 얼굴 박스와 쓸기 추적점(사용자 기준 좌/우)을 그린다.
+
+    라벨: L/R + 팔꿈치 폴백 중이면 "(E)" — 손목 미검출 상태를 화면에서 확인할 수 있게.
+    """
     if person_lock.locked_face_box is not None:
         x1, y1, x2, y2 = person_lock.locked_face_box
         cv2.rectangle(frame, (x1, y1), (x2, y2), LOCK_COLOR, 2)
         cv2.putText(
             frame, "USER LOCK", (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, LOCK_COLOR, 2
         )
-    for side, wrist in person_lock.user_wrists().items():
-        if wrist is None:
+    for side, point_info in person_lock.user_swipe_points().items():
+        if point_info is None:
             continue
-        x_px, y_px = int(wrist[0]), int(wrist[1])
+        source, point = point_info
+        x_px, y_px = int(point[0]), int(point[1])
+        label = side[0].upper() + ("(E)" if source == "elbow" else "")
         cv2.circle(frame, (x_px, y_px), 10, WRIST_COLOR[side], 2)
         cv2.putText(
-            frame, side[0].upper(), (x_px + 12, y_px + 5),
+            frame, label, (x_px + 12, y_px + 5),
             cv2.FONT_HERSHEY_SIMPLEX, 0.6, WRIST_COLOR[side], 2,
         )
     return frame

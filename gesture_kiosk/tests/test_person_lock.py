@@ -12,8 +12,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 
 from src.postprocess.person_lock import (
-    KPT_LEFT_SHOULDER, KPT_LEFT_WRIST, KPT_NOSE, KPT_RIGHT_SHOULDER, KPT_RIGHT_WRIST,
-    PersonLock,
+    KPT_LEFT_ELBOW, KPT_LEFT_SHOULDER, KPT_LEFT_WRIST, KPT_NOSE,
+    KPT_RIGHT_ELBOW, KPT_RIGHT_SHOULDER, KPT_RIGHT_WRIST, PersonLock,
 )
 
 FRAME_WIDTH_PX = 1280
@@ -24,13 +24,14 @@ class FakePerson:
     """PersonPose와 같은 필드·메서드를 가진 테스트 대역 (rtmlib 임포트 회피)."""
 
     def __init__(self, center_x, center_y, size_px=200.0,
-                 left_wrist=None, right_wrist=None,
+                 left_wrist=None, right_wrist=None, left_elbow=None, right_elbow=None,
                  nose=None, left_shoulder=None, right_shoulder=None, head_points=None):
         half = size_px / 2.0
         self.bbox = (center_x - half, center_y - half, center_x + half, center_y + half)
         self.conf = 0.9
         self.keypoints = np.zeros((17, 3))
         for index, point in ((KPT_LEFT_WRIST, left_wrist), (KPT_RIGHT_WRIST, right_wrist),
+                             (KPT_LEFT_ELBOW, left_elbow), (KPT_RIGHT_ELBOW, right_elbow),
                              (KPT_NOSE, nose), (KPT_LEFT_SHOULDER, left_shoulder),
                              (KPT_RIGHT_SHOULDER, right_shoulder)):
             if point is not None:
@@ -139,29 +140,44 @@ class LockSelectionTest(unittest.TestCase):
         person = FakePerson(640, 360, left_wrist=(500, 400))
         lock.update(FRAME, [person])
         self.assertIsNotNone(lock.locked_person)
-        self.assertIsNotNone(lock.user_wrists()["right"])   # mirror=true — 모델 왼손목
+        self.assertIsNotNone(lock.user_swipe_points()["right"])   # mirror=true — 모델 왼손목
 
 
-class WristSideTest(unittest.TestCase):
-    """거울 반전 좌/우 보정 — 포즈 모델 라벨은 화면 기준이라 mirror=true면 뒤집는다."""
+class SwipePointTest(unittest.TestCase):
+    """쓸기 추적점 — 거울 좌/우 보정 + 손목 미검출 시 팔꿈치 폴백 (2026-07-16)."""
 
-    def _locked(self, mirror):
+    def _locked(self, mirror=True, **person_kwargs):
         lock, clock = make_lock(make_config(mirror=mirror))
-        person = FakePerson(640, 360, left_wrist=(500, 400), right_wrist=(800, 400))
+        person = FakePerson(640, 360, **person_kwargs)
         lock_person(lock, clock, person)
         return lock
 
     def test_mirror_swaps_model_labels_to_user_side(self):
-        lock = self._locked(mirror=True)
-        wrists = lock.user_wrists()
-        self.assertEqual(wrists["right"], (500.0, 400.0))  # 모델 '왼손목' = 사용자 오른손
-        self.assertEqual(wrists["left"], (800.0, 400.0))
+        lock = self._locked(mirror=True, left_wrist=(500, 400), right_wrist=(800, 400))
+        points = lock.user_swipe_points()
+        self.assertEqual(points["right"], ("wrist", (500.0, 400.0)))  # 모델 '왼손목' = 사용자 오른손
+        self.assertEqual(points["left"], ("wrist", (800.0, 400.0)))
 
     def test_no_mirror_keeps_model_labels(self):
-        lock = self._locked(mirror=False)
-        wrists = lock.user_wrists()
-        self.assertEqual(wrists["left"], (500.0, 400.0))
-        self.assertEqual(wrists["right"], (800.0, 400.0))
+        lock = self._locked(mirror=False, left_wrist=(500, 400), right_wrist=(800, 400))
+        points = lock.user_swipe_points()
+        self.assertEqual(points["left"], ("wrist", (500.0, 400.0)))
+        self.assertEqual(points["right"], ("wrist", (800.0, 400.0)))
+
+    def test_missing_wrist_falls_back_to_elbow(self):
+        # 손 절단 사용자 모사 — 모델 왼손목 없음(신뢰도 미달) + 왼팔꿈치 존재
+        lock = self._locked(left_elbow=(520, 450), right_wrist=(800, 400))
+        points = lock.user_swipe_points()
+        self.assertEqual(points["right"], ("elbow", (520.0, 450.0)))  # mirror — 사용자 오른팔
+        self.assertEqual(points["left"], ("wrist", (800.0, 400.0)))
+
+    def test_wrist_wins_over_elbow_when_both_visible(self):
+        lock = self._locked(left_wrist=(500, 400), left_elbow=(520, 450))
+        self.assertEqual(lock.user_swipe_points()["right"], ("wrist", (500.0, 400.0)))
+
+    def test_missing_arm_returns_none(self):
+        lock = self._locked(right_wrist=(800, 400))   # 모델 왼팔 키포인트 전무
+        self.assertIsNone(lock.user_swipe_points()["right"])
 
 
 class UserNeckRatioTest(unittest.TestCase):

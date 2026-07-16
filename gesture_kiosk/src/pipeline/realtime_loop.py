@@ -157,14 +157,14 @@ def run_pipeline(config):
                 person_lock.enabled and person_lock.locked_person is not None
             )
 
-            # 쓸기 판정용 손목 궤적 — 프레임 폭/높이 비율 좌표로 넘긴다
-            wrists_ratio = {
-                side: None if point is None
-                else (point[0] / frame_width_px, point[1] / frame_height_px)
-                for side, point in person_lock.user_wrists().items()
+            # 쓸기 판정용 추적점(손목 — 없으면 팔꿈치) — 프레임 폭/높이 비율 좌표로 넘긴다
+            swipe_points_ratio = {
+                side: None if info is None
+                else (info[0], (info[1][0] / frame_width_px, info[1][1] / frame_height_px))
+                for side, info in person_lock.user_swipe_points().items()
             }
             gesture_event = gesture_filter.filter_signals(
-                wrists_ratio, person_lock.user_neck_ratio()
+                swipe_points_ratio, person_lock.user_neck_ratio()
             )
 
             if gesture_event is not None:

@@ -35,7 +35,8 @@ run.bat            :: 실행 — 브라우저 http://localhost:5000
 | fill_id_fields | 주민등록증 제시 | OCR 모드에서 EasyOCR 판독 | 이름·주민번호 자동 입력 |
 
 - **범용 설계 근거**: 쓸기는 손이 아니라 **손목 키포인트(포즈)** 궤적이라 손·손가락이
-  없어도 동작하고, 선택은 **고개 끄덕임**이라 팔이 전혀 없어도 가능하다.
+  없어도 동작하고 — 손목 키포인트가 신뢰도 미달(절단 등)이면 **팔꿈치로 자동 폴백**
+  (elbow_gain 보정, 화면 추적점에 "(E)" 표시) — 선택은 **고개 끄덕임**이라 팔이 전혀 없어도 가능하다.
   "끄덕임=예"는 몸에 밴 동작이라 별도 안내 없이 직관적 (2회 요구 = 무의식 끄덕임 오탐 방지)
 - 내려다보기(지갑·신분증)는 선택으로 오인하지 않는다 — 제때(0.8초) 복귀해야 꾸벅으로 인정
 - 상하 포커스 이동 없음 — **줄 끝에서 다음 줄 첫 칸 랩(토크백식 선형 순회)은 UI 책임**
@@ -63,7 +64,7 @@ gesture_kiosk/
 ├─ src/
 │   ├─ capture/camera_stream.py      # USB 카메라 캡처 스레드 (윈도우 MSMF 기본)
 │   ├─ inference/pose_estimator.py   # 사람 포즈 (rtmlib RTMPose) — 유일한 추론 모델
-│   ├─ postprocess/person_lock.py    # 사용자 잠금 + 손목·목 길이 신호 (거울 좌/우 보정)
+│   ├─ postprocess/person_lock.py    # 사용자 잠금 + 쓸기 추적점(손목→팔꿈치 폴백)·목 길이 신호
 │   ├─ postprocess/gesture_filter.py # 동작 판정 — 손목 쓸기 궤적 + 고개 꾸벅 2회
 │   ├─ ocr/idcard_reader.py          # 주민등록증 이름·주민번호 (마스킹 로그)
 │   ├─ announce/announcer.py         # 토크백 TTS (pyttsx3 — SAPI/nsss)

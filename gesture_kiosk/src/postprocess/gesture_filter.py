@@ -9,7 +9,8 @@
   선택할 수 있다. 2회 연속 요구는 대화 중 무의식적 끄덕임 오탐 방지(사용자 결정).
 
 모든 판정이 포즈 키포인트 하나로 끝난다 — 2차 개편에서 손 검출(MediaPipe)·
-팔등 CNN을 제거해 포즈 단일 엔진이 됐다. 손이 없는 사용자는 팔 궤적으로,
+팔등 CNN을 제거해 포즈 단일 엔진이 됐다. 손이 없는 사용자는 팔 궤적으로
+(손목 키포인트가 신뢰도 미달이면 팔꿈치 폴백 — 상완만 있어도 동작),
 팔이 없는 사용자는 고개로 조작한다.
 
 끄덕임 신호 = "목 길이 비율" (person_lock.user_neck_ratio):
@@ -58,8 +59,12 @@ class _SwipeTracker:
         self._min_track_frames = min_track_frames
         self._track = deque()   # (ts_sec, x_ratio, y_ratio)
 
-    def update(self, x_ratio, y_ratio, now_sec):
-        """관측 1건을 반영하고, 쓸기 확정이면 방향("left"/"right"/"up"/"down")."""
+    def update(self, x_ratio, y_ratio, now_sec, gain=1.0):
+        """관측 1건을 반영하고, 쓸기 확정이면 방향("left"/"right"/"up"/"down").
+
+        gain: 진행도 보정 배율 — 팔꿈치 추적(elbow_gain)처럼 같은 팔 휘두름에도
+        이동량이 작은 추적점을 손목과 같은 기준으로 판정하기 위한 값.
+        """
         self._track.append((now_sec, x_ratio, y_ratio))
         while self._track and now_sec - self._track[0][0] > self._window_sec:
             self._track.popleft()
@@ -69,8 +74,8 @@ class _SwipeTracker:
         dx_ratio = x_ratio - self._track[0][1]
         dy_ratio = y_ratio - self._track[0][2]
         # 축마다 임계가 달라(폭/높이 비율) 무단위 진행도(이동량/임계)로 맞춰 비교한다
-        progress_x = abs(dx_ratio) / self._min_dist_x_ratio
-        progress_y = abs(dy_ratio) / self._min_dist_y_ratio
+        progress_x = abs(dx_ratio) / self._min_dist_x_ratio * gain
+        progress_y = abs(dy_ratio) / self._min_dist_y_ratio * gain
         if progress_x >= 1.0 and progress_x >= progress_y * self._axis_dominance:
             return "right" if dx_ratio > 0 else "left"
         if progress_y >= 1.0 and progress_y >= progress_x * self._axis_dominance:
@@ -177,6 +182,7 @@ class GestureFilter:
         self._clock = clock
 
         swipe = gestures["swipe"]
+        self._elbow_gain = swipe["elbow_gain"]
         self._swipe_trackers = {
             side: _SwipeTracker(
                 swipe["window_sec"], swipe["min_dist_x_ratio"], swipe["min_dist_y_ratio"],
@@ -184,15 +190,17 @@ class GestureFilter:
             )
             for side in ("left", "right")
         }
+        self._swipe_sources = {"left": None, "right": None}   # "wrist" | "elbow" — 궤적 출처
         self._nod_tracker = _NodTracker(gestures["select"])
 
         self._last_event_ts_sec = None
 
-    def filter_signals(self, wrists, neck_ratio):
+    def filter_signals(self, swipe_points, neck_ratio):
         """포즈 신호 -> gesture_event | None (기획서 4.6 계약).
 
-        wrists: {"left": (x_ratio, y_ratio) | None, ...} — 잠긴 사용자의 손목
-        (사용자 기준 좌/우, 프레임 폭/높이 비율 좌표).
+        swipe_points: {"left": (출처, (x_ratio, y_ratio)) | None, ...} — 잠긴 사용자의
+        쓸기 추적점(person_lock.user_swipe_points — 손목, 없으면 팔꿈치 폴백).
+        사용자 기준 좌/우, 프레임 폭/높이 비율 좌표.
         neck_ratio: 목 길이 비율(person_lock.user_neck_ratio) — 없으면 None.
         우선순위: 쓸기(이동·이전·처음) > 선택(꾸벅) — 판정 부위가 달라 실충돌은 없다.
         """
@@ -201,13 +209,19 @@ class GestureFilter:
             # 쿨다운 중엔 궤적·꾸벅 상태를 쌓지 않는다 — 남은 점·숙임은 시간 창이 걸러낸다
             return None
 
-        if wrists:
+        if swipe_points:
             for side, tracker in self._swipe_trackers.items():
-                point = wrists.get(side)
-                if point is None:
-                    tracker.reset()   # 손목 소실 — 끊긴 궤적을 이어 붙이면 순간이동 오발
+                point_info = swipe_points.get(side)
+                if point_info is None:
+                    tracker.reset()   # 추적점 소실 — 끊긴 궤적을 이어 붙이면 순간이동 오발
+                    self._swipe_sources[side] = None
                     continue
-                direction = tracker.update(point[0], point[1], now_sec)
+                source, point = point_info
+                if source != self._swipe_sources[side]:
+                    tracker.reset()   # 손목↔팔꿈치 전환 — 다른 위치의 점이라 궤적 연결 금지
+                    self._swipe_sources[side] = source
+                gain = self._elbow_gain if source == "elbow" else 1.0
+                direction = tracker.update(point[0], point[1], now_sec, gain)
                 if direction is not None:
                     return self._confirm(
                         SWIPE_EVENT_BY_DIRECTION[direction], 1.0, now_sec, hand_side=side

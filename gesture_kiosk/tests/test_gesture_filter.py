@@ -33,6 +33,7 @@ def make_config():
                 "min_dist_y_ratio": 0.25,
                 "axis_dominance": 1.5,
                 "min_track_frames": 4,
+                "elbow_gain": 2.0,
             },
             "select": {
                 "nod_dip_ratio": 0.12,
@@ -57,20 +58,22 @@ class GestureFilterTestBase(unittest.TestCase):
         self.clock = FakeClock()
         self.filter = GestureFilter(make_config(), clock=self.clock)
 
-    def _feed(self, wrists=None, neck_ratio=None, frame_count=1, dt_sec=FRAME_DT_SEC):
+    def _feed(self, swipe_points=None, neck_ratio=None, frame_count=1, dt_sec=FRAME_DT_SEC):
         """frame_count 프레임 공급 — 첫 확정 이벤트를 즉시 돌려준다 (없으면 None)."""
         for _ in range(frame_count):
-            event = self.filter.filter_signals(wrists or {}, neck_ratio)
+            event = self.filter.filter_signals(swipe_points or {}, neck_ratio)
             self.clock.tick(dt_sec)
             if event is not None:
                 return event
         return None
 
-    def _feed_swipe(self, side, points, dt_sec=FRAME_DT_SEC):
-        """한 손목의 궤적 점들을 순서대로 공급 — 첫 확정 이벤트를 돌려준다."""
+    def _feed_swipe(self, side, points, source="wrist", dt_sec=FRAME_DT_SEC):
+        """한 팔의 궤적 점들을 순서대로 공급 — 첫 확정 이벤트를 돌려준다."""
         other = "right" if side == "left" else "left"
         for point in points:
-            event = self._feed(wrists={side: point, other: None}, dt_sec=dt_sec)
+            event = self._feed(
+                swipe_points={side: (source, point), other: None}, dt_sec=dt_sec
+            )
             if event is not None:
                 return event
         return None
@@ -142,11 +145,24 @@ class SwipeGestureTest(GestureFilterTestBase):
         self.assertEqual(event.class_name, "move_right")
 
     def test_wrist_loss_resets_track(self):
-        # 절반 이동 후 손목 소실 — 궤적이 리셋돼 나머지 절반로는 확정되지 않는다
+        # 절반 이동 후 추적점 소실 — 궤적이 리셋돼 나머지 절반로는 확정되지 않는다
         self._feed_swipe("right", path(0.2, 0.4, 4, y_ratio=0.4))
-        self._feed(wrists={"right": None, "left": None})
+        self._feed(swipe_points={"right": None, "left": None})
         event = self._feed_swipe("right", path(0.4, 0.6, 4, y_ratio=0.4))
         self.assertIsNone(event)
+
+    def test_elbow_fallback_swipes_with_smaller_motion(self):
+        # 손 절단 사용자 — 팔꿈치 추적은 이동량이 절반쯤이라 elbow_gain(2.0)으로 보정.
+        # 손목 기준이면 미달(0.15 < 0.25)인 이동이 팔꿈치 출처에서는 확정된다
+        event = self._feed_swipe("right", path(0.4, 0.55, 8, y_ratio=0.4), source="elbow")
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "move_right")
+
+    def test_source_switch_resets_track(self):
+        # 손목→팔꿈치 전환 — 서로 다른 위치의 점이라 궤적을 이어 붙이면 안 된다
+        self._feed_swipe("right", path(0.2, 0.4, 4, y_ratio=0.4), source="wrist")
+        event = self._feed_swipe("right", path(0.4, 0.5, 4, y_ratio=0.4), source="elbow")
+        self.assertIsNone(event)   # 전환 후 0.1 이동 × gain 2.0 = 0.8 진행 — 미달
 
     def test_slow_drift_outside_window_does_not_fire(self):
         # 같은 거리라도 window_sec(0.6초)보다 느리면 쓸기가 아니다 — 배회 오탐 방지

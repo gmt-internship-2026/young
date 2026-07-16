@@ -53,12 +53,18 @@ announce:
   backend: tts            # 맥 nsss — pyttsx3 미설치 시 자동 log 폴백
   rate_wpm: 200
   volume: 1.0
+  voice_keyword: "ko"      # 맥 nsss 보이스는 이름 대신 id에 로캘 코드(ko-KR 등)가
+                            #   들어가는 경우가 많아 윈도우와 다른 키워드를 쓴다
+                            #   (config.yaml 주석 참고) — 실제 보이스명은 실기 확인 필요
   event_templates:
     move_left: "왼쪽으로 이동"
     move_right: "오른쪽으로 이동"
     select: "선택했습니다"
     go_back: "이전 화면으로 이동합니다"
     go_home: "처음 화면으로 돌아갑니다"
+  status_templates:
+    locked: "사용자가 인식되었습니다"
+    released: "사용자 인식이 해제되었습니다. 화면 앞에 서 주세요"
 
 classes:
   [move_left, move_right, select, go_back, go_home]

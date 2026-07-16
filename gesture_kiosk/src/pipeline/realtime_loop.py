@@ -90,6 +90,7 @@ def run_pipeline(config):
 
     def _inference_loop():
         infer_fps_meter = FpsMeter()
+        was_user_locked = False   # 전환(잠금<->해제) 시에만 안내 — 매 프레임 반복 방지
         while state.is_running:
             loop_start_sec = time.monotonic()
 
@@ -101,6 +102,9 @@ def run_pipeline(config):
             state.is_user_locked = (
                 person_lock.enabled and person_lock.locked_person is not None
             )
+            if state.is_user_locked != was_user_locked:
+                announcer.on_user_lock_change(state.is_user_locked)
+                was_user_locked = state.is_user_locked
 
             # 쓸기 판정용 추적점(손목 — 없으면 팔꿈치) — 프레임 폭/높이 비율 좌표로 넘긴다
             swipe_points_ratio = {

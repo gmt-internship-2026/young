@@ -3,6 +3,9 @@
 역할 분담(회사 프로그램 연동 계약):
 - 제스처 이벤트의 공통 안내(이동·선택·처음으로 등)는 엔진이 자동으로 읽는다
   (config announce.event_templates)
+- 사용자 인식/해제 상황 안내(2026-07-16 추가)도 엔진이 자동으로 읽는다
+  (config announce.status_templates) — 화면을 못 보는 사용자가 카메라에
+  인식됐는지 알 수 있는 유일한 수단이라 person_lock 전환 시 필수
 - 화면 맥락 안내(지금 포커스된 버튼이 무엇인지)는 화면 구조를 아는 UI가
   POST /announce {"text": "..."}로 요청한다 — demo_ui가 시연 구현이다
 
@@ -13,6 +16,11 @@
 TTS 엔진은 전용 워커 스레드에서만 만든다·부른다 (SAPI COM 제약).
 안내가 밀리면 최신 것만 남긴다 — 시각장애인 사용자에게 옛 안내를 늦게
 읽어 주는 것이 무(無)안내보다 나쁘기 때문이다.
+
+보이스 선택(2026-07-16 추가): pyttsx3가 기본으로 고르는 보이스가 한국어라는
+보장이 없다 — 실제 배포 PC에 여러 보이스가 깔려 있으면 한국어 문구를 엉뚱한
+언어 발음으로 읽을 수 있다. config announce.voice_keyword와 이름/id가
+일치하는 보이스를 찾아 명시적으로 지정한다(select_voice).
 """
 import queue
 import threading
@@ -25,6 +33,28 @@ QUEUE_MAX_COUNT = 4
 STOP_SENTINEL = None
 
 
+def select_voice(voices, keyword):
+    """voices(.id·.name 보유) 중 이름/id에 keyword(대소문자 무시)가 포함된
+    첫 보이스의 id. keyword가 비었거나 일치 항목이 없으면 None.
+
+    pyttsx3 없이도(가짜 보이스 객체로) 단위 테스트할 수 있도록 순수 함수로 뺐다.
+    """
+    if not keyword:
+        return None
+    keyword_lower = keyword.lower()
+    for voice in voices:
+        haystack = f"{voice.name or ''} {voice.id or ''}".lower()
+        if keyword_lower in haystack:
+            return voice.id
+    return None
+
+
+def status_announcement(is_locked, status_templates):
+    """사용자 인식/해제 전환 -> 안내 문구 | None (템플릿 미설정이면 침묵)."""
+    key = "locked" if is_locked else "released"
+    return status_templates.get(key)
+
+
 class Announcer:
     def __init__(self, config):
         announce = config["announce"]
@@ -33,6 +63,8 @@ class Announcer:
         self._rate_wpm = announce["rate_wpm"]
         self._volume = announce["volume"]
         self._event_templates = announce["event_templates"]
+        self._status_templates = announce["status_templates"]
+        self._voice_keyword = announce["voice_keyword"]
 
         self._queue = queue.Queue(maxsize=QUEUE_MAX_COUNT)
         self._thread = None
@@ -47,6 +79,11 @@ class Announcer:
         template = self._event_templates.get(gesture_event.class_name)
         if template is not None:
             self.announce(template)
+
+    def on_user_lock_change(self, is_locked):
+        """person_lock 잠금/해제 전환을 안내한다 — 화면을 못 보는 사용자가
+        카메라에 인식됐는지 알 수 있는 유일한 수단."""
+        self.announce(status_announcement(is_locked, self._status_templates))
 
     def announce(self, text):
         """문구 1건을 안내 큐에 넣는다. 큐가 차 있으면 가장 오래된 것을 버린다."""
@@ -92,7 +129,17 @@ class Announcer:
             engine = pyttsx3.init()
             engine.setProperty("rate", self._rate_wpm)
             engine.setProperty("volume", self._volume)
-            logger.info("TTS 초기화 완료 (pyttsx3, rate=%d)", self._rate_wpm)
+            voice_id = select_voice(engine.getProperty("voices"), self._voice_keyword)
+            if voice_id is not None:
+                engine.setProperty("voice", voice_id)
+            else:
+                logger.warning(
+                    "TTS 보이스 중 '%s' 일치 항목 없음 — 기본 보이스로 재생됩니다"
+                    " (설치가이드.md 한국어 보이스 설치 절 참고)",
+                    self._voice_keyword,
+                )
+            logger.info("TTS 초기화 완료 (pyttsx3, rate=%d, voice_keyword=%s)",
+                        self._rate_wpm, self._voice_keyword)
             return engine
         except Exception:
             logger.warning("pyttsx3 초기화 실패 — announce는 로그로만 출력합니다 (backend=log 동작)")

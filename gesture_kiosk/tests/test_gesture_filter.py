@@ -106,45 +106,45 @@ class SwipeGestureTest(GestureFilterTestBase):
         event = self._feed_swipe("left", path(0.6, 0.2, 8, y_ratio=0.4))
         self.assertEqual(event.class_name, "move_left")
 
-    def test_double_swipe_up_fires_go_home(self):
-        # 위-복귀(삼킴)-위 = 2연속 → 처음으로
-        event = self._feed_swipe("right", path(0.8, 0.3, 8, x_ratio=0.5))
+    def test_double_swipe_down_fires_go_home(self):
+        # 아래-복귀(삼킴)-아래 = 2연속 → 처음으로
+        event = self._feed_swipe("right", path(0.3, 0.8, 8, x_ratio=0.5))
         self.assertIsNone(event)                                   # 1회째는 보류
-        self._feed_swipe("right", path(0.3, 0.8, 8, x_ratio=0.5))  # 복귀 — 삼킴
-        event = self._feed_swipe("right", path(0.8, 0.3, 8, x_ratio=0.5))
+        self._feed_swipe("right", path(0.8, 0.3, 8, x_ratio=0.5))  # 복귀 — 삼킴
+        event = self._feed_swipe("right", path(0.3, 0.8, 8, x_ratio=0.5))
         self.assertIsNotNone(event)
         self.assertEqual(event.class_name, "go_home")
 
-    def test_single_swipe_up_fires_select_after_window(self):
-        # 위로 1회 = 선택·확인(통합) — 판정 창(1.2초)이 지나야 발화 (2연속 대기)
-        self.assertIsNone(self._feed_swipe("right", path(0.8, 0.3, 8, x_ratio=0.5)))
+    def test_single_swipe_down_fires_go_back_after_window(self):
+        # 아래로 1회 = 이전 화면 — 판정 창(1.2초)이 지나야 발화 (2연속 대기)
+        self.assertIsNone(self._feed_swipe("right", path(0.3, 0.8, 8, x_ratio=0.5)))
         event = self._feed(frame_count=40)                         # ≈1.3초 경과
-        self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "select")
-
-    def test_swipe_down_fires_go_back_immediately(self):
-        # 아래로 1회 = 이전 화면 — 대기 없이 즉시 발화 (2026-07-16 확정)
-        event = self._feed_swipe("right", path(0.3, 0.8, 8, x_ratio=0.5))
         self.assertIsNotNone(event)
         self.assertEqual(event.class_name, "go_back")
 
+    def test_swipe_up_fires_select_immediately(self):
+        # 위로 1회 = 선택·확인(통합) — 대기 없이 즉시 발화 (2026-07-16 확정)
+        event = self._feed_swipe("right", path(0.8, 0.3, 8, x_ratio=0.5))
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "select")
+
     def test_long_sweep_tail_does_not_double(self):
-        # 임계의 3배가 넘는 긴 위 스윕 한 번 — 꼬리 재확정으로 go_home이 되면 안 된다
-        long_up = path(0.95, 0.1, 16, x_ratio=0.5)     # 0.85 이동 (임계 0.25의 3.4배)
-        self.assertIsNone(self._feed_swipe("right", long_up))
+        # 임계의 3배가 넘는 긴 아래 스윕 한 번 — 꼬리 재확정으로 go_home이 되면 안 된다
+        long_down = path(0.1, 0.95, 16, x_ratio=0.5)   # 0.85 이동 (임계 0.25의 3.4배)
+        self.assertIsNone(self._feed_swipe("right", long_down))
         event = self._feed(frame_count=45)
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "select")   # 1회로만 집계
+        self.assertEqual(event.class_name, "go_back")  # 1회로만 집계
 
     def test_horizontal_swipe_drops_pending_vertical(self):
-        # 위 1회 보류 중 좌/우 쓸기 — 사용자가 의도를 바꾼 것: 이동만 발화
-        self._feed_swipe("right", path(0.8, 0.3, 8, x_ratio=0.5))  # 위 1회 보류
+        # 아래 1회 보류 중 좌/우 쓸기 — 사용자가 의도를 바꾼 것: 이동만 발화
+        self._feed_swipe("right", path(0.3, 0.8, 8, x_ratio=0.5))  # 아래 1회 보류
         self.clock.tick(0.6)                                        # 획 분리 유예 경과
-        event = self._feed_swipe("right", path(0.5, 0.9, 8, y_ratio=0.3))
+        event = self._feed_swipe("right", path(0.5, 0.9, 8, y_ratio=0.8))
         self.assertEqual(event.class_name, "move_right")
         self.clock.tick(1.2)                                       # 쿨다운 경과
         event = self._feed(frame_count=45)                         # 보류 만료분 대기
-        self.assertIsNone(event)                                   # select는 폐기됐다
+        self.assertIsNone(event)                                   # go_back은 폐기됐다
 
     def test_short_move_does_not_fire(self):
         # min_dist_x_ratio(0.25) 미만 이동 — 이벤트 없음
@@ -232,8 +232,8 @@ class DebugPanelTest(GestureFilterTestBase):
         self.assertAlmostEqual(debug["body_scale"], 0.25)    # 테스트 폴백 스케일
 
     def test_pending_is_exposed(self):
-        self._feed_swipe("right", path(0.8, 0.3, 8, x_ratio=0.5))   # 위 1회 보류
-        self.assertEqual(self.filter.debug["pending"], "up")
+        self._feed_swipe("right", path(0.3, 0.8, 8, x_ratio=0.5))   # 아래 1회 보류
+        self.assertEqual(self.filter.debug["pending"], "down")
 
     def test_swallow_is_exposed(self):
         self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.3))    # 확정 — 좌 삼킴 예약

@@ -2,12 +2,12 @@
 
 동작 체계(2026-07-16 확정 — 확인·선택 통합, 사용자 결정):
 - move_left / move_right : 팔을 좌/우로 쓸기 — 포커스 1칸 이동 (한 번에 한 팔만 인식, 즉시)
-- select                 : 위로 쓸기 1회 — 선택·확인 통합
-- go_home                : 위로 **2연속** 쓸기 — 화면 이탈 동작 안전장치
-- go_back                : 아래로 쓸기 1회 — 이전 화면 (즉시 발화)
+- select                 : 위로 쓸기 1회 — 선택·확인 통합 (즉시 발화)
+- go_back                : 아래로 쓸기 1회 — 이전 화면
+- go_home                : 아래로 **2연속** 쓸기 — 처음으로 (화면 이탈 안전장치)
 
-위 방향만 1회/2연속 분기가 있어 select는 double_within_sec 판정 창이 지나야
-확정된다 — 그만큼 늦는 트레이드오프 (config 주석 참고). 좌/우·아래는 즉시.
+아래 방향만 1회/2연속 분기가 있어 go_back은 double_within_sec 판정 창이 지나야
+확정된다 — 그만큼 늦는 트레이드오프 (config 주석 참고). 좌/우·위(선택)는 즉시.
 고개 꾸벅 선택은 2026-07-16 제거(쓸기 일원화) — 양팔이 없는 사용자의 선택 수단이
 사라지는 한계는 회사 협의 №1에 기록.
 
@@ -27,10 +27,10 @@ logger = get_logger("postprocess")
 
 OPPOSITE_DIRECTION = {"left": "right", "right": "left", "up": "down", "down": "up"}
 IMMEDIATE_EVENT_BY_DIRECTION = {                       # 확정 즉시 발화하는 방향
-    "left": "move_left", "right": "move_right", "down": "go_back",
+    "left": "move_left", "right": "move_right", "up": "select",
 }
-SINGLE_EVENT_BY_DIRECTION = {"up": "select"}           # 위 1회 — 선택·확인 통합
-DOUBLE_EVENT_BY_DIRECTION = {"up": "go_home"}          # 위 2연속 — 처음으로 (안전장치)
+SINGLE_EVENT_BY_DIRECTION = {"down": "go_back"}        # 아래 1회 — 이전 화면
+DOUBLE_EVENT_BY_DIRECTION = {"down": "go_home"}        # 아래 2연속 — 처음으로 (안전장치)
 
 
 @dataclass
@@ -152,7 +152,7 @@ class GestureFilter:
         어깨너비 정규화와 단위를 맞추기 위해, 2026-07-16).
         shoulder_width_ratio: 어깨너비/프레임폭(person_lock.user_shoulder_width_ratio)
         — 쓸기 임계를 몸 크기 기준으로 환산. 없으면 마지막 값, 최초부터 없으면 기본값.
-        좌/우 쓸기는 즉시 확정, 위/아래 쓸기는 2연속 판정 창을 거친다 (모듈 주석 참고).
+        좌/우·위(선택)는 즉시 확정, 아래는 1회/2연속 판정 창을 거친다 (모듈 주석 참고).
         """
         now_sec = self._clock()
         if self._is_in_cooldown(now_sec):
@@ -198,9 +198,9 @@ class GestureFilter:
     def _judge_swipe(self, direction, side, now_sec):
         """쓸기 방향 1건 -> 이벤트 | None (수직은 1회/2연속 분기).
 
-        - 좌/우/아래: 즉시 확정 (보류 중인 위 쓸기는 폐기 — 사용자가 의도를 바꾼 것)
-        - 위 1회째: 보류 등록 (판정 창 경과 시 select로 확정)
-        - 보류와 같은 방향(위) 2회째: go_home 즉시 확정
+        - 좌/우/위(선택): 즉시 확정 (보류 중인 아래 쓸기는 폐기 — 의도 변경)
+        - 아래 1회째: 보류 등록 (판정 창 경과 시 go_back으로 확정)
+        - 보류와 같은 방향(아래) 2회째: go_home 즉시 확정
         """
         if (self._stroke_block_until_sec is not None
                 and now_sec < self._stroke_block_until_sec):

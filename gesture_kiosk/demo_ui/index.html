@@ -66,7 +66,7 @@
     <img id="cam" src="/video_feed" alt="camera stream">
     <div class="guide">
       <span>👋 좌/우 쓸기</span>포커스 이동 &nbsp; <span>⬆ 1회</span>선택·확인 &nbsp; <span>⬇ 1회</span>이전 화면<br>
-      <span>⬆⬆ 2연속</span>처음으로
+      <span>⬇⬇ 2연속</span>처음으로
     </div>
     <div class="guide" id="dbg" style="margin-top:6px;"></div>
     <div style="margin-top:12px;">
@@ -161,7 +161,7 @@ function render() {
   } else {
     s.innerHTML = `
       <div class="done"><div class="big">✅ ${chosenCert} 발급 완료</div>
-        <p>출력물을 받아 가세요.<br>⬆⬆ 위로 2연속 쓸기로 처음 화면으로 돌아갑니다.</p></div>`;
+        <p>출력물을 받아 가세요.<br>⬇⬇ 아래로 2연속 쓸기로 처음 화면으로 돌아갑니다.</p></div>`;
   }
 }
 

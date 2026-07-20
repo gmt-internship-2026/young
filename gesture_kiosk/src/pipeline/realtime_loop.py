@@ -106,10 +106,11 @@ def run_pipeline(config):
     def _inference_loop():
         infer_fps_meter = FpsMeter()
         was_active = True   # 유휴↔활성 전환을 로그로 남기기 위한 직전 상태
+        last_frame_seq = 0  # 새 프레임 동기화(2026-07-20) — 같은 프레임 중복 추론 방지
         while state.is_running:
             loop_start_sec = time.monotonic()
 
-            frame = camera.capture_frame()
+            frame, last_frame_seq = camera.capture_new_frame(last_frame_seq)
             input_tensor = preprocessor.preprocess_frame(frame)
 
             persons = pose_estimator.infer(input_tensor)

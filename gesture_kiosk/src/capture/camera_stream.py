@@ -15,6 +15,7 @@ from src.utils.metrics import FpsMeter
 logger = get_logger("capture")
 
 FIRST_FRAME_TIMEOUT_SEC = 5.0
+NEW_FRAME_TIMEOUT_SEC = 1.0   # 새 프레임 대기 한도 — 카메라 멈칫 시 기존 프레임으로 진행(파이프라인 생존)
 
 
 def init_camera(config):
@@ -77,7 +78,9 @@ class CameraStream:
         self._config = config
         self._cap = None
         self._frame = None
+        self._frame_seq = 0                # 프레임 일련번호 — 새 프레임 동기화(2026-07-20)
         self._frame_lock = threading.Lock()
+        self._new_frame_condition = threading.Condition(self._frame_lock)
         self._thread = None
         self.is_running = False
         self.fps_meter = FpsMeter()
@@ -96,9 +99,15 @@ class CameraStream:
             if not ret:
                 time.sleep(0.1)
                 continue
-            with self._frame_lock:
-                self._frame = frame
+            self._publish_frame(frame)
             self.fps_meter.update()
+
+    def _publish_frame(self, frame):
+        """새 프레임 게시 — 일련번호를 올리고 대기 중인 소비자를 깨운다 (테스트 접점)."""
+        with self._new_frame_condition:
+            self._frame = frame
+            self._frame_seq += 1
+            self._new_frame_condition.notify_all()
 
     def capture_frame(self):
         """최신 프레임(np.ndarray, BGR)을 돌려준다. 첫 프레임은 잠시 대기한다."""
@@ -110,6 +119,27 @@ class CameraStream:
             if time.monotonic() > deadline_sec:
                 raise RuntimeError("카메라에서 프레임을 받지 못했습니다 (연결/장치 번호 확인)")
             time.sleep(0.01)
+
+    def capture_new_frame(self, last_seq):
+        """last_seq **이후의 새 프레임**을 기다려 (frame, seq)로 돌려준다 (2026-07-20).
+
+        카메라(30 FPS)보다 추론 루프가 빠르면 같은 프레임을 두 번 추론하는
+        낭비가 생긴다 — 같은 입력은 같은 판정이라 정보 이득이 0이므로, 새
+        프레임이 올 때까지 재운다(추론 속도가 카메라 속도에 자동 동기화).
+        NEW_FRAME_TIMEOUT_SEC 안에 새 프레임이 없으면(카메라 멈칫) 기존
+        프레임을 그대로 돌려줘 파이프라인이 죽지 않게 한다 — 이때 seq가
+        그대로라 호출자는 다음 호출에서 다시 새 프레임을 기다린다.
+        """
+        deadline_sec = time.monotonic() + NEW_FRAME_TIMEOUT_SEC
+        with self._new_frame_condition:
+            while self._frame_seq <= last_seq or self._frame is None:
+                remaining_sec = deadline_sec - time.monotonic()
+                if remaining_sec <= 0:
+                    break
+                self._new_frame_condition.wait(timeout=remaining_sec)
+            if self._frame is None:
+                raise RuntimeError("카메라에서 프레임을 받지 못했습니다 (연결/장치 번호 확인)")
+            return self._frame.copy(), self._frame_seq
 
     def stop(self):
         self.is_running = False

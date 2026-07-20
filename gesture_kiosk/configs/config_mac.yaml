@@ -24,7 +24,7 @@ model:
                           #   맥은 전신 모델 추론 실측 28.9 FPS라 상한 미도달(사실상 무영향) —
                           #   캡처 간섭으로 인식 저하 재현 시 30으로 되돌릴 것(2026-07-10 실측 이력)
   idle_infer_fps: 10      # 유휴(사람 없음) 시 추론 FPS 절감 — config.yaml 주석 참고 (2026-07-20)
-  det_interval_frames: 10 # 검출은 N프레임에 1회(PoseTracker) — config.yaml 주석 참고 (2026-07-20)
+  det_interval_frames: 10 # 검출 N프레임 1회 + 0명이면 포즈 생략 — config.yaml 주석 참고 (07-20 2차)
 
 person_lock:
   enabled: true

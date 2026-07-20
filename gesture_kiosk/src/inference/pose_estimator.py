@@ -113,32 +113,36 @@ class PoseEstimator:
         else:
             from rtmlib import Body as solution
 
-        # det_interval_frames(2026-07-20 추론 부담 절감): rtmlib의 2단계(사람 검출 YOLOX
-        # + 포즈 RTMPose) 중 검출을 N프레임에 1회만 돌리고, 사이에는 직전 포즈로 만든
-        # 박스를 재사용한다(PoseTracker). 사람이 안 보이면 infer()가 reset을 걸어
-        # 다음 프레임에 검출을 강제하므로 신규 접근자 포착 지연은 1프레임뿐이다.
-        det_interval_frames = int(model.get("det_interval_frames", 1))
-        if det_interval_frames > 1:
-            from rtmlib import PoseTracker
-
-            # tracking=False — 사람 식별(잠금)은 person_lock 담당이라 ID 부여가 불필요
-            self._pose = PoseTracker(
-                solution, det_frequency=det_interval_frames, tracking=False,
-                mode=model["pose_mode"], backend="onnxruntime", device=device,
-            )
-            self._tracker = self._pose
-        else:
-            self._pose = solution(mode=model["pose_mode"], backend="onnxruntime", device=device)
-            self._tracker = None
+        # 검출·포즈 직접 지휘(2026-07-20 2차 — rtmlib PoseTracker 대체 미니 트래커):
+        # ① 검출이 0명이면 **포즈를 생략**한다 — rtmlib은 빈 화면에서도 화면 전체를
+        #    사람으로 가정하고 포즈를 돌려 허수(쓰레기) 포즈를 만들며 CPU를 태운다
+        # ② 검출은 det_interval_frames마다 1회, 사이엔 **신뢰도 통과 사람의 박스만**
+        #    재사용 — 쓰레기 포즈가 다음 프레임 박스로 전파되던 것 차단
+        # ③ 사람이 사라지면 캐시가 비어 다음 프레임에 검출이 즉시 다시 돈다
+        # (solution 인스턴스의 det_model/pose_model을 그대로 쓰므로 NPU 세션 교체 호환)
+        self._det_interval_frames = int(model.get("det_interval_frames", 1))
+        self._cached_bboxes = []      # 신뢰도 통과 사람 박스 — 검출 건너뛰는 프레임의 포즈 입력
+        self._frames_since_det = 0
+        self._pose = solution(mode=model["pose_mode"], backend="onnxruntime", device=device)
         logger.info(
-            "포즈 모델 로딩 완료: rtmlib %s(mode=%s, device=%s, det_interval=%d프레임)",
+            "포즈 모델 로딩 완료: rtmlib %s(mode=%s, device=%s, det_interval=%d프레임, 허수 포즈 생략)",
             "Wholebody" if engine == "wholebody" else "Body",
-            model["pose_mode"], device, det_interval_frames,
+            model["pose_mode"], device, self._det_interval_frames,
         )
 
     def infer(self, frame):
-        """프레임에서 사람 포즈를 추정한다."""
-        keypoints_xy, scores = self._pose(frame)  # (N,17|133,2), (N,17|133)
+        """프레임에서 사람 포즈를 추정한다. 사람이 없으면 포즈 추론 없이 빈 목록."""
+        self._frames_since_det += 1
+        if not self._cached_bboxes or self._frames_since_det >= self._det_interval_frames:
+            bboxes = list(self._pose.det_model(frame))
+            self._frames_since_det = 0
+        else:
+            bboxes = self._cached_bboxes
+
+        if len(bboxes) == 0:
+            return []   # 사람 없음 — 포즈 생략(허수 차단). 캐시가 비어 다음 프레임도 검출부터
+
+        keypoints_xy, scores = self._pose.pose_model(frame, bboxes=bboxes)
         persons = []
         for xy, score in zip(keypoints_xy, scores):
             keypoints = np.concatenate([xy, score[:, None]], axis=1).astype(np.float32)
@@ -159,8 +163,7 @@ class PoseEstimator:
                     head_points=head_points,
                 )
             )
-        if not persons and self._tracker is not None:
-            # 화면에 사람이 없다 — 묵은 박스를 버리고 다음 프레임에 검출을 강제한다.
-            # (검출 간격 대기 중 새 사용자가 와도 즉시 포착되게 하는 안전장치)
-            self._tracker.reset()
+        # 신뢰도 통과 사람의 박스만 다음 프레임에 재사용 — 전원 미달이면 캐시가 비어
+        # 다음 프레임에 검출이 다시 돈다 (신규 접근자·복귀 사용자 포착 안전장치)
+        self._cached_bboxes = [person.bbox for person in persons]
         return persons

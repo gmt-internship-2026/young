@@ -148,8 +148,12 @@ class SwipeScenarioTest(unittest.TestCase):
         def scenario(sim):
             sim.hold(0.5)
             sim.move_by(0, AMP_Y, 0.3)      # 아래 1회 — 보류
-            sim.hold(1.3)                   # 판정 창 경과 → go_back 확정 (팔은 아직 아래)
-            sim.hold(1.05)                  # 쿨다운 경과
+            # 대기는 확정 시점 기준으로 짧게 잡는다 — 실사용자도 go_back 발화(음성)를
+            # 듣고 팔을 내리므로 복귀는 확정 상대 타이밍이다. 절대 시각으로 길게 잡으면
+            # 판정 창(double_within_sec) 단축 시 삼킴 창(확정+1.6초)을 벗어나는
+            # 가짜 실패가 난다 (2026-07-20 창 1.2→1.0 단축에서 실증)
+            sim.hold(1.1)                   # 판정 창 경과 → go_back 확정 (팔은 아직 아래)
+            sim.hold(1.0)                   # 쿨다운 경과
             sim.move_by(0, -AMP_Y, 0.3)     # 팔 복귀(위) — 삼킴 대상, select 금지
             sim.hold(0.5)
         self._run(scenario, ["go_back"])

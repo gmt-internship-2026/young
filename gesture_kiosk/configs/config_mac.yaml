@@ -44,7 +44,7 @@ gestures:
     min_track_frames: 4
     elbow_gain: 2.0         # 손목 미검출 시 팔꿈치 폴백 배율 — config.yaml 주석 참고
     switch_margin_y_shoulder: 0.2   # 한 팔만 인식 — 활성 팔 교체 여유 (config.yaml 주석 참고)
-    double_within_sec: 1.2      # 아래 쓸기 1회/2연속 판정 창 — config.yaml 주석 참고
+    double_within_sec: 1.0      # 아래 1회/2연속 판정 창 — 07-20 실기 1.2→1.0 단축 (config.yaml 주석 참고)
     return_suppress_sec: 1.6    # 반대 방향 1회 삼킴 창 — config.yaml 주석 참고
     return_origin_shoulder: 0.6     # 복귀 위치 조건 — config.yaml 주석 참고
     double_return_min_shoulder: 0.15    # 2연속 전 복귀 확인 — config.yaml 주석 참고

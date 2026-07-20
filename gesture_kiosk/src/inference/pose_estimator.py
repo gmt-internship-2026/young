@@ -109,16 +109,31 @@ class PoseEstimator:
         # rtmlib은 무거운 의존이라 사용 시점에 임포트한다 (단위 테스트가 가벼워지게)
         if engine == "wholebody":
             # 전신 133 키포인트 — 손끝 추적(2026-07-16). body보다 무겁다: 저사양 기기는 body 유지
-            from rtmlib import Wholebody
-
-            self._pose = Wholebody(mode=model["pose_mode"], backend="onnxruntime", device=device)
+            from rtmlib import Wholebody as solution
         else:
-            from rtmlib import Body
+            from rtmlib import Body as solution
 
-            self._pose = Body(mode=model["pose_mode"], backend="onnxruntime", device=device)
+        # det_interval_frames(2026-07-20 추론 부담 절감): rtmlib의 2단계(사람 검출 YOLOX
+        # + 포즈 RTMPose) 중 검출을 N프레임에 1회만 돌리고, 사이에는 직전 포즈로 만든
+        # 박스를 재사용한다(PoseTracker). 사람이 안 보이면 infer()가 reset을 걸어
+        # 다음 프레임에 검출을 강제하므로 신규 접근자 포착 지연은 1프레임뿐이다.
+        det_interval_frames = int(model.get("det_interval_frames", 1))
+        if det_interval_frames > 1:
+            from rtmlib import PoseTracker
+
+            # tracking=False — 사람 식별(잠금)은 person_lock 담당이라 ID 부여가 불필요
+            self._pose = PoseTracker(
+                solution, det_frequency=det_interval_frames, tracking=False,
+                mode=model["pose_mode"], backend="onnxruntime", device=device,
+            )
+            self._tracker = self._pose
+        else:
+            self._pose = solution(mode=model["pose_mode"], backend="onnxruntime", device=device)
+            self._tracker = None
         logger.info(
-            "포즈 모델 로딩 완료: rtmlib %s(mode=%s, device=%s)",
-            "Wholebody" if engine == "wholebody" else "Body", model["pose_mode"], device,
+            "포즈 모델 로딩 완료: rtmlib %s(mode=%s, device=%s, det_interval=%d프레임)",
+            "Wholebody" if engine == "wholebody" else "Body",
+            model["pose_mode"], device, det_interval_frames,
         )
 
     def infer(self, frame):
@@ -144,4 +159,8 @@ class PoseEstimator:
                     head_points=head_points,
                 )
             )
+        if not persons and self._tracker is not None:
+            # 화면에 사람이 없다 — 묵은 박스를 버리고 다음 프레임에 검출을 강제한다.
+            # (검출 간격 대기 중 새 사용자가 와도 즉시 포착되게 하는 안전장치)
+            self._tracker.reset()
         return persons

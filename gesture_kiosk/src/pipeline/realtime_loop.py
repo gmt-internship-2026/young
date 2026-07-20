@@ -31,6 +31,15 @@ EVENT_LOG_MAX_COUNT = 200
 EVENT_OVERLAY_HOLD_SEC = 1.5
 
 
+def resolve_loop_interval_sec(model_config, is_active):
+    """추론 루프의 최소 간격 — 활성(사람 감지·잠금)일 땐 max_infer_fps, 유휴일 땐
+    idle_infer_fps로 낮춰 CPU·전력을 아낀다 (2026-07-20 추론 부담 절감).
+    idle_infer_fps 미설정 브랜치는 종전대로 상시 max_infer_fps."""
+    max_fps = model_config["max_infer_fps"]
+    idle_fps = model_config.get("idle_infer_fps", max_fps)
+    return 1.0 / (max_fps if is_active else min(idle_fps, max_fps))
+
+
 class PipelineState:
     """추론 결과·성능 수치를 스레드 안전하게 공유한다."""
 
@@ -78,12 +87,11 @@ def run_pipeline(config):
     announcer = Announcer(config)
     state.announcer = announcer
 
-    min_loop_interval_sec = 1.0 / config["model"]["max_infer_fps"]
-
     state.is_running = True
 
     def _inference_loop():
         infer_fps_meter = FpsMeter()
+        was_active = True   # 유휴↔활성 전환을 로그로 남기기 위한 직전 상태
         while state.is_running:
             loop_start_sec = time.monotonic()
 
@@ -95,6 +103,13 @@ def run_pipeline(config):
             state.is_user_locked = (
                 person_lock.enabled and person_lock.locked_person is not None
             )
+
+            # 유휴 판정 — 사람이 보이거나 잠금이 살아 있으면 활성 (2026-07-20)
+            is_active = bool(persons) or state.is_user_locked
+            if is_active != was_active:
+                logger.info("추론 %s 전환 (persons=%d, locked=%s)",
+                            "활성" if is_active else "유휴", len(persons), state.is_user_locked)
+                was_active = is_active
 
             # 쓸기 판정용 추적점(손끝 → 손목 → 팔꿈치 폴백) — x·y 모두 프레임 폭으로 나눈
             # 등방 좌표 (어깨너비 정규화와 단위 일치, 2026-07-16)
@@ -127,7 +142,9 @@ def run_pipeline(config):
             annotated = draw_status(annotated, state.infer_fps, overlay_event)
             state.update_frame(annotated)
 
-            # FPS 상한 — 개발 PC에서 200+ FPS로 도는 낭비를 막는다
+            # FPS 상한 — 개발 PC에서 200+ FPS로 도는 낭비를 막는다.
+            # 유휴(사람 없음)일 땐 idle_infer_fps까지 더 낮춘다 (2026-07-20)
+            min_loop_interval_sec = resolve_loop_interval_sec(config["model"], is_active)
             elapsed_sec = time.monotonic() - loop_start_sec
             if elapsed_sec < min_loop_interval_sec:
                 time.sleep(min_loop_interval_sec - elapsed_sec)

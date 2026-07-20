@@ -74,10 +74,11 @@ classes:
   [move_left, move_right, select, go_back, go_home]
 
 event_output:
-  mode: console
+  mode: console           # 맥=개발 PC — 델파이 연동 시험은 udp로 전환 (config.yaml 주석 참고)
   udp:
     host: 127.0.0.1
     port: 9999
+    format: text          # 델파이7 텍스트 규격 (config.yaml 주석 참고)
 
 demo_ui:
   host: 0.0.0.0

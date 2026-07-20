@@ -119,12 +119,14 @@ classes:                    # 표준 동작 목록 — UI/이벤트 수신부와
   [move_left, move_right, select, go_back, go_home]
 
 event_output:
-  # TODO(기획서 9장 №7): 회사 키오스크 프로그램의 이벤트 수신 규격(소켓/시리얼/공유메모리)
-  #                      확정 후 mode 추가 및 event_sender.py 구현 교체
-  mode: console           # console | udp
+  # 회사 GUI = 델파이7 프로그램 확정(2026-07-20) — UDP 텍스트 규격으로 연동:
+  #   GESTURE|이벤트|손|신뢰도|시각 (한 줄, 개행 종료 — docs/델파이7_연동가이드.md)
+  # 윈도우 배포 브랜치는 mode: udp + format: text 로 켠다
+  mode: console           # console(로그만 — 개발) | udp(회사 프로그램 연동)
   udp:
-    host: 127.0.0.1
+    host: 127.0.0.1       # 델파이 프로그램이 도는 기기 (같은 PC = 루프백)
     port: 9999
+    format: text          # text(델파이7 — JSON 파서 불필요) | json
 
 demo_ui:                  # 예시 UI 서버 — 회사 프로그램 인수 후 제거 예정
   host: 0.0.0.0

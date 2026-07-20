@@ -127,9 +127,14 @@ function enterScreen(nextScreen) {
 }
 
 function applyEvent(e) {
-  if (e.class_name === "go_home") { enterScreen("home"); return; }
-  if (e.class_name === "go_back") {   // 이전 화면 — 아래로 쓸기 (home에서는 무시)
-    if (screen !== "home") enterScreen("home");
+  // 처음 화면에서 go_back/go_home은 갈 곳이 없다 — 화면 전환·포커스 리셋 없이
+  // 무시하되, 토크백 사용자가 "왜 아무 일도 없지" 하지 않도록 현재 위치만 안내한다
+  // (№7 참조 동작 — 무효 이벤트 처리는 화면 상태를 아는 UI 책임.
+  //  한계: 엔진 자동 안내("이전 화면으로 이동합니다")가 먼저 나가는 불일치는
+  //  이벤트 안내 주체를 UI로 옮길지와 함께 №7 회사 협의 안건)
+  if (e.class_name === "go_home" || e.class_name === "go_back") {
+    if (screen === "home") { announce("이미 처음 화면입니다"); return; }
+    enterScreen("home");
     return;
   }
   if (e.class_name === "move_left")  setFocus(focusIdx - 1);

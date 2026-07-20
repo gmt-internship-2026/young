@@ -122,7 +122,7 @@ event_output:
   # 회사 GUI = 델파이7 프로그램 확정(2026-07-20) — UDP 텍스트 규격으로 연동:
   #   GESTURE|이벤트|손|신뢰도|시각 (한 줄, 개행 종료 — docs/델파이7_연동가이드.md)
   # 윈도우 배포 브랜치는 mode: udp + format: text 로 켠다
-  mode: console           # console(로그만 — 개발) | udp(회사 프로그램 연동)
+  mode: udp               # ★윈도우 배포 기본(2026-07-20) — 델파이7 UDP 연동. console=개발 로그만
   udp:
     host: 127.0.0.1       # 델파이 프로그램이 도는 기기 (같은 PC = 루프백)
     port: 9999

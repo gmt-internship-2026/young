@@ -48,6 +48,11 @@ gestures:
     return_suppress_sec: 1.6    # 반대 방향 1회 삼킴 창 — config.yaml 주석 참고
     return_origin_shoulder: 0.6     # 복귀 위치 조건 — config.yaml 주석 참고
     double_return_min_shoulder: 0.15    # 2연속 전 복귀 확인 — config.yaml 주석 참고
+    point_filter:             # 추적점 One Euro 필터 (2026-07-20) — config.yaml 주석 참고
+      enabled: true
+      min_cutoff_hz: 1.5
+      beta: 1.0
+      d_cutoff_hz: 1.0
     body_scale:
       fallback_ratio: 0.22
       min_ratio: 0.05         # 원거리 완화 2026-07-16 — config.yaml 주석 참고

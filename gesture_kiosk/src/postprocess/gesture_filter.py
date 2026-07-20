@@ -21,6 +21,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 
+from src.postprocess.point_filter import PointFilter
 from src.utils.logger import get_logger
 
 logger = get_logger("postprocess")
@@ -134,6 +135,15 @@ class GestureFilter:
         self._active_side = None     # 현재 인식 중인 팔 ("left"/"right")
         self._active_source = None   # 그 팔의 추적점 출처 ("hand"/"wrist"/"elbow")
 
+        # One Euro 필터(2026-07-20 정확도) — 추적점 떨림 저감. 궤적 단절 시 트래커와
+        # 함께 리셋한다. 키 미설정 브랜치는 종전대로 무필터 (point_filter.py 주석 참고)
+        point_filter = swipe.get("point_filter") or {}
+        self._point_filter = (
+            PointFilter(point_filter["min_cutoff_hz"], point_filter["beta"],
+                        point_filter["d_cutoff_hz"])
+            if point_filter.get("enabled") else None
+        )
+
         # 수직 쓸기 1회/2연속 분기 — 1회째는 보류했다가 판정 창이 지나면 단발로 확정
         self._double_within_sec = swipe["double_within_sec"]
         self._pending_direction = None   # "up"/"down" — 보류 중인 수직 쓸기
@@ -204,12 +214,18 @@ class GestureFilter:
             self._swipe_tracker.reset()   # 추적점 전무 — 끊긴 궤적을 이어 붙이지 않는다
             self._active_side = None
             self._active_source = None
+            if self._point_filter is not None:
+                self._point_filter.reset()
         else:
             source, point = point_info
             if side != self._active_side or source != self._active_source:
                 self._swipe_tracker.reset()   # 팔 교체·추적점 출처 전환(손끝↔손목 등) — 궤적 연결 금지
                 self._active_side = side
                 self._active_source = source
+                if self._point_filter is not None:
+                    self._point_filter.reset()   # 다른 점의 잔상으로 새 궤적 오염 금지
+            if self._point_filter is not None:
+                point = self._point_filter.filter(point, now_sec)   # 떨림 저감 (One Euro)
             gain = self._elbow_gain if source == "elbow" else 1.0
             self._update_swallow_origin(point)
             self._watch_pending_return(point, body_scale)

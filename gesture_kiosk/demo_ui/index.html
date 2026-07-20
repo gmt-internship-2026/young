@@ -89,6 +89,11 @@ let screen = "home";        // home | confirm | done
 let focusIdx = 0;           // 현재 화면의 선형 포커스 위치 (줄 끝 랩은 인덱스 순회로 자동)
 let chosenCert = null;
 let lastEventTs = 0;
+// 발급 완료 화면은 제스처 없이도 자동 복귀한다 (2026-07-20 사용자 결정 —
+// 무인 키오스크 정석: 사용자가 출력물만 들고 떠나도 다음 사람은 처음 화면을 만난다.
+// 제스처(아무 동작)는 "바로 돌아가기" 단축으로 유지)
+const DONE_AUTO_HOME_SEC = 10;
+let doneTimer = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -116,10 +121,15 @@ function setFocus(nextIdx, isAnnounce = true) {
 function enterScreen(nextScreen) {
   screen = nextScreen;
   focusIdx = 0;
+  if (doneTimer !== null) { clearTimeout(doneTimer); doneTimer = null; }  // 화면 이탈 시 예약 해제
   if (screen === "confirm") {
     announce(`${chosenCert} 발급 확인. 발급하기 또는 취소를 선택하세요`);
   } else if (screen === "done") {
-    announce(`${chosenCert} 발급이 완료되었습니다`);
+    announce(`${chosenCert} 발급이 완료되었습니다. ${DONE_AUTO_HOME_SEC}초 후 처음 화면으로 돌아갑니다`);
+    doneTimer = setTimeout(() => {
+      doneTimer = null;
+      if (screen === "done") enterScreen("home");   // 제스처로 이미 떠났으면 아무것도 안 한다
+    }, DONE_AUTO_HOME_SEC * 1000);
   } else {
     announce("증명서 선택 화면. 발급할 증명서를 선택하세요");
   }
@@ -127,6 +137,8 @@ function enterScreen(nextScreen) {
 }
 
 function applyEvent(e) {
+  // 발급 완료 화면 — 자동 복귀 대기 중 아무 제스처나 오면 즉시 처음으로 (단축)
+  if (screen === "done") { enterScreen("home"); return; }
   // 처음 화면에서 go_back/go_home은 갈 곳이 없다 — 화면 전환·포커스 리셋 없이
   // 무시하되, 토크백 사용자가 "왜 아무 일도 없지" 하지 않도록 현재 위치만 안내한다
   // (№7 참조 동작 — 무효 이벤트 처리는 화면 상태를 아는 UI 책임.
@@ -166,7 +178,8 @@ function render() {
   } else {
     s.innerHTML = `
       <div class="done"><div class="big">✅ ${chosenCert} 발급 완료</div>
-        <p>출력물을 받아 가세요.<br>⬇⬇ 아래로 2연속 쓸기로 처음 화면으로 돌아갑니다.</p></div>`;
+        <p>출력물을 받아 가세요.<br>${DONE_AUTO_HOME_SEC}초 후 처음 화면으로 자동 복귀합니다.
+        <br>(아무 제스처나 하면 바로 돌아갑니다)</p></div>`;
   }
 }
 

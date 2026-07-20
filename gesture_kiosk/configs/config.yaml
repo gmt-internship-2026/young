@@ -10,6 +10,10 @@
 #   (hand_model 섹션 신설). 쓸기·잠금은 그대로 RTMPose 단일 엔진 유지.
 # 2026-07-16 주민등록증 인식(OCR) 기능 전면 제거 — ocr 섹션·fill_id_fields 이벤트 삭제
 #   (계획 변경). torch/torchvision(EasyOCR 전용)도 requirements에서 함께 제거.
+# 2026-07-20 화면 전환 동작 재편 — go_home/go_back을 팔 위/아래 쓸기에서 손 위치의
+#   위/아래 이동으로 교체(hand_swipe 섹션 신설). 팔은 좌/우 이동(move_left/move_right)
+#   전용으로 남는다. hand_swipe는 손가락 개수를 안 본다(손 모양 무관, 손만 움직이면 됨)
+#   — "손가락 1개"는 select 전용 신호로 남긴다(재확정: 굳이 손가락 1개가 아니어도 됨).
 
 camera:
   device_id: 0            # USB 웹캠 장치 번호
@@ -32,6 +36,18 @@ model:
   max_infer_fps: 30       # 추론 루프 FPS 상한 — 초과분은 대기 (GPU 낭비 방지)
                           #   KPI가 30 FPS — 60으로 두면 추론 루프가 캡처 스레드의
                           #   CPU/GIL을 빼앗아 캡처가 30→15 FPS로 반토막난다 (2026-07-10 실측)
+  idle_infer_fps: 10      # 유휴(사람 없음·미잠금) 시 추론 FPS 하향 — 키오스크 대기 시간의
+                          #   CPU·전력 절감. 사람이 감지되면 즉시 max_infer_fps로 복귀
+                          #   (2026-07-20 GMtech feat/think_win_cpu 이식 — 성능 최적화만 채용,
+                          #   같은 커밋의 검출 스킵은 우리 redetect_interval_frames로 대체됨)
+  redetect_interval_frames: 10  # 2026-07-16 성능 최적화 — 잠금 상태에서는 매 프레임
+                          #   재검출하지 않고 이 프레임 수마다 한 번만 전체 검출(infer)로
+                          #   재동기화, 나머지는 infer_at_bbox()로 검출을 건너뛴다.
+                          #   실측(이 CPU): 검출 포함 ~89ms vs bbox 재사용 ~22ms — 5배 차이.
+                          #   너무 크면 빠르게 움직일 때 놓칠 수 있어 follow_radius_ratio·
+                          #   release_sec와 같은 성격의 트레이드오프 — 실기에서 튜닝
+  bbox_pad_ratio: 0.3     # infer_at_bbox() 호출 시 이전 bbox를 이 비율만큼 넓혀서 넘긴다
+                          #   (재동기화 사이 프레임에서도 사람이 패딩 안에 남아있게)
 
 hand_model:                # 손 랜드마크(MediaPipe HandLandmarker, Apache-2.0) — 선택(select)
                           # 판정 전용(2026-07-16 재도입). person_lock이 잠근 사용자의 bbox로
@@ -41,6 +57,13 @@ hand_model:                # 손 랜드마크(MediaPipe HandLandmarker, Apache-2
   min_hand_detection_conf: 0.5
   min_hand_presence_conf: 0.5
   min_tracking_conf: 0.5
+  infer_interval_frames: 3  # 2026-07-16 성능 최적화 — 포즈 검출 스킵(redetect_interval_frames)
+                          #   적용 후 실측하니 손 인식이 새 병목이었다(단독 ~32ms, 포즈
+                          #   패스트패스(~22ms)와 매 프레임 같이 돌리면 77.8ms/프레임까지
+                          #   떨어짐). select.hold_sec(0.6초)는 몇 프레임 지연을 견디므로
+                          #   매 프레임 대신 이 프레임 수마다 한 번만 재인식, 나머지는
+                          #   마지막 결과를 재사용(realtime_loop.py — 절대 None으로
+                          #   덮어쓰지 않는다: 그러면 유지 타이머가 매번 리셋된다)
 
 person_lock:              # 오토포커스 카메라 — 초점 맞은 사용자에게 잠금, 다른 사람 무시
   enabled: true
@@ -51,20 +74,54 @@ person_lock:              # 오토포커스 카메라 — 초점 맞은 사용�
   sharpness_weight: 0.5       # 사용자 선정 점수에서 초점 선명도 비중 (0=크기만, 1=선명도만)
 
 gestures:
-  cooldown_sec: 1.0           # 이벤트 확정 직후 입력 무시 시간 — 연타 방지.
+  cooldown_sec: 1.2           # 이벤트 확정 직후 입력 무시 시간 — 연타 방지.
                               #   swipe.window_sec보다 길게 유지할 것 —
                               #   쿨다운이 지나면 쓸기 궤적의 잔여 점이 전부 만료되게
-  swipe:                      # 팔 쓸기 — 포즈 궤적 판정: 손이 없는 사용자도 동일 (범용 설계)
-    window_sec: 0.6           # 이 시간 안의 이동량으로 판정 (cooldown_sec보다 짧게)
+  swipe:                      # 팔 쓸기 — 좌/우 이동(move_left/move_right) 전용 (2026-07-20:
+                              #   위/아래(go_home/go_back)는 hand_swipe로 이관, 팔에서는
+                              #   더 이상 확정하지 않는다). min_dist_y_ratio·axis_dominance는
+                              #   여전히 쓴다 — 대각선(팔이 살짝 위아래로 흔들리는) 이동을
+                              #   좌/우로 오판하지 않게 걸러내는 축 우세 판정용으로 남아있다
+    window_sec: 1.0           # 이 시간 안의 이동량으로 판정 (cooldown_sec보다 짧게).
+                              #   2026-07-16 0.6→1.0 상향: 이 CPU(Ryzen 5 3550H) 실측
+                              #   포즈 추론이 4~7 FPS(목표 30 FPS 미달, benchmark.py 실측)라
+                              #   구 window_sec(0.6초)·min_track_frames(4)로는 시간창 안에
+                              #   4프레임이 채 안 들어와 쓸기가 거의 확정되지 않았음
+                              #   (min_track_frames/window_sec ≈ 6.7 FPS 필요 — 실측 미달)
     min_dist_x_ratio: 0.25    # 좌/우 쓸기 확정 최소 이동 (프레임 폭 비율)
-    min_dist_y_ratio: 0.25    # 위/아래 쓸기 확정 최소 이동 (프레임 높이 비율)
+    min_dist_y_ratio: 0.25    # 대각선 판정용 — 위/아래 자체는 더 이상 팔로 확정하지 않는다
     axis_dominance: 1.5       # 주축 진행도가 부축의 N배 이상일 때만 확정 — 대각선 오인 보류
-    min_track_frames: 4       # 최소 궤적 프레임 — 키포인트 튐 1~2프레임 오발 방지
+    min_track_frames: 3       # 최소 궤적 프레임 — 키포인트 튐 1~2프레임 오발 방지
+                              #   (2026-07-16 4→3 하향 — 위 window_sec 조정과 세트, 저FPS에서도
+                              #   시간창 안에 채워지도록. 근본 해결은 추론 FPS 자체 개선 — TODO 참고)
     elbow_gain: 2.0           # 팔꿈치 폴백(손목 신뢰도 미달 — 손 절단 등) 진행도 배율.
                               #   팔꿈치는 어깨 기준 회전 반경이 손목의 절반쯤이라 같은
                               #   팔 휘두름에도 이동량이 절반 — 같은 기준으로 판정되게 보정
-  select:                     # 손가락 1개(엄지 제외) 인식 = 선택/확인 (2026-07-16 재확정 —
-                              #   무손·무지 접근성 요건 제외, 꾸벅임은 UX 부담으로 기각)
+  hand_swipe:                 # 손(모양 무관 — 손가락 개수를 안 본다)을 위/아래로 이동 =
+                              #   go_home/go_back (2026-07-20 신설 — 팔 위/아래 쓸기 대체).
+                              #   select(정확히 손가락 1개)와 달리 손 모양을 만들 필요 없이
+                              #   손만 움직이면 된다 — 손가락 개수는 select 전용 신호로 남긴다.
+                              #   MediaPipe 손 랜드마크(손목, 0번)로 판정 — hand_model.
+                              #   infer_interval_frames 주기로만 갱신되는 값이라도 window_sec
+                              #   안에 min_track_frames만큼은 쌓이도록 값을 맞췄다(swipe와 동일
+                              #   구조 재사용, _SwipeTracker).
+                              #   2026-07-20 실측(TEMP-DEBUG 로그) 후 재조정: 손만 움직이면
+                              #   세로(dy) 이동량이 최대 0.05 안팎이라 min_dist_y_ratio 0.15는
+                              #   거의 안 걸렸다. 반대로 손이 흔들리며 생기는 가로(dx) 잡음이
+                              #   0.12까지도 나와 axis_dominance 판정에서 세로를 밀어냈다 —
+                              #   그래서 min_dist_y_ratio는 크게 낮추고 min_dist_x_ratio는 크게
+                              #   올렸다(가로는 애초에 go_home/go_back 판정에 안 쓰이니, 가로
+                              #   잡음이 "이건 좌우 동작"이라고 오판해 세로를 막지 못하게 하는
+                              #   용도로만 쓴다).
+    window_sec: 1.0
+    min_dist_x_ratio: 0.4
+    min_dist_y_ratio: 0.08
+    axis_dominance: 1.5
+    min_track_frames: 3
+  select:                     # 손가락 1개(엄지 제외)를 "제자리에서" hold_sec 이상 유지 =
+                              #   선택/확인 (2026-07-20: 위치가 아니라 정지 유지로 화면
+                              #   전환(hand_swipe)과 구분). 2026-07-16 재확정 — 무손·무지
+                              #   접근성 요건 제외, 꾸벅임은 UX 부담으로 기각.
     required_finger_count: 1  # 검지~새끼 중 정확히 이 개수만 편 상태 — 엄지는 손 방향
                               #   (좌/우 손·거울 반전)에 따라 판정 축이 달라져 집계에서 제외
     hold_sec: 0.6             # 이 시간 이상 끊기지 않고 유지해야 확정 — 순간 오탐 방지

@@ -1,10 +1,82 @@
 # TODO — 작업 분해 및 진행 상황
 
 작성: 2026-07-08 · 개정: 2026-07-16 (선택 동작 재확정 — 손가락 인식 / 주민등록증 인식
-기능 제거 / TTS 상황별 안내 보강).
+기능 제거 / TTS 상황별 안내 보강 / CPU 성능 실측·쓸기 임계값 조정).
 기획서(기획서.docx) 주차 계획·9장 체크리스트와 연동. **기획서 2.2/3.1/5.1은
 2026-07-10(타깃)·2026-07-15(동작 체계)·2026-07-16(선택 재확정·OCR 제거·TTS 보강) 변경을
 반영해 개정 필요.**
+
+## ✅ 완료 (2026-07-16 — CPU 추론 성능 최적화: 잠금 중 검출 스킵)
+
+- **문제 실측(이 개발 PC — AMD Ryzen 5 3550H 4C/8T, 배포 기준과 동일한 윈도우+
+  Python 3.11.5)**: `scripts/benchmark.py`로 잰 포즈 추론 단독 FPS가 **평균
+  4~7 FPS**(목표 30 FPS의 15~25%, 프레임당 137~325ms) — §5·§6 KPI(30 FPS) 관련
+  №5·№6 회사 협의 시 이 실측치를 공유할 것
+- **원인 프로파일링**: rtmlib `Body`(lightweight)의 검출기(YOLOX-tiny, 416×416
+  고정)만 단독으로 **~89ms/프레임**(사람이 0명이어도 고정 비용) — 이게 병목의
+  대부분. onnxruntime 스레드는 이미 자동(전체 코어)이라 더 짤 여지 없고
+  oneDNN/OpenVINO 가속 프로바이더도 미설치
+- **기각한 대안(실측 후 폐기)**: ① `RTMO`(rtmlib 내장 단일모델, 검출+포즈 통합) —
+  기대와 달리 **3.06 FPS로 더 느렸음**. ② `det_input_size` 축소(416→320/256) —
+  YOLOX-tiny ONNX가 고정 입력 shape라 런타임에서 못 바꿈(즉시 shape 에러).
+  ③ `model.input_size_px` 설정을 실제로 연결 — 애초에 죽은 설정값이었고
+  (`preprocessor.py`/`pose_estimator.py` 어디서도 안 읽음), rtmlib가 항상 고정
+  크기로 리사이즈해 캡처 해상도를 낮춰도 속도 차이가 거의 없었음. **README·
+  설치가이드가 안내해 온 "30 FPS 미달 시 input_size_px 640→480" 1차 대응법은
+  실제로는 통하지 않는다** — 문서 정정 필요(별도 항목)
+- **채택한 해결책**: `RTMPose`에 **이미 아는 bbox**를 직접 넣으면(검출 생략)
+  **~22ms/프레임**(46 FPS 페이스) — 검출기가 압도적 병목이었으므로, 사용자를
+  이미 잠근 뒤에는 매 프레임 재검출하지 않고 이전 위치로 포즈만 재추정,
+  `redetect_interval_frames`(기본 10)마다 한 번만 전체 검출로 재동기화하는
+  패스트패스를 넣음:
+  - `src/inference/pose_estimator.py` — `infer_at_bbox(frame, bbox)`(검출 생략)·
+    `pad_bbox(bbox, pad_ratio, w, h)`(순수 함수, 프레임 경계 clamp) 신규.
+    `infer()`/`infer_at_bbox()`가 키포인트→`PersonPose` 변환 로직을 공유하도록
+    `_persons_from_keypoints()`로 분리
+  - `src/pipeline/realtime_loop.py` — `should_refresh(is_active,
+    frames_since_refresh, interval)`(순수 함수)로 이번 프레임에 풀 검출을 쓸지
+    결정. `person_lock.py`는 변경 없음(1개짜리 후보 리스트도 기존
+    `_follow_locked()`가 그대로 처리)
+  - `configs/config.yaml`/`config_mac.yaml`의 `model`에 `redetect_interval_frames:
+    10`·`bbox_pad_ratio: 0.3` 추가
+  - `tests/test_pose_estimator.py`(`pad_bbox`)·`tests/test_realtime_loop.py`
+    (`should_refresh`) 신규
+- **결과 실측(이 CPU, 잠금 상태 시뮬레이션 — 더미 프레임 60장)**: **30.86 FPS**
+  (32.4ms/프레임 평균) — 목표 30 FPS 달성. 개선 전(4~7 FPS) 대비 4~7배
+- **한계**: 재동기화 사이(`redetect_interval_frames`=10프레임) 사람이 패딩
+  범위(`bbox_pad_ratio`=0.3) 밖으로 빠르게 움직이면 놓칠 수 있음 — 실제 카메라·
+  사람으로는 검증 못 했음(이 환경엔 카메라 없음). 아래 실기 검증 절 참고
+- [ ] README·설치가이드의 "input_size_px 640→480" 1차 대응법 문구를 이번 실측
+      결과로 정정(죽은 설정 + 효과 없음 — 대신 잠금 후 자동 최적화된다고 안내)
+
+### (같은 날 2차) 손가락 인식(hand_estimator)도 새 병목으로 드러나 같이 최적화
+
+- 위 포즈 최적화 직후 전체 루프(포즈+손 인식)를 실측하니 **12.85 FPS로 오히려
+  낮았음** — 손 인식(MediaPipe) 단독이 ~32ms/프레임이라, 병목이 검출기에서
+  손 인식으로 옮겨간 것뿐이었다
+- 포즈와 같은 철학 적용 — `should_refresh()`를 그대로 재사용(이름을
+  `should_redetect`→`should_refresh`로 일반화): 손가락도 매 프레임이 아니라
+  `hand_model.infer_interval_frames`(기본 3)마다만 재인식, 그 사이는
+  `last_finger_count` 캐시를 재사용한다. **주의**: 건너뛴 프레임에 `None`을
+  넣으면 `_FingerSelectTracker`의 `hold_sec`(0.6초) 유지 타이머가 매번
+  리셋되므로, 반드시 마지막 값을 그대로 재사용해야 한다(`realtime_loop.py`에
+  주석으로 명시). 사용자 잠금 해제 시에는 캐시를 버림(이전 사용자의 손가락
+  상태가 다음 사용자에게 새는 것 방지)
+- **결과 실측(포즈+손 인식 모두 최적화 적용, 더미 프레임 90장)**: **23.05 FPS**
+  (43.4ms/프레임) — 손만 최적화하기 전(12.85 FPS) 대비 약 1.8배. 30 FPS까지는
+  `hand_model.infer_interval_frames`를 더 늘려야 하지만(~16 이상 필요), 그러면
+  hold_sec 0.6초 안에 손가락 샘플이 너무 적게 잡혀 정상적인 선택 동작을 놓칠
+  위험이 커진다고 판단해 **정확성과 성능의 균형점으로 3을 채택** — 순수 FPS
+  숫자보다 "선택이 실제로 잘 인식되는지"가 우선
+- [ ] `infer_interval_frames`(현재 3) 실기에서 더 키워도 select가 안정적으로
+      잡히는지 확인 — 여유가 있으면 성능을 더 끌어올릴 수 있음
+- [x] **(별도 완화 조치)** `gestures.swipe`가 30 FPS 가정으로 튜닝돼 있었음(`window_sec`
+      0.6초·`min_track_frames` 4 → 4/0.6≈6.7 FPS 필요, 개선 전 4~7 FPS로는 시간창
+      안에 최소 프레임이 잘 안 채워져 **쓸기가 거의 확정되지 않는 증상**으로 이어짐
+      (사용자 리포트: "좌우 스윕이 잘 안 먹힘"). `window_sec`→1.0초, `min_track_frames`
+      →3, `cooldown_sec`→1.2초(윈도우보다 길게 유지하는 기존 원칙 유지)로 조정.
+      이제 잠금 후 30 FPS 근접이라 되돌려도 되지만, 재동기화 프레임(10프레임마다)
+      순간 지연이 섞이므로 여유값 그대로 유지 — 실기 확인 후 재검토
 
 ## ✅ 완료 (2026-07-16 — TTS 상황별 안내 보강)
 
@@ -134,12 +206,21 @@
 
 - [ ] install.bat / run.bat / make_offline_bundle.bat 실기 동작 확인 (작성만 됨 — 미검증)
 - [ ] onnxruntime 1.23.2 + rtmlib + mediapipe 설치 확인 (smoke_test)
-- [ ] CPU 추론 benchmark — 30 FPS 충족 확인 (미달 시 input_size_px 480, 그래도 미달이면 GPU판 검토)
+- [x] ~~CPU 추론 benchmark — 30 FPS 충족 확인~~ — **완료**: 이 개발 PC에서
+      개선 전 4~7 FPS(미달) → 검출 스킵 패스트패스 적용 후 더미 프레임 기준
+      30.86 FPS(위 "CPU 추론 성능 최적화" 절 참고). 다른 CPU 사양 배포 PC에서는
+      재측정 필요 — 이 결과가 모든 대상 PC를 대표하진 않음
+- [ ] **(2026-07-16 신규)** 검출 스킵 패스트패스 실기 확인 — 이번 최적화는 더미
+      프레임(고정 bbox 반복)으로만 속도를 쟀다. 실제 사람이 움직일 때
+      `bbox_pad_ratio`(0.3)가 충분한지, `redetect_interval_frames`(10)마다
+      순간적인 지연/끊김이 체감되는지, 빠르게 움직이면 추적을 놓치는지 확인
+      후 필요시 값 조정
 - [ ] 오토포커스 카메라로 person_lock 튜닝 (sharpness_weight·wrist_match_ratio)
 - [ ] 한국어 TTS 보이스(Heami 등) 설치 확인 + 안내 문구 낭독 품질
 - [ ] 두 사람 동시 프레임 진입 시 잠금 유지 확인 (다른 사람 손 차단)
-- [ ] **(2026-07-16 신규)** 손가락 1개 인식 select 실기 확인 — 거리·조명·손 각도별 오탐/미탐,
-      bbox 크롭 추가로 인한 CPU FPS 영향(목표 30 FPS 유지 여부)
+- [ ] **(2026-07-16 신규)** 손가락 1개 인식 select 실기 확인 — 거리·조명·손 각도별 오탐/미탐.
+      `hand_model.infer_interval_frames`(3)로 스로틀링 중이라 실제 손가락을 짧게
+      들었다 내렸을 때도 놓치지 않고 잡히는지 특히 확인(위 "손가락 인식 최적화" 절 참고)
 - [x] ~~TTS 한국어 보이스 자동 선택 실기 확인~~ — **완료** (위 2026-07-16 TTS
       절 참고, 이 개발 PC에서 Heami 보이스 선택 실측 확인됨)
 - [ ] **(2026-07-16 신규)** 사용자 인식/해제 음성 안내 실기 확인 — 카메라 앞에

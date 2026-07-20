@@ -14,6 +14,13 @@ rtmlib(Apache-2.0, RTMPose 계열 + ONNX Runtime)로 바꿨다.
 키포인트 번호는 COCO 17 규격이다 (0=코, 1·2=눈, 3·4=귀, 5·6=어깨, 9·10=손목).
 주의: 이 라벨은 "화면에 보이는 사람" 기준의 해부학적 좌/우다. 거울 반전된
 프레임에서는 사용자의 실제 좌/우와 반대가 되며, 그 보정은 person_lock이 담당한다.
+
+2026-07-16 성능 최적화(검출 스킵 패스트패스): 이 CPU 실측상 rtmlib Body의 검출
+단계(YOLOX-tiny)만으로 ~89ms가 들고, 이미 아는 bbox로 포즈만 재추정하면 ~22ms —
+5배 이상 차이난다(RTMO 단일모델 시도는 오히려 3 FPS로 더 느려 폐기, det_input_size는
+ONNX 고정 입력이라 축소 불가 — 둘 다 실측 후 기각). person_lock이 사람을 잠근 뒤에는
+`infer_at_bbox()`로 검출을 건너뛰고, `realtime_loop`가 주기적으로만(redetect_interval_frames)
+`infer()`(검출+포즈)를 다시 돌려 위치를 재동기화한다.
 """
 import sys
 from dataclasses import dataclass, field
@@ -95,8 +102,47 @@ def _bbox_from_keypoints(keypoints, kpt_conf, frame_shape):
     )
 
 
+def pad_bbox(bbox, pad_ratio, frame_width_px, frame_height_px):
+    """bbox(x1,y1,x2,y2)를 각 변 기준 pad_ratio만큼 넓히고 프레임 경계로 clamp한다.
+
+    검출 스킵 패스트패스(infer_at_bbox) 입력용 — 잠금 직전 프레임의 bbox가
+    이번 프레임에서도 사람을 덮도록 여유를 준다. rtmlib 없이 단위 테스트 가능한
+    순수 함수로 둔다(tests/test_pose_estimator.py).
+    """
+    x1, y1, x2, y2 = bbox
+    pad_x = (x2 - x1) * pad_ratio
+    pad_y = (y2 - y1) * pad_ratio
+    return (
+        max(0.0, x1 - pad_x), max(0.0, y1 - pad_y),
+        min(float(frame_width_px - 1), x2 + pad_x),
+        min(float(frame_height_px - 1), y2 + pad_y),
+    )
+
+
+def _persons_from_keypoints(keypoints_xy, scores, frame_shape, kpt_conf):
+    """(N,17,2)+(N,17) 원시 출력 -> list[PersonPose] (infer/infer_at_bbox 공용)."""
+    persons = []
+    for xy, score in zip(keypoints_xy, scores):
+        keypoints = np.concatenate([xy, score[:, None]], axis=1).astype(np.float32)
+        bbox = _bbox_from_keypoints(keypoints, kpt_conf, frame_shape)
+        if bbox is None:
+            continue
+        head_points = [
+            (float(keypoints[i][0]), float(keypoints[i][1]))
+            for i in KPT_HEAD_INDICES
+            if keypoints[i][2] >= kpt_conf
+        ]
+        persons.append(
+            PersonPose(
+                bbox=bbox, conf=float(score.mean()), keypoints=keypoints, head_points=head_points
+            )
+        )
+    return persons
+
+
 class PoseEstimator:
-    """RTMPose 포즈 추정기. infer(frame) -> list[PersonPose]."""
+    """RTMPose 포즈 추정기. infer(frame) -> list[PersonPose] (검출+포즈),
+    infer_at_bbox(frame, bbox) -> list[PersonPose] (검출 생략, 추적용)."""
 
     def __init__(self, config):
         from rtmlib import Body  # 무거운 의존 — person_lock을 끈 환경에선 임포트하지 않는다
@@ -109,25 +155,22 @@ class PoseEstimator:
         logger.info("포즈 모델 로딩 완료: rtmlib Body(mode=%s, device=%s)", model["pose_mode"], device)
 
     def infer(self, frame):
-        """프레임에서 사람 포즈를 추정한다."""
+        """프레임 전체에서 사람을 검출+추정한다 (검출기 포함 — 무겁다).
+
+        사용자를 찾는 중(미잠금)이거나 재동기화 시점에만 쓴다. 이미 잠근 사용자를
+        매 프레임 쫓을 때는 infer_at_bbox()가 검출을 건너뛰어 훨씬 빠르다.
+        """
         keypoints_xy, scores = self._body(frame)  # (N,17,2), (N,17)
-        persons = []
-        for xy, score in zip(keypoints_xy, scores):
-            keypoints = np.concatenate([xy, score[:, None]], axis=1).astype(np.float32)
-            bbox = _bbox_from_keypoints(keypoints, self._kpt_conf_threshold, frame.shape)
-            if bbox is None:
-                continue
-            head_points = [
-                (float(keypoints[i][0]), float(keypoints[i][1]))
-                for i in KPT_HEAD_INDICES
-                if keypoints[i][2] >= self._kpt_conf_threshold
-            ]
-            persons.append(
-                PersonPose(
-                    bbox=bbox,
-                    conf=float(score.mean()),
-                    keypoints=keypoints,
-                    head_points=head_points,
-                )
-            )
-        return persons
+        return _persons_from_keypoints(keypoints_xy, scores, frame.shape, self._kpt_conf_threshold)
+
+    def infer_at_bbox(self, frame, bbox):
+        """bbox 안에서만 포즈를 추정한다 (검출기 생략 — 5배 이상 빠름, 2026-07-16).
+
+        person_lock이 잠근 사용자를 계속 추적할 때 쓴다. bbox는 이전 프레임
+        위치를 pad_bbox()로 넉넉히 넓혀서 넘겨야 이번 프레임의 움직임을 놓치지
+        않는다. 결과가 비면(사람이 패딩 밖으로 나감 등) 호출부가 다음 재동기화
+        프레임까지 기존 잠금을 유지하거나 해제한다(person_lock 로직 그대로).
+        """
+        bboxes = np.array([bbox], dtype=np.float32)
+        keypoints_xy, scores = self._body.pose_model(frame, bboxes=bboxes)
+        return _persons_from_keypoints(keypoints_xy, scores, frame.shape, self._kpt_conf_threshold)

@@ -26,14 +26,21 @@ class FakeClock:
 def make_config():
     return {
         "gestures": {
-            "cooldown_sec": 1.0,
+            "cooldown_sec": 1.2,
             "swipe": {
-                "window_sec": 0.6,
+                "window_sec": 1.0,
                 "min_dist_x_ratio": 0.25,
                 "min_dist_y_ratio": 0.25,
                 "axis_dominance": 1.5,
-                "min_track_frames": 4,
+                "min_track_frames": 3,
                 "elbow_gain": 2.0,
+            },
+            "hand_swipe": {
+                "window_sec": 1.0,
+                "min_dist_x_ratio": 0.15,
+                "min_dist_y_ratio": 0.15,
+                "axis_dominance": 1.5,
+                "min_track_frames": 3,
             },
             "select": {
                 "required_finger_count": 1,
@@ -58,10 +65,11 @@ class GestureFilterTestBase(unittest.TestCase):
         self.clock = FakeClock()
         self.filter = GestureFilter(make_config(), clock=self.clock)
 
-    def _feed(self, swipe_points=None, finger_count=None, frame_count=1, dt_sec=FRAME_DT_SEC):
+    def _feed(self, swipe_points=None, finger_count=None, hand_point_ratio=None,
+              frame_count=1, dt_sec=FRAME_DT_SEC):
         """frame_count 프레임 공급 — 첫 확정 이벤트를 즉시 돌려준다 (없으면 None)."""
         for _ in range(frame_count):
-            event = self.filter.filter_signals(swipe_points or {}, finger_count)
+            event = self.filter.filter_signals(swipe_points or {}, finger_count, hand_point_ratio)
             self.clock.tick(dt_sec)
             if event is not None:
                 return event
@@ -78,10 +86,18 @@ class GestureFilterTestBase(unittest.TestCase):
                 return event
         return None
 
-    def _feed_fingers(self, counts, dt_sec=FRAME_DT_SEC):
+    def _feed_fingers(self, counts, hand_point_ratio=None, dt_sec=FRAME_DT_SEC):
         """손가락 개수 시퀀스 공급 — 첫 확정 이벤트를 돌려준다."""
         for count in counts:
-            event = self._feed(finger_count=count, dt_sec=dt_sec)
+            event = self._feed(finger_count=count, hand_point_ratio=hand_point_ratio, dt_sec=dt_sec)
+            if event is not None:
+                return event
+        return None
+
+    def _feed_hand_swipe(self, points, finger_count=ONE_FINGER, dt_sec=FRAME_DT_SEC):
+        """손가락 required_finger_count개 유지 상태에서 손 위치 궤적을 순서대로 공급."""
+        for point in points:
+            event = self._feed(finger_count=finger_count, hand_point_ratio=point, dt_sec=dt_sec)
             if event is not None:
                 return event
         return None
@@ -97,7 +113,7 @@ def path(start, end, step_count, y_ratio=None, x_ratio=None):
 
 
 class SwipeGestureTest(GestureFilterTestBase):
-    """팔(손목) 쓸기 — 좌/우=이동, 아래=이전, 위=처음 (2026-07-15 범용 설계)."""
+    """팔(손목) 쓸기 — 좌/우 이동 전용 (2026-07-20: 위/아래는 HandSwipeGestureTest 참고)."""
 
     def test_swipe_right_fires_move_right(self):
         event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4))
@@ -109,13 +125,15 @@ class SwipeGestureTest(GestureFilterTestBase):
         event = self._feed_swipe("left", path(0.6, 0.2, 8, y_ratio=0.4))
         self.assertEqual(event.class_name, "move_left")
 
-    def test_swipe_up_fires_go_home(self):
+    def test_swipe_up_no_longer_fires(self):
+        # 2026-07-20: go_home이 hand_swipe로 이관 — 팔 위쪽 이동은 이제 아무것도 확정하지 않는다
         event = self._feed_swipe("right", path(0.8, 0.3, 8, x_ratio=0.5))
-        self.assertEqual(event.class_name, "go_home")
+        self.assertIsNone(event)
 
-    def test_swipe_down_fires_go_back(self):
+    def test_swipe_down_no_longer_fires(self):
+        # 2026-07-20: go_back이 hand_swipe로 이관 — 팔 아래쪽 이동은 이제 아무것도 확정하지 않는다
         event = self._feed_swipe("right", path(0.3, 0.8, 8, x_ratio=0.5))
-        self.assertEqual(event.class_name, "go_back")
+        self.assertIsNone(event)
 
     def test_short_move_does_not_fire(self):
         # min_dist_x_ratio(0.25) 미만 이동 — 이벤트 없음
@@ -129,8 +147,8 @@ class SwipeGestureTest(GestureFilterTestBase):
         self.assertIsNone(event)
 
     def test_min_track_frames_blocks_teleport(self):
-        # 3프레임 만에 임계를 넘는 순간이동(키포인트 튐) — 4프레임째부터 확정 가능
-        event = self._feed_swipe("right", [(0.1, 0.4), (0.5, 0.4), (0.5, 0.4)])
+        # 2프레임 만에 임계를 넘는 순간이동(키포인트 튐) — min_track_frames(3)째부터 확정 가능
+        event = self._feed_swipe("right", [(0.1, 0.4), (0.5, 0.4)])
         self.assertIsNone(event)
         event = self._feed_swipe("right", [(0.5, 0.4)])
         self.assertIsNotNone(event)
@@ -157,17 +175,59 @@ class SwipeGestureTest(GestureFilterTestBase):
         self.assertIsNone(event)   # 전환 후 0.1 이동 × gain 2.0 = 0.8 진행 — 미달
 
     def test_slow_drift_outside_window_does_not_fire(self):
-        # 같은 거리라도 window_sec(0.6초)보다 느리면 쓸기가 아니다 — 배회 오탐 방지
-        event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4), dt_sec=0.2)
+        # 같은 거리라도 window_sec(1.0초)보다 느리면 쓸기가 아니다 — 배회 오탐 방지
+        event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4), dt_sec=0.4)
+        self.assertIsNone(event)
+
+
+class HandSwipeGestureTest(GestureFilterTestBase):
+    """손을 위/아래로 이동 = go_home/go_back — 손가락 개수는 안 본다(손 모양 무관).
+    (2026-07-20 신설 — 팔 위/아래 쓸기 대체. "손가락 1개"는 select 전용 신호로 재확정)."""
+
+    def test_hand_move_up_fires_go_home(self):
+        # finger_count=None(주먹 등 손가락 미인식)이어도 손 위치만 움직이면 확정된다
+        event = self._feed_hand_swipe(path(0.8, 0.3, 8, x_ratio=0.5), finger_count=None)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "go_home")
+
+    def test_hand_move_down_fires_go_back(self):
+        event = self._feed_hand_swipe(path(0.3, 0.8, 8, x_ratio=0.5), finger_count=None)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "go_back")
+
+    def test_fires_regardless_of_finger_count(self):
+        # 손가락 개수와 무관 — 2개를 편 채로 움직여도 화면 전환이 확정된다
+        event = self._feed_hand_swipe(path(0.8, 0.3, 8, x_ratio=0.5), finger_count=TWO_FINGERS)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "go_home")
+
+    def test_quick_move_up_preempts_select(self):
+        # 이동이 hold_sec(0.3초=9프레임)보다 먼저 확정되면 select가 아니라 go_home
+        event = self._feed_hand_swipe(path(0.8, 0.3, 4, x_ratio=0.5), finger_count=ONE_FINGER)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "go_home")
+
+    def test_hand_loss_resets_track(self):
+        # 절반 이동 후 손 소실(hand_point_ratio=None) — 궤적이 리셋돼 나머지 절반로는 미확정
+        self._feed_hand_swipe(path(0.8, 0.55, 4, x_ratio=0.5), finger_count=None)
+        self._feed(finger_count=None, hand_point_ratio=None)
+        event = self._feed_hand_swipe(path(0.55, 0.5, 4, x_ratio=0.5), finger_count=None)
         self.assertIsNone(event)
 
 
 class FingerSelectTest(GestureFilterTestBase):
-    """손가락 1개(엄지 제외) 인식을 hold_sec 이상 유지 = 선택 (2026-07-16 재확정 —
-    무손·무지 접근성 요건 제외, 꾸벅임은 UX 부담으로 기각)."""
+    """손가락 1개(엄지 제외)를 "제자리에서" hold_sec 이상 유지 = 선택 (2026-07-20:
+    위치가 아니라 정지 유지로 화면 전환(HandSwipeGestureTest)과 구분. 2026-07-16
+    재확정 — 무손·무지 접근성 요건 제외, 꾸벅임은 UX 부담으로 기각)."""
 
     def test_hold_one_finger_fires_select(self):
         event = self._feed_fingers([ONE_FINGER] * HOLD_FRAME_COUNT)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "select")
+
+    def test_hold_one_finger_stationary_with_position_still_fires_select(self):
+        # 손 위치가 같이 들어와도(hand_point_ratio) 움직이지 않으면 select가 확정된다
+        event = self._feed_fingers([ONE_FINGER] * HOLD_FRAME_COUNT, hand_point_ratio=(0.5, 0.5))
         self.assertIsNotNone(event)
         self.assertEqual(event.class_name, "select")
 
@@ -204,9 +264,9 @@ class FingerSelectTest(GestureFilterTestBase):
 class CooldownTest(GestureFilterTestBase):
     def test_cooldown_blocks_repeat_event(self):
         self._feed_fingers([ONE_FINGER] * HOLD_FRAME_COUNT)   # select 확정
-        event = self._feed_fingers([ONE_FINGER] * HOLD_FRAME_COUNT)   # 쿨다운(1초) 내
+        event = self._feed_fingers([ONE_FINGER] * HOLD_FRAME_COUNT)   # 쿨다운(1.2초) 내
         self.assertIsNone(event)
-        self.clock.tick(1.0)
+        self.clock.tick(1.2)
         event = self._feed_fingers([ONE_FINGER] * HOLD_FRAME_COUNT)
         self.assertIsNotNone(event)
 

@@ -19,6 +19,9 @@ model:
   pose_mode: lightweight  # ★ 맥 CPU — 가벼운 포즈 모델로 개발 확인
   input_size_px: 640
   max_infer_fps: 60
+  idle_infer_fps: 10      # 유휴 시 추론 FPS 하향 — config.yaml 주석 참고 (2026-07-20 GMtech 이식)
+  redetect_interval_frames: 10  # 2026-07-16 성능 최적화 — config.yaml 주석 참고
+  bbox_pad_ratio: 0.3
 
 hand_model:                # MediaPipe HandLandmarker(Apache-2.0) — 선택 판정 (2026-07-16 재도입)
   weights_path: models/weights/hand_landmarker.task
@@ -26,6 +29,7 @@ hand_model:                # MediaPipe HandLandmarker(Apache-2.0) — 선택 판
   min_hand_detection_conf: 0.5
   min_hand_presence_conf: 0.5
   min_tracking_conf: 0.5
+  infer_interval_frames: 3  # 2026-07-16 성능 최적화 — config.yaml 주석 참고
 
 person_lock:
   enabled: true
@@ -36,15 +40,23 @@ person_lock:
   sharpness_weight: 0.5
 
 gestures:
-  cooldown_sec: 1.0       # swipe.window_sec보다 길게 (config.yaml 주석 참고)
-  swipe:
-    window_sec: 0.6
+  cooldown_sec: 1.2       # swipe.window_sec보다 길게 (config.yaml 주석 참고)
+  swipe:                   # 좌/우 이동 전용 — 위/아래는 hand_swipe로 이관 (config.yaml 주석 참고)
+    window_sec: 1.0         # 2026-07-16 0.6→1.0 (저FPS 대응 — config.yaml 주석 참고)
     min_dist_x_ratio: 0.25
     min_dist_y_ratio: 0.25
     axis_dominance: 1.5
-    min_track_frames: 4
+    min_track_frames: 3     # 2026-07-16 4→3 (config.yaml 주석 참고)
     elbow_gain: 2.0         # 손목 미검출 시 팔꿈치 폴백 배율 — config.yaml 주석 참고
-  select:                 # 손가락 1개(엄지 제외) 인식 — config.yaml 주석 참고 (2026-07-16 재확정)
+  hand_swipe:              # 손(모양 무관) 위/아래 이동 = go_home/go_back (2026-07-20 신설,
+                           # 같은 날 실측 후 임계값 재조정 — config.yaml 주석 참고)
+    window_sec: 1.0
+    min_dist_x_ratio: 0.4
+    min_dist_y_ratio: 0.08
+    axis_dominance: 1.5
+    min_track_frames: 3
+  select:                 # 손가락 1개(엄지 제외)를 제자리에서 유지 — config.yaml 주석 참고
+                           # (2026-07-20: 화면 전환은 hand_swipe로 이관)
     required_finger_count: 1
     hold_sec: 0.6
 

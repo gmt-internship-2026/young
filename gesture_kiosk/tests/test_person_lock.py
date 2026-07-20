@@ -1,7 +1,7 @@
 """person_lock 단위 테스트 — 카메라·포즈 모델 없이 잠금·신호 로직만 검증한다.
 
-포즈 결과는 PersonPose와 같은 필드를 가진 대역(FakePerson)으로 만든다.
-(2026-07-20 얼굴 잠금 제거 — 몸 박스 크기 기준. 선명도 주입 장치도 함께 삭제)
+포즈 결과는 PersonPose와 같은 필드를 가진 대역(FakePerson)으로 만들고,
+초점 선명도는 sharpness_fn 주입으로 고정해 결정적으로 테스트한다.
 """
 import os
 import sys
@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 
 from src.postprocess.person_lock import (
-    KPT_LEFT_ELBOW, KPT_LEFT_SHOULDER, KPT_LEFT_WRIST,
+    KPT_LEFT_ELBOW, KPT_LEFT_SHOULDER, KPT_LEFT_WRIST, KPT_NOSE,
     KPT_RIGHT_ELBOW, KPT_RIGHT_SHOULDER, KPT_RIGHT_WRIST,
     LEFT_HAND_TIP_INDICES, RIGHT_HAND_TIP_INDICES, WHOLEBODY_KPT_COUNT, PersonLock,
 )
@@ -26,7 +26,7 @@ class FakePerson:
 
     def __init__(self, center_x, center_y, size_px=200.0,
                  left_wrist=None, right_wrist=None, left_elbow=None, right_elbow=None,
-                 left_shoulder=None, right_shoulder=None,
+                 nose=None, left_shoulder=None, right_shoulder=None, head_points=None,
                  left_hand_tips=None, right_hand_tips=None):
         half = size_px / 2.0
         self.bbox = (center_x - half, center_y - half, center_x + half, center_y + half)
@@ -36,7 +36,7 @@ class FakePerson:
         self.keypoints = np.zeros((kpt_count, 3))
         for index, point in ((KPT_LEFT_WRIST, left_wrist), (KPT_RIGHT_WRIST, right_wrist),
                              (KPT_LEFT_ELBOW, left_elbow), (KPT_RIGHT_ELBOW, right_elbow),
-                             (KPT_LEFT_SHOULDER, left_shoulder),
+                             (KPT_NOSE, nose), (KPT_LEFT_SHOULDER, left_shoulder),
                              (KPT_RIGHT_SHOULDER, right_shoulder)):
             if point is not None:
                 self.keypoints[index] = (*point, 0.9)
@@ -44,6 +44,9 @@ class FakePerson:
                                   (right_hand_tips, RIGHT_HAND_TIP_INDICES)):
             for index, point in zip(tip_indices, tips or []):
                 self.keypoints[index] = (*point, 0.9)
+        self.head_points = head_points if head_points is not None else [
+            (center_x - 20, center_y - half + 30), (center_x + 20, center_y - half + 30)
+        ]
 
     def keypoint(self, index, min_conf):
         x, y, conf = self.keypoints[index]
@@ -72,20 +75,38 @@ def make_config(enabled=True, mirror=True):
             "lock_frame_count": 3,
             "follow_radius_ratio": 0.25,
             "release_sec": 2.0,
+            "sharpness_weight": 0.5,
         },
     }
 
 
-def make_lock(config=None):
+def make_lock(config=None, sharpness_by_x=None):
+    """sharpness_by_x: 얼굴 박스 중심 x -> 선명도. 미지정 시 모두 같은 값."""
+
+    def sharpness_fn(frame, face_box):
+        if sharpness_by_x is None:
+            return 100.0
+        center_x = (face_box[0] + face_box[2]) / 2.0
+        for x_range, value in sharpness_by_x.items():
+            if x_range[0] <= center_x <= x_range[1]:
+                return value
+        return 10.0
+
     clock = FakeClock()
-    lock = PersonLock(config or make_config(), FRAME_WIDTH_PX, FRAME_HEIGHT_PX, clock=clock)
+    lock = PersonLock(
+        config or make_config(), FRAME_WIDTH_PX, FRAME_HEIGHT_PX,
+        clock=clock, sharpness_fn=sharpness_fn,
+    )
     return lock, clock
+
+
+FRAME = np.zeros((FRAME_HEIGHT_PX, FRAME_WIDTH_PX, 3), dtype=np.uint8)
 
 
 def lock_person(lock, clock, person):
     """lock_frame_count(3) 프레임 연속 공급해 person에게 잠근다."""
     for _ in range(3):
-        lock.update([person])
+        lock.update(FRAME, [person])
         clock.tick(1 / 30)
 
 
@@ -94,23 +115,23 @@ class LockSelectionTest(unittest.TestCase):
         lock, clock = make_lock()
         person = FakePerson(640, 360)
         for _ in range(2):
-            lock.update([person])
+            lock.update(FRAME, [person])
             clock.tick(1 / 30)
         self.assertIsNone(lock.locked_person)   # lock_frame_count(3) 미만
-        lock.update([person])
+        lock.update(FRAME, [person])
         self.assertIsNotNone(lock.locked_person)
 
-    def test_closer_person_wins(self):
-        # 몸 크기 기준(2026-07-20 얼굴 제거) — 크게 잡힌(가까운) 사람이 잠긴다
-        lock, clock = make_lock()
-        far_person = FakePerson(300, 360, size_px=150)
-        near_person = FakePerson(900, 360, size_px=320)
+    def test_sharpest_face_wins_over_blurry(self):
+        # 같은 크기 두 사람 — 왼쪽(x<600)이 흐릿, 오른쪽이 선명(초점 맞음)
+        lock, clock = make_lock(sharpness_by_x={(0, 600): 5.0, (601, 1280): 500.0})
+        blurry = FakePerson(300, 360)
+        sharp = FakePerson(900, 360)
         for _ in range(3):
-            lock.update([far_person, near_person])
+            lock.update(FRAME, [blurry, sharp])
             clock.tick(1 / 30)
         self.assertIsNotNone(lock.locked_person)
         locked_cx = (lock.locked_person.bbox[0] + lock.locked_person.bbox[2]) / 2.0
-        self.assertGreater(locked_cx, 600)      # 가까운(큰) 쪽이 잠겼다
+        self.assertGreater(locked_cx, 600)      # 선명한 쪽이 잠겼다
 
     def test_release_after_absence(self):
         lock, clock = make_lock()
@@ -118,14 +139,14 @@ class LockSelectionTest(unittest.TestCase):
         lock_person(lock, clock, person)
         self.assertIsNotNone(lock.locked_person)
         clock.tick(2.5)                          # release_sec(2.0) 초과 공백
-        lock.update([])
+        lock.update(FRAME, [])
         self.assertIsNone(lock.locked_person)
 
     def test_disabled_lock_tracks_best_person_for_signals(self):
-        # 잠금 비활성 — 쓸기 신호용으로 최고 신뢰도 사람을 추적한다
+        # 잠금 비활성 — 쓸기·끄덕임 신호용으로 최고 신뢰도 사람을 추적한다
         lock, _ = make_lock(make_config(enabled=False))
         person = FakePerson(640, 360, left_wrist=(500, 400))
-        lock.update([person])
+        lock.update(FRAME, [person])
         self.assertIsNotNone(lock.locked_person)
         self.assertIsNotNone(lock.user_swipe_points()["right"])   # mirror=true — 모델 왼손목
 

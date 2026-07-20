@@ -113,7 +113,7 @@ def run_pipeline(config):
             input_tensor = preprocessor.preprocess_frame(frame)
 
             persons = pose_estimator.infer(input_tensor)
-            person_lock.update(persons)   # 2026-07-20 얼굴 제거 — 프레임 픽셀 불필요
+            person_lock.update(input_tensor, persons)
             state.is_user_locked = (
                 person_lock.enabled and person_lock.locked_person is not None
             )

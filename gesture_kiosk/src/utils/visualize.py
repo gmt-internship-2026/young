@@ -3,18 +3,18 @@ import cv2
 
 EVENT_COLOR = (0, 160, 255)
 TEXT_COLOR = (255, 255, 255)
-LOCK_COLOR = (255, 200, 0)       # 잠긴 사용자 몸 박스 (2026-07-20 얼굴 박스 → 몸 박스)
+LOCK_COLOR = (255, 200, 0)       # 잠긴 사용자 얼굴 박스
 WRIST_COLOR = {"left": (255, 120, 60), "right": (60, 120, 255)}
 SOURCE_TAG = {"hand": "(F)", "elbow": "(E)"}   # F=손끝(fingertip) 평균, E=팔꿈치 폴백. 손목은 무표시
 
 
 def draw_person_lock(frame, person_lock):
-    """잠긴 사용자의 몸 박스와 쓸기 추적점(사용자 기준 좌/우)을 그린다.
+    """잠긴 사용자의 얼굴 박스와 쓸기 추적점(사용자 기준 좌/우)을 그린다.
 
     라벨: L/R + 추적점 출처 — 손끝 "(F)" / 팔꿈치 폴백 "(E)" — 을 화면에서 확인할 수 있게.
     """
-    if person_lock.locked_person is not None:
-        x1, y1, x2, y2 = (int(v) for v in person_lock.locked_person.bbox)
+    if person_lock.locked_face_box is not None:
+        x1, y1, x2, y2 = person_lock.locked_face_box
         cv2.rectangle(frame, (x1, y1), (x2, y2), LOCK_COLOR, 2)
         cv2.putText(
             frame, "USER LOCK", (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, LOCK_COLOR, 2

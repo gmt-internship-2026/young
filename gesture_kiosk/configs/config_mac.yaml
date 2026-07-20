@@ -26,12 +26,13 @@ model:
   idle_infer_fps: 10      # 유휴(사람 없음) 시 추론 FPS 절감 — config.yaml 주석 참고 (2026-07-20)
   det_interval_frames: 10 # 검출은 N프레임에 1회(PoseTracker) — config.yaml 주석 참고 (2026-07-20)
 
-person_lock:              # 2026-07-20 얼굴 기반 제거 — 몸 크기 잠금 (config.yaml 주석·№7 TODO 참고)
+person_lock:
   enabled: true
   kpt_conf_threshold: 0.3
   lock_frame_count: 3
   follow_radius_ratio: 0.25
   release_sec: 2.0
+  sharpness_weight: 0.5
 
 gestures:
   cooldown_sec: 1.0       # swipe.window_sec보다 길게 (config.yaml 주석 참고)
@@ -73,7 +74,7 @@ classes:
   [move_left, move_right, select, go_back, go_home]
 
 event_output:
-  mode: udp               # 델파이 연동 규격 시험(2026-07-20) — 평시 개발은 console로 되돌려도 무방
+  mode: console           # 맥=개발 PC — 델파이 연동 시험은 udp로 전환 (config.yaml 주석 참고)
   udp:
     host: 127.0.0.1
     port: 9999

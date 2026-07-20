@@ -1,8 +1,8 @@
-"""inference 모듈 — 사람 포즈(RTMPose)를 추론해 어깨·손목·손끝 키포인트를 얻는다.
+"""inference 모듈 — 사람 포즈(RTMPose)를 추론해 얼굴·어깨·손목·손끝 키포인트를 얻는다.
 
-2026-07-15 2차 개편으로 **유일한 추론 모델**이 됐다 — 쓸기(손목 궤적)와
-사용자 잠금(몸 박스 — 2026-07-20 얼굴 기반 제거)이 전부 이 포즈 키포인트로
-판정된다 (손 검출 MediaPipe·팔등 CNN 제거).
+2026-07-15 2차 개편으로 **유일한 추론 모델**이 됐다 — 쓸기(손목 궤적)·
+선택(고개 끄덕임)·사용자 잠금(얼굴)이 전부 이 포즈 키포인트로 판정된다
+(손 검출 MediaPipe·팔등 CNN 제거).
 
 2026-07-11 교체(라이선스 B안): ultralytics yolo11n-pose(AGPL-3.0)를 제거하고
 rtmlib(Apache-2.0, RTMPose 계열 + ONNX Runtime)로 바꿨다.
@@ -18,7 +18,7 @@ pose_engine=wholebody(2026-07-16 손끝 추적)면 COCO-WholeBody 133 규격 —
 프레임에서는 사용자의 실제 좌/우와 반대가 되며, 그 보정은 person_lock이 담당한다.
 """
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -27,8 +27,8 @@ from src.utils.logger import get_logger
 logger = get_logger("inference")
 
 # COCO 17 키포인트 인덱스 (RTMPose body 계열 출력 순서)
-# (2026-07-20: 머리 5점 묶음 KPT_HEAD_INDICES는 얼굴 잠금 제거로 삭제 — person_lock 주석 참고)
 KPT_NOSE = 0
+KPT_HEAD_INDICES = (0, 1, 2, 3, 4)  # 코·양눈·양귀 — 얼굴 영역 추정에 사용
 KPT_LEFT_SHOULDER = 5
 KPT_RIGHT_SHOULDER = 6
 KPT_LEFT_WRIST = 9
@@ -58,6 +58,7 @@ class PersonPose:
     bbox: tuple                 # (x1, y1, x2, y2) 픽셀 좌표 — 키포인트 묶음 기반
     conf: float
     keypoints: np.ndarray       # shape (17|133, 3) — (x_px, y_px, conf). 133=wholebody 엔진
+    head_points: list = field(default_factory=list)  # 신뢰도 통과한 머리 키포인트 [(x, y)]
 
     def keypoint(self, index, min_conf):
         """키포인트 신뢰도가 통과하면 (x_px, y_px), 아니면 None (손목·팔꿈치 공용)."""
@@ -144,12 +145,18 @@ class PoseEstimator:
             bbox = _bbox_from_keypoints(keypoints, self._kpt_conf_threshold, frame.shape)
             if bbox is None:
                 continue
+            head_points = [
+                (float(keypoints[i][0]), float(keypoints[i][1]))
+                for i in KPT_HEAD_INDICES
+                if keypoints[i][2] >= self._kpt_conf_threshold
+            ]
             persons.append(
                 PersonPose(
                     bbox=bbox,
                     # 몸 17점만 평균 — wholebody의 얼굴 68점이 사람 신뢰도를 지배하지 않게
                     conf=float(score[:17].mean()),
                     keypoints=keypoints,
+                    head_points=head_points,
                 )
             )
         if not persons and self._tracker is not None:

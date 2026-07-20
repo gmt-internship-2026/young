@@ -54,6 +54,20 @@ class PipelineState:
         self.is_user_locked = False
         self.debug = {}                # 판정 계기판(gesture_filter.debug) — 실기 튜닝용
         self.announcer = None          # demo_server의 POST /announce가 사용한다
+        self._viewer_count = 0         # CAM 스트림 시청자 수 — 0이면 오버레이 렌더링 생략
+
+    def add_viewer(self):
+        """CAM 스트림 접속 — 다음 루프부터 오버레이를 그린다 (2026-07-20 최적화)."""
+        with self._lock:
+            self._viewer_count += 1
+
+    def remove_viewer(self):
+        with self._lock:
+            self._viewer_count = max(0, self._viewer_count - 1)
+
+    @property
+    def has_viewer(self):
+        return self._viewer_count > 0
 
     def update_frame(self, frame):
         with self._lock:
@@ -132,15 +146,19 @@ def run_pipeline(config):
             state.capture_fps = camera.fps_meter.avg_fps
             state.infer_fps = infer_fps_meter.avg_fps
 
-            annotated = draw_person_lock(input_tensor, person_lock)
-            annotated = draw_debug_panel(annotated, state.debug)
-            overlay_event = state.last_event
-            if overlay_event is not None and (
-                time.monotonic() - overlay_event.ts_sec > EVENT_OVERLAY_HOLD_SEC
-            ):
-                overlay_event = None
-            annotated = draw_status(annotated, state.infer_fps, overlay_event)
-            state.update_frame(annotated)
+            # 오버레이(스켈레톤·계기판·상태)는 CAM 스트림 시청자가 있을 때만 그린다 —
+            # 실전(회사 UI는 이벤트만 수신)에서는 매 프레임 그리기·복사가 순수 낭비다
+            # (2026-07-20 최적화. 판정·이벤트 경로는 위에서 이미 끝났으므로 무영향)
+            if state.has_viewer:
+                annotated = draw_person_lock(input_tensor, person_lock)
+                annotated = draw_debug_panel(annotated, state.debug)
+                overlay_event = state.last_event
+                if overlay_event is not None and (
+                    time.monotonic() - overlay_event.ts_sec > EVENT_OVERLAY_HOLD_SEC
+                ):
+                    overlay_event = None
+                annotated = draw_status(annotated, state.infer_fps, overlay_event)
+                state.update_frame(annotated)
 
             # FPS 상한 — 개발 PC에서 200+ FPS로 도는 낭비를 막는다.
             # 유휴(사람 없음)일 땐 idle_infer_fps까지 더 낮춘다 (2026-07-20)

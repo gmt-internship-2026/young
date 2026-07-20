@@ -42,17 +42,23 @@ def create_app(state, config):
         return FileResponse(index_path)
 
     async def _stream():
-        while True:
-            frame = state.get_frame()
-            if frame is None:
-                await asyncio.sleep(0.05)
-                continue
-            ret, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
-            if not ret:
-                await asyncio.sleep(0.05)
-                continue
-            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
-            await asyncio.sleep(stream_interval_sec)
+        # 시청자 등록 — 파이프라인이 오버레이 렌더링을 켠다 (0명이면 그리기 생략,
+        # 2026-07-20 최적화). 클라이언트가 끊기면 제너레이터 종료로 finally가 돈다
+        state.add_viewer()
+        try:
+            while True:
+                frame = state.get_frame()
+                if frame is None:
+                    await asyncio.sleep(0.05)
+                    continue
+                ret, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
+                if not ret:
+                    await asyncio.sleep(0.05)
+                    continue
+                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
+                await asyncio.sleep(stream_interval_sec)
+        finally:
+            state.remove_viewer()
 
     @app.get("/video_feed")
     async def video_feed():

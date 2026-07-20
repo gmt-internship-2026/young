@@ -12,7 +12,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.pipeline.realtime_loop import resolve_loop_interval_sec
+from src.pipeline.realtime_loop import PipelineState, resolve_loop_interval_sec
 
 
 def _make_config(det_interval_frames=None, pose_engine="body"):
@@ -129,6 +129,27 @@ class ResolveLoopIntervalTest(unittest.TestCase):
         # 잘못 크게 적어도 max를 넘지 않는다
         model = {"max_infer_fps": 30, "idle_infer_fps": 90}
         self.assertAlmostEqual(resolve_loop_interval_sec(model, False), 1.0 / 30)
+
+
+class ViewerCountTest(unittest.TestCase):
+    """CAM 시청자 계수 — 0명이면 오버레이 렌더링 생략 (2026-07-20 최적화)."""
+
+    def test_viewer_toggles_overlay_flag(self):
+        state = PipelineState()
+        self.assertFalse(state.has_viewer)          # 기본: 시청자 없음 → 그리기 생략
+        state.add_viewer()
+        state.add_viewer()                          # 데모 창 2개 동시 시청
+        self.assertTrue(state.has_viewer)
+        state.remove_viewer()
+        self.assertTrue(state.has_viewer)           # 한 명 남음 — 계속 그린다
+        state.remove_viewer()
+        self.assertFalse(state.has_viewer)
+
+    def test_remove_never_goes_negative(self):
+        state = PipelineState()
+        state.remove_viewer()                       # 중복 종료 신호에도 음수 금지
+        state.add_viewer()
+        self.assertTrue(state.has_viewer)
 
 
 if __name__ == "__main__":

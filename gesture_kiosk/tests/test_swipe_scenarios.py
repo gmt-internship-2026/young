@@ -24,10 +24,13 @@ CONFIG_PATH = os.path.join(
 
 FPS = 30
 SHOULDER_RATIO = 0.22   # 키오스크 표준 거리(fallback_ratio와 동일) — 임계 환산 자(尺)
-SHOULDER_LINE_Y = 0.48  # 어깨선 높이 — 들어올리기 게이트의 휴식 존 경계 계산에 사용
-                        #   (존 상단 = 0.48 + 1.2×0.22 = 0.744 — REST(0.6)는 존 밖)
-REST = (0.5, 0.6)       # 팔의 기본 위치: 가슴께 든 상태 (x·y 모두 프레임 폭 기준)
-HANG = (0.5, 0.98)      # 팔을 축 내린 위치 — 휴식 존 안 (들어올리기 시나리오용)
+# ★좌표 현실성(2026-07-21 정정 — §4.3 규칙 추가): y도 프레임 **폭**으로 나눈 등방
+# 단위라 720p에서 y 최대는 720/1280 = 0.5625다. 이 범위를 넘는 시나리오 좌표는
+# 실기에서 불가능한 가짜 검증이 된다 (실제로 y=0.98 좌표로 게이트가 가짜 통과했었다)
+FRAME_BOTTOM_Y = 0.5625
+SHOULDER_LINE_Y = 0.20  # 어깨선 높이 — 휴식 존 상단 = 0.20 + 1.2×0.22 = 0.464 (화면 안)
+REST = (0.5, 0.31)      # 팔의 기본 위치: 가슴께 든 상태
+HANG = (0.5, 0.52)      # 팔을 낮게 내린 위치 — 휴식 존 안(0.464 아래), 화면 안
 
 # 진폭 (§4.3: 임계의 2배쯤이 현실적) — 임계 x=0.55·0.22≈0.121, y=0.35·0.22≈0.077
 AMP_X = 0.25
@@ -90,9 +93,11 @@ class SwipeScenarioTest(unittest.TestCase):
             self.assertEqual(sim.events, expected_events, f"[{label}] 이벤트 불일치")
 
     def test_1_select_up_immediate(self):
-        # 위 1회 = select 즉시 — 이동이 끝나기 전(임계 도달 시점)에 확정된다
+        # 위 1회 = select 즉시 — 이동이 끝나기 전(임계 도달 시점)에 확정된다.
+        # 첫 hold 0.8초: 팔 등장도 휴식 존 이력로 취급되므로(근거리 정정) 등장 직후
+        # 유예(0.6초)가 지나야 select가 열린다 — 실사용에선 탐색(좌/우) 후 선택이라 무영향
         def scenario(sim):
-            sim.hold(0.5)
+            sim.hold(0.8)
             sim.move_by(0, -AMP_Y, 0.3)
         self._run(scenario, ["select"])
 
@@ -145,7 +150,7 @@ class SwipeScenarioTest(unittest.TestCase):
     def test_7_select_then_intentional_go_back(self):
         # 선택(위) 후 의도적 이전(아래) — 복귀 삼킴이 의도적 아래까지 먹으면 안 된다
         def scenario(sim):
-            sim.hold(0.5)
+            sim.hold(0.8)                   # 등장 유예 경과 (test_1 주석 참고)
             sim.move_by(0, -AMP_Y, 0.3)     # select
             sim.move_by(0, AMP_Y, 0.4)      # 쿨다운 중 제자리 복귀 (판정 없음)
             sim.hold(0.5)                   # 쿨다운 마저 경과
@@ -196,6 +201,19 @@ class SwipeScenarioTest(unittest.TestCase):
             sim.move_by(-AMP_X, 0, 0.3)                 # 즉시 좌 쓸기
             sim.hold(0.4)
         self._run(scenario, ["move_left"])
+
+    def test_15_close_range_arm_appearance_then_down(self):
+        # 근거리 실기 정정(2026-07-21): 내린 팔은 화면 밖(휴식 존이 프레임 아래) —
+        # 팔이 어깨선 아래에서 "등장"해 올라오는 것 자체가 들어올리기 신호다.
+        # 등장→상승이 select로 오발되지 않고, 이어지는 아래가 go_back이어야 한다
+        def scenario(sim):
+            sim.drop(0, 0, 0.6)                  # 팔 부재(화면 밖 — 추적점 없음)
+            sim.position = (0.5, 0.40)           # 화면 하단(존 밖·어깨선 아래)에서 등장
+            sim.move_by(0, -0.16, 0.25)          # 등장하며 올라옴 — select 금지
+            sim.hold(0.2)
+            sim.move_by(0, AMP_Y, 0.3)           # 의도한 아래 쓸기
+            sim.hold(1.4)
+        self._run(scenario, ["go_back"])
 
     def test_13_fast_flick_recognized(self):
         # 아주 빠른 플릭(0.10초 = 3프레임) — 플릭 후 정지 프레임이 궤적을 채워 인식된다

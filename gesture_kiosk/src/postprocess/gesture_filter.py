@@ -254,10 +254,19 @@ class GestureFilter:
             source, point = point_info
             if side != self._active_side or source != self._active_source:
                 self._swipe_tracker.reset()   # 팔 교체·추적점 출처 전환(손끝↔손목 등) — 궤적 연결 금지
+                was_absent = self._active_side is None
                 self._active_side = side
                 self._active_source = source
                 if self._point_filter is not None:
                     self._point_filter.reset()   # 다른 점의 잔상으로 새 궤적 오염 금지
+                # 팔의 "등장"도 휴식 존 이력로 취급(2026-07-21 실기 정정): 근거리에선
+                # 내린 팔이 화면 밖이라 휴식 존(어깨선+N배)이 프레임 아래로 나가 존
+                # 스탬프가 불가능하다 — 어깨선 아래에서 새로 나타난 팔은 들어올리기
+                # 도중일 가능성이 높으므로 등장 시각을 스탬프한다 (위 방향만 유예)
+                if (was_absent and self._raise_guard_below_shoulder is not None
+                        and (self._shoulder_line_y is None
+                             or point[1] > self._shoulder_line_y)):
+                    self._last_rest_zone_sec = now_sec
             if self._point_filter is not None:
                 point = self._point_filter.filter(point, now_sec)   # 떨림 저감 (One Euro)
             gain = self._elbow_gain if source == "elbow" else 1.0

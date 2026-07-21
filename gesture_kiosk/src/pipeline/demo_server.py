@@ -14,7 +14,7 @@ import asyncio
 import os
 
 import cv2
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -92,6 +92,26 @@ def create_app(state, config):
         }
 
     # ----- 회사 프로그램 연동 계약 엔드포인트 -----
+
+    @app.websocket("/ws/events")
+    async def ws_events(websocket: WebSocket):
+        """이벤트 실시간 push(2026-07-21 웹소켓 전환 — 회사 결정).
+
+        접속해 두면 이벤트 확정 순간 UDP와 동일한 텍스트 한 줄이 온다:
+            GESTURE|select|left|1.00|12345.678
+        델파이 수신부는 UDP 파서를 그대로 재사용하면 된다 (docs/델파이7_연동가이드.md).
+        과도기에는 UDP(event_output.mode)와 병행 송신된다 — 웹소켓 정착 후 UDP 정리.
+        """
+        await websocket.accept()
+        queue = asyncio.Queue()
+        state.add_event_listener(asyncio.get_running_loop(), queue)
+        try:
+            while True:
+                await websocket.send_text(await queue.get())
+        except (WebSocketDisconnect, RuntimeError):
+            pass   # 클라이언트 종료·연결 끊김 — 구독 해제만 하면 된다
+        finally:
+            state.remove_event_listener(queue)
 
     @app.post("/announce")
     async def announce(body: AnnounceBody):

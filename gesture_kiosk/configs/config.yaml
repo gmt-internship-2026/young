@@ -147,10 +147,12 @@ classes:                    # 표준 동작 목록 — UI/이벤트 수신부와
   [move_left, move_right, select, go_back, go_home]
 
 event_output:
-  # 회사 GUI = 델파이7 프로그램 확정(2026-07-20) — UDP 텍스트 규격으로 연동:
+  # 회사 GUI = 델파이7 프로그램 확정(2026-07-20) — 텍스트 규격으로 연동:
   #   GESTURE|이벤트|손|신뢰도|시각 (한 줄, 개행 종료 — docs/델파이7_연동가이드.md)
-  # 윈도우 배포 브랜치는 mode: udp + format: text 로 켠다
-  mode: udp               # ★윈도우 배포 기본(2026-07-20) — 델파이7 UDP 연동. console=개발 로그만
+  # 2026-07-21 웹소켓 전환(회사 결정): 기본 채널 = ws://<IP>:5000/ws/events —
+  #   접속만 하면 같은 텍스트가 push된다(설정 불필요·상시 제공). 아래 mode(UDP)는
+  #   과도기 병행용 — 웹소켓 정착 후 console로 내리면 UDP 중단
+  mode: udp               # 과도기 UDP 병행(웹소켓 전환 — 위 주석)
   udp:
     host: 127.0.0.1       # 델파이 프로그램이 도는 기기 (같은 PC = 루프백)
     port: 9999

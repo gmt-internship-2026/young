@@ -18,7 +18,7 @@ from src.capture.camera_stream import CameraStream
 from src.utils.env_report import log_environment
 from src.inference.pose_estimator import PoseEstimator
 from src.inference.preprocessor import Preprocessor
-from src.pipeline.event_sender import create_event_sender
+from src.pipeline.event_sender import build_text_payload, create_event_sender
 from src.postprocess.gesture_filter import GestureFilter
 from src.postprocess.person_lock import PersonLock
 from src.utils.logger import get_logger
@@ -55,6 +55,7 @@ class PipelineState:
         self.debug = {}                # 판정 계기판(gesture_filter.debug) — 실기 튜닝용
         self.announcer = None          # demo_server의 POST /announce가 사용한다
         self._viewer_count = 0         # CAM 스트림 시청자 수 — 0이면 오버레이 렌더링 생략
+        self._event_listeners = []     # 웹소켓 구독자 [(asyncio 루프, 큐)] — 2026-07-21
 
     def add_viewer(self):
         """CAM 스트림 접속 — 다음 루프부터 오버레이를 그린다 (2026-07-20 최적화)."""
@@ -68,6 +69,27 @@ class PipelineState:
     @property
     def has_viewer(self):
         return self._viewer_count > 0
+
+    # ----- 웹소켓 이벤트 브로드캐스트 (2026-07-21 — 회사 결정: 웹소켓 전환) -----
+    # 추론 스레드(동기)에서 확정된 이벤트를 FastAPI 웹소켓(비동기 루프)의 구독자
+    # 큐로 넘긴다. call_soon_threadsafe가 스레드 경계를 안전하게 건넌다.
+
+    def add_event_listener(self, loop, queue):
+        with self._lock:
+            self._event_listeners.append((loop, queue))
+
+    def remove_event_listener(self, queue):
+        with self._lock:
+            self._event_listeners = [
+                (loop, q) for loop, q in self._event_listeners if q is not queue
+            ]
+
+    def broadcast_event(self, payload_text):
+        """접속 중인 웹소켓 구독자 전원에게 이벤트 텍스트를 push한다 (구독자 0명 = 무비용)."""
+        with self._lock:
+            listeners = list(self._event_listeners)
+        for loop, queue in listeners:
+            loop.call_soon_threadsafe(queue.put_nowait, payload_text)
 
     def update_frame(self, frame):
         with self._lock:
@@ -141,6 +163,9 @@ def run_pipeline(config):
 
             if gesture_event is not None:
                 event_sender.send(gesture_event)
+                # 웹소켓 구독자에게도 push — UDP와 바이트 동일한 텍스트 규격이라
+                # 델파이 수신부가 같은 파서를 쓴다 (2026-07-21 웹소켓 전환)
+                state.broadcast_event(build_text_payload(gesture_event).decode("ascii"))
                 state.append_event(gesture_event)
                 announcer.on_event(gesture_event)
 

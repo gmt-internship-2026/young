@@ -66,6 +66,14 @@ class _Sim:
         for i in range(1, steps + 1):
             self.feed(x0 + dx * i / steps, y0 + dy * i / steps)
 
+    def drop(self, dx, dy, duration_sec):
+        """추적점 소실 구간(모션 블러 모사) — 팔은 계속 움직이지만 점은 전달 안 됨."""
+        steps = max(1, round(duration_sec * FPS))
+        x0, y0 = self.position
+        for i in range(1, steps + 1):
+            self.position = (x0 + dx * i / steps, y0 + dy * i / steps)
+            self._step({"left": None, "right": None})
+
 
 def _sims():
     """필터 켠 실물 config + 끈 config 두 시뮬레이터 — 양쪽 다 통과해야 한다."""
@@ -188,6 +196,25 @@ class SwipeScenarioTest(unittest.TestCase):
             sim.move_by(-AMP_X, 0, 0.3)                 # 즉시 좌 쓸기
             sim.hold(0.4)
         self._run(scenario, ["move_left"])
+
+    def test_13_fast_flick_recognized(self):
+        # 아주 빠른 플릭(0.10초 = 3프레임) — 플릭 후 정지 프레임이 궤적을 채워 인식된다
+        def scenario(sim):
+            sim.hold(0.5)
+            sim.move_by(AMP_X, 0, 0.10)
+            sim.hold(0.4)
+        self._run(scenario, ["move_right"])
+
+    def test_14_blur_dropout_mid_swipe_survives(self):
+        # 빠른 쓸기 중 모션 블러로 2프레임 소실 — 소실 유예(dropout_grace_sec)가
+        # 궤적을 유지해 인식된다 (유예 없인 리셋 → 인식 실패, 2026-07-20 실증)
+        def scenario(sim):
+            sim.hold(0.5)
+            sim.move_by(AMP_X * 0.4, 0, 0.12)
+            sim.drop(AMP_X * 0.2, 0, 0.07)   # 블러 구간 — 팔은 전진, 점은 소실
+            sim.move_by(AMP_X * 0.4, 0, 0.12)
+            sim.hold(0.4)
+        self._run(scenario, ["move_right"])
 
     def test_8_no_select_misfire_after_go_back(self):
         # 4dfb4b5 회귀 — go_back 확정 후 팔 복귀(위)가 select로 오발되면 안 된다:

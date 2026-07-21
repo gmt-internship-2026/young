@@ -158,6 +158,13 @@ class GestureFilter:
         self._last_rest_zone_sec = None    # 추적점이 휴식 존에 마지막으로 있던 시각
         self._raise_ignored_count = 0      # 계기판 — 들어올리기로 무시된 위 쓸기 수
 
+        # 소실 유예(2026-07-20 실증): 빠른 동작은 모션 블러로 키포인트가 순간(1~2프레임)
+        # 끊기는데, 즉시 리셋하면 쓸기 전체가 유실된다 — 이 시간 안의 공백은 궤적을
+        # 유지한 채 기다린다. 키 미설정이면 종전(즉시 리셋). 팔 교체·출처 전환은
+        # 좌표계가 달라 유예 대상이 아니다(계속 리셋)
+        self._dropout_grace_sec = swipe.get("dropout_grace_sec")
+        self._last_point_sec = None        # 추적점이 마지막으로 존재한 시각
+
         # 수직 쓸기 1회/2연속 분기 — 1회째는 보류했다가 판정 창이 지나면 단발로 확정
         self._double_within_sec = swipe["double_within_sec"]
         self._pending_direction = None   # "up"/"down" — 보류 중인 수직 쓸기
@@ -230,7 +237,15 @@ class GestureFilter:
 
         event = None
         if side is None:
-            self._swipe_tracker.reset()   # 추적점 전무 — 끊긴 궤적을 이어 붙이지 않는다
+            if (self._dropout_grace_sec is not None
+                    and self._active_side is not None
+                    and self._last_point_sec is not None
+                    and now_sec - self._last_point_sec <= self._dropout_grace_sec):
+                # 순간 소실(모션 블러) — 유예 안의 공백은 궤적·활성 팔을 유지한 채
+                # 재등장을 기다린다 (즉시 리셋하면 빠른 쓸기가 통째로 유실 — 실증)
+                self._update_debug(body_scale, shoulder_width_ratio)
+                return None
+            self._swipe_tracker.reset()   # 유예 초과 소실 — 끊긴 궤적을 이어 붙이지 않는다
             self._active_side = None
             self._active_source = None
             if self._point_filter is not None:
@@ -246,6 +261,7 @@ class GestureFilter:
             if self._point_filter is not None:
                 point = self._point_filter.filter(point, now_sec)   # 떨림 저감 (One Euro)
             gain = self._elbow_gain if source == "elbow" else 1.0
+            self._last_point_sec = now_sec   # 소실 유예의 기준 시각
             self._stamp_rest_zone(point, now_sec, body_scale)
             self._update_swallow_origin(point)
             self._watch_pending_return(point, body_scale)

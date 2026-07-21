@@ -273,6 +273,84 @@ class ReachGateTest(unittest.TestCase):
         self.assertEqual(lock.user_swipe_points()["left"], ("wrist", (100.0, 300.0)))
 
 
+class SourceLockTest(unittest.TestCase):
+    """추적점 출처 고정(2026-07-20) — 잠금 직후 관찰 1회 판정·고정, 결손 판독, 재판정."""
+
+    TIPS = [(500, 300), (510, 300), (520, 300), (530, 300), (540, 300)]
+
+    def _make_lock(self, source_lock=True):
+        config = make_config(mirror=False)   # 모델 좌표 그대로 검증 (스왑 무관)
+        if source_lock:
+            config["person_lock"]["source_lock"] = {
+                "assess_sec": 1.0, "stable_min_ratio": 0.6, "reassess_sec": 2.0,
+            }
+        return make_lock(config)
+
+    def _person(self, tips=False, wrist=True, elbow=False):
+        kwargs = {}
+        if tips:
+            kwargs["left_hand_tips"] = self.TIPS
+        if wrist:
+            kwargs["left_wrist"] = (505, 400)
+        if elbow:
+            kwargs["left_elbow"] = (520, 450)
+        return FakePerson(640, 360, **kwargs)
+
+    def _run(self, lock, clock, persons):
+        """프레임 시퀀스 공급 — 매 프레임 update + user_swipe_points (실기와 동일 흐름)."""
+        outputs = []
+        for person in persons:
+            lock.update(FRAME, [person])
+            outputs.append(lock.user_swipe_points()["left"])
+            clock.tick(1 / 30)
+        return outputs
+
+    def test_stable_tips_fix_hand_and_gap_instead_of_downgrade(self):
+        # 손끝이 관찰 내내 안정 → hand 고정. 이후 손끝 소실 프레임은 손목 강등 대신
+        # 공백(None) — 좌표 점프로 궤적을 오염시키지 않는다 (소실 유예가 받침)
+        lock, clock = self._make_lock()
+        lock_person(lock, clock, self._person(tips=True))
+        self._run(lock, clock, [self._person(tips=True)] * 35)     # 관찰 종료 → hand 고정
+        outputs = self._run(lock, clock, [self._person(tips=False)] * 3)
+        self.assertEqual(outputs, [None, None, None])              # 동적이면 ("wrist", ...)였다
+
+    def test_flapping_tips_fix_wrist(self):
+        # 손끝이 절반만 잡힘(블러 깜빡임 모사, 50% < 60%) → 손목 고정.
+        # 고정 후 손끝이 잡히는 프레임에도 손목 유지 — 출처 전환 리셋 소멸
+        lock, clock = self._make_lock()
+        lock_person(lock, clock, self._person(tips=True))
+        flap = [self._person(tips=(i % 2 == 0)) for i in range(35)]
+        self._run(lock, clock, flap)
+        outputs = self._run(lock, clock, [self._person(tips=True)] * 2)
+        self.assertEqual(outputs[-1], ("wrist", (505.0, 400.0)))
+
+    def test_no_wrist_fixes_elbow_deficiency(self):
+        # 손목이 관찰 내내 없음(결손 사용자) → 팔꿈치 고정 = 결손 명시 판독.
+        # 이후 손목이 우연히 잡혀도 팔꿈치 유지(관찰 결과 우선)
+        lock, clock = self._make_lock()
+        lock_person(lock, clock, self._person(wrist=False, elbow=True))
+        self._run(lock, clock, [self._person(wrist=False, elbow=True)] * 35)
+        outputs = self._run(lock, clock, [self._person(wrist=True, elbow=True)] * 2)
+        self.assertEqual(outputs[-1], ("elbow", (520.0, 450.0)))
+
+    def test_long_loss_triggers_reassessment(self):
+        # hand 고정 후 손끝이 2초 이상 연속 소실(멀어짐 등) → 재판정 → 손목 고정
+        lock, clock = self._make_lock()
+        lock_person(lock, clock, self._person(tips=True))
+        self._run(lock, clock, [self._person(tips=True)] * 35)     # hand 고정
+        outputs = self._run(lock, clock, [self._person(tips=False)] * 100)
+        self.assertEqual(outputs[-1], ("wrist", (505.0, 400.0)))   # 재판정 후 손목 고정
+
+    def test_missing_config_key_keeps_dynamic_fallback(self):
+        # 구 config(키 없음) — 종전 매 프레임 동적 폴백 유지 (즉시 강등)
+        lock, clock = self._make_lock(source_lock=False)
+        lock_person(lock, clock, self._person(tips=True))
+        outputs = self._run(lock, clock,
+                            [self._person(tips=True), self._person(tips=False)])
+        self.assertEqual(outputs[0][0], "hand")
+        self.assertEqual(outputs[1], ("wrist", (505.0, 400.0)))
+
+
 class UserShoulderWidthRatioTest(unittest.TestCase):
     """어깨너비/프레임폭 — 쓸기 임계의 몸 크기 정규화 자 (2026-07-16)."""
 

@@ -43,6 +43,17 @@ LEFT_HAND_TIP_INDICES = (95, 99, 103, 107, 111)
 RIGHT_HAND_TIP_INDICES = (116, 120, 124, 128, 132)
 MIN_CONFIDENT_TIP_COUNT = 3   # 손끝 평균 인정 최소 개수 — 오검출 손가락 1~2개가 평균을 끌고 가는 것 방지
 
+SOURCE_PRIORITY = ("hand", "wrist", "elbow")   # 추적점 출처 우선순위 (지렛대 긴 순)
+
+
+def _best_candidate(candidates):
+    """동적 폴백 — 우선순위가 가장 높은 가용 출처 (출처, 좌표) | None."""
+    for source in SOURCE_PRIORITY:
+        if source in candidates:
+            return (source, candidates[source])
+    return None
+
+
 FACE_BOX_PAD_RATIO = 0.6      # 머리 키포인트 묶음 -> 얼굴 박스로 넓히는 패딩 비율
 SHARPNESS_SQUASH = 300.0      # 라플라시안 분산 정규화 상수 (v/(v+K) — 0~1로 압축)
 MIN_SHOULDER_WIDTH_PX = 20.0  # 이보다 좁으면(측면 자세·검출 불량) 목 길이 정규화가 무의미
@@ -106,6 +117,14 @@ class PersonLock:
         # 사람 팔은 자기 어깨에서 팔 길이 이상 떨어질 수 없으므로, 추적점이 같은 쪽
         # 어깨로부터 어깨너비 N배 안일 때만 인정한다. 키 없으면 게이트 없음(구 config)
         self._reach_limit_shoulder = lock_cfg.get("reach_limit_shoulder") or {}
+        # 추적점 출처 고정(2026-07-20 — 결손 판단 1단계): 잠금 직후 assess_sec 동안
+        # 팔별 손끝/손목/팔꿈치 가용률을 관찰해 **한 번만 판정·고정**한다. 매 프레임
+        # 폴백은 블러 순간마다 출처가 바뀌며 궤적을 리셋해 빠른 쓸기를 잃었다(실기).
+        # 고정 후 순간 소실은 강등 대신 공백(gesture_filter 소실 유예가 받침) —
+        # reassess_sec 연속 소실이면 상황 변화(거리 등)로 보고 재판정.
+        # 손목이 관찰 내내 없으면 팔꿈치 고정 = 결손을 명시적으로 판독한 것 (로그).
+        # 키 없으면 종전(매 프레임 동적 폴백)
+        self._source_lock_cfg = lock_cfg.get("source_lock")
 
         self._frame_width_px = frame_width_px
         self._frame_height_px = frame_height_px
@@ -117,6 +136,7 @@ class PersonLock:
         self._candidate_center = None  # 잠금 전 최고 후보 추적
         self._candidate_count = 0
         self._last_seen_sec = None
+        self._reset_source_lock()
 
     # ----- 사용자 선정·추적 -----
 
@@ -169,6 +189,7 @@ class PersonLock:
             self.locked_person = best_person
             self.locked_face_box = best_face_box
             self._last_seen_sec = now_sec
+            self._begin_source_assessment(now_sec)   # 새 사용자 — 추적점 출처 관찰 시작
             logger.info("사용자 잠금 — 얼굴 기준 (score 후보 %d프레임 연속)", self._candidate_count)
         return self.locked_person
 
@@ -194,6 +215,7 @@ class PersonLock:
             self.locked_face_box = None
             self._candidate_center = None
             self._candidate_count = 0
+            self._reset_source_lock()   # 다음 사용자는 처음부터 다시 관찰
         return self.locked_person
 
     # ----- 잠긴 사용자의 판정 신호 (gesture_filter 입력) -----
@@ -213,9 +235,12 @@ class PersonLock:
 
         shoulder_width_px = self._shoulder_width_px()
 
-        def swipe_point(tip_indices, wrist_idx, elbow_idx, shoulder_idx):
-            # 같은 쪽 어깨 = 도달 거리 게이트의 기준점 (모델 좌표계 — 좌/우 스왑 전이라
-            # 손목과 어깨의 해부학적 쪽이 일치한다). 어깨가 안 보이면 게이트 생략
+        def collect_candidates(tip_indices, wrist_idx, elbow_idx, shoulder_idx):
+            """이 팔에서 지금 쓸 수 있는 추적점 후보 전부 — {출처: 좌표}.
+
+            같은 쪽 어깨 = 도달 거리 게이트의 기준점 (모델 좌표계 — 좌/우 스왑 전이라
+            손목과 어깨의 해부학적 쪽이 일치한다). 어깨가 안 보이면 게이트 생략.
+            """
             shoulder = self.locked_person.keypoint(shoulder_idx, self._kpt_conf)
 
             def is_within_reach(point, source):
@@ -224,23 +249,106 @@ class PersonLock:
                     return True   # 판단 근거 부족 — 종전 동작 유지 (측면 자세 등)
                 return math.dist(point, shoulder) <= limit * shoulder_width_px
 
+            candidates = {}
             hand_tip = self._hand_tip_point(tip_indices)
             if hand_tip is not None and is_within_reach(hand_tip, "hand"):
-                return ("hand", hand_tip)
+                candidates["hand"] = hand_tip
             wrist = self.locked_person.keypoint(wrist_idx, self._kpt_conf)
             if wrist is not None and is_within_reach(wrist, "wrist"):
-                return ("wrist", wrist)
+                candidates["wrist"] = wrist
             elbow = self.locked_person.keypoint(elbow_idx, self._kpt_conf)
             if elbow is not None and is_within_reach(elbow, "elbow"):
-                return ("elbow", elbow)
-            return None   # 전부 미검출/도달 밖(남의 팔 오귀속) — 이 팔은 없음으로 처리
+                candidates["elbow"] = elbow
+            return candidates
 
-        return user_side_points(
-            swipe_point(LEFT_HAND_TIP_INDICES, KPT_LEFT_WRIST, KPT_LEFT_ELBOW,
-                        KPT_LEFT_SHOULDER),
-            swipe_point(RIGHT_HAND_TIP_INDICES, KPT_RIGHT_WRIST, KPT_RIGHT_ELBOW,
-                        KPT_RIGHT_SHOULDER),
-            self._is_mirror,
+        candidates_by_side = {
+            "left": collect_candidates(LEFT_HAND_TIP_INDICES, KPT_LEFT_WRIST,
+                                       KPT_LEFT_ELBOW, KPT_LEFT_SHOULDER),
+            "right": collect_candidates(RIGHT_HAND_TIP_INDICES, KPT_RIGHT_WRIST,
+                                        KPT_RIGHT_ELBOW, KPT_RIGHT_SHOULDER),
+        }
+        points = self._select_sources(candidates_by_side)
+        return user_side_points(points["left"], points["right"], self._is_mirror)
+
+    # ----- 추적점 출처 고정 (2026-07-20 — 결손 판단 1단계) -----
+
+    def _reset_source_lock(self):
+        self._source_assess_start_sec = None   # None = 관찰 미시작(잠금 전/기능 꺼짐)
+        self._source_assessed = False
+        self._source_counts = {
+            side: {"hand": 0, "wrist": 0, "elbow": 0, "frames": 0}
+            for side in ("left", "right")
+        }
+        self._fixed_source = {"left": None, "right": None}
+        self._source_missing_since = {"left": None, "right": None}
+
+    def _begin_source_assessment(self, now_sec):
+        if self._source_lock_cfg is None:
+            return
+        self._reset_source_lock()
+        self._source_assess_start_sec = now_sec
+
+    def _select_sources(self, candidates_by_side):
+        """팔별 추적점 선택 — 관찰 중엔 동적 폴백, 판정 후엔 고정 출처만."""
+        if self._source_lock_cfg is None or self._source_assess_start_sec is None:
+            # 기능 꺼짐(구 config)·잠금 비활성 경로 — 종전 동적 폴백
+            return {side: _best_candidate(c) for side, c in candidates_by_side.items()}
+        now_sec = self._clock()
+
+        if not self._source_assessed:
+            for side, candidates in candidates_by_side.items():
+                counts = self._source_counts[side]
+                counts["frames"] += 1
+                for source in SOURCE_PRIORITY:
+                    if source in candidates:
+                        counts[source] += 1
+            if now_sec - self._source_assess_start_sec >= self._source_lock_cfg["assess_sec"]:
+                self._finalize_source_assessment()
+            # 관찰 중에도 제스처는 즉시 동작해야 한다 — 동적 폴백 유지
+            return {side: _best_candidate(c) for side, c in candidates_by_side.items()}
+
+        points = {}
+        for side, candidates in candidates_by_side.items():
+            fixed = self._fixed_source[side]
+            if fixed is None:
+                points[side] = None   # 관찰 결과 안정 출처 없음(그 팔 결손/부재)
+                continue
+            if fixed in candidates:
+                self._source_missing_since[side] = None
+                points[side] = (fixed, candidates[fixed])
+                continue
+            # 고정 출처 소실 — 강등 대신 공백(좌표 점프로 궤적 오염 금지,
+            # 짧은 공백은 gesture_filter의 소실 유예가 받친다)
+            if self._source_missing_since[side] is None:
+                self._source_missing_since[side] = now_sec
+            elif (now_sec - self._source_missing_since[side]
+                    >= self._source_lock_cfg["reassess_sec"]):
+                # 상황 변화(거리·가림) — 처음부터 다시 관찰
+                logger.info("추적점 출처 재판정 — %s팔 %s %.1f초 연속 소실",
+                            side, fixed, now_sec - self._source_missing_since[side])
+                self._begin_source_assessment(now_sec)
+                return {s: _best_candidate(c) for s, c in candidates_by_side.items()}
+            points[side] = None
+        return points
+
+    def _finalize_source_assessment(self):
+        """관찰 종료 — 팔별로 가용률이 기준을 넘는 최상위 출처를 고정한다."""
+        min_ratio = self._source_lock_cfg["stable_min_ratio"]
+        for side, counts in self._source_counts.items():
+            frames = max(counts["frames"], 1)
+            fixed = None
+            for source in SOURCE_PRIORITY:
+                if counts[source] / frames >= min_ratio:
+                    fixed = source
+                    break
+            self._fixed_source[side] = fixed
+        self._source_assessed = True
+        # elbow 고정/None = 손·손목이 관찰 내내 없었다 — 결손을 명시적으로 판독한 기록
+        # (모델 좌표 기준 좌/우 — 거울이면 사용자 기준은 반대. UI 통지는 №1·설계 카드)
+        logger.info(
+            "추적점 출처 고정 — model_left=%s model_right=%s (관찰 %d프레임)",
+            self._fixed_source["left"], self._fixed_source["right"],
+            self._source_counts["left"]["frames"],
         )
 
     def _shoulder_width_px(self):

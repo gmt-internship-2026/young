@@ -33,6 +33,10 @@ person_lock:
   follow_radius_ratio: 0.25
   release_sec: 2.0
   sharpness_weight: 0.5
+  source_lock:              # 추적점 출처 고정 — 관찰 1회 판정(결손 판단 1단계, config.yaml 참고)
+    assess_sec: 1.0
+    stable_min_ratio: 0.6
+    reassess_sec: 2.0
   reach_limit_shoulder:     # 도달 거리 게이트 — 옆 사람 팔 오귀속 차단 (config.yaml 주석 참고)
     hand: 2.2
     wrist: 1.8

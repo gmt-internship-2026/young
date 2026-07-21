@@ -167,6 +167,28 @@ class SwipeScenarioTest(unittest.TestCase):
             sim.move_by(0, -AMP_Y, 0.3)              # 위 스냅 = 의도적 select
         self._run(scenario, ["select"])
 
+    def test_11_raise_then_immediate_down_is_go_back(self):
+        # 들어올리기 직후 곧바로 아래 쓸기 — 상승 꼬리 트림이 없으면 꼬리가 창에
+        # 남아 아래 확정이 ~0.5초 지연되거나 묻힌다 (2026-07-20 실증 → RAISE_TRIM)
+        def scenario(sim):
+            sim.position = HANG
+            sim.hold(0.5)
+            sim.move_by(0, REST[1] - HANG[1], 0.35)  # 들어올리기
+            sim.move_by(0, AMP_Y, 0.3)               # 쉼 없이 바로 아래 쓸기
+            sim.hold(1.6)                            # go_back 확정 대기
+        self._run(scenario, ["go_back"])
+
+    def test_12_diagonal_raise_then_left_swipe(self):
+        # 우측으로 호를 그리는 들어올리기 직후 좌 쓸기 — 호의 수평 꼬리가 좌 이동을
+        # 상쇄해 포커스가 의도대로 안 가던 실기 증상 (2026-07-20)
+        def scenario(sim):
+            sim.position = (0.62, HANG[1])
+            sim.hold(0.5)
+            sim.move_by(0.10, REST[1] - HANG[1], 0.35)  # 대각 들어올리기(우로 호)
+            sim.move_by(-AMP_X, 0, 0.3)                 # 즉시 좌 쓸기
+            sim.hold(0.4)
+        self._run(scenario, ["move_left"])
+
     def test_8_no_select_misfire_after_go_back(self):
         # 4dfb4b5 회귀 — go_back 확정 후 팔 복귀(위)가 select로 오발되면 안 된다:
         # 삼킴 미소진 시 창을 확정 시점 기준으로 연장하는 수정의 고정 테스트

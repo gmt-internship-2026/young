@@ -27,6 +27,8 @@ from src.utils.logger import get_logger
 logger = get_logger("postprocess")
 
 OPPOSITE_DIRECTION = {"left": "right", "right": "left", "up": "down", "down": "up"}
+RAISE_TRIM_PROGRESS = 0.5   # 들어올리기 중 위 방향 진행이 이 비율을 넘으면 궤적을 비운다 —
+                            # 상승 꼬리가 창에 남아 직후의 아래/좌/우 쓸기를 상쇄(지연)하는 것 방지
 IMMEDIATE_EVENT_BY_DIRECTION = {                       # 확정 즉시 발화하는 방향
     "left": "move_left", "right": "move_right", "up": "select",
 }
@@ -250,6 +252,14 @@ class GestureFilter:
             direction = self._swipe_tracker.update(
                 point[0], point[1], now_sec, gain, body_scale
             )
+            if (direction is None and self._is_arm_raise(now_sec)
+                    and self._swipe_tracker.progress_y <= -RAISE_TRIM_PROGRESS
+                    and abs(self._swipe_tracker.progress_y) >= abs(self._swipe_tracker.progress_x)):
+                # 들어올리는 중(휴식 존 유예 + 위 방향 우세) — 궤적을 비워 둔다.
+                # 상승 꼬리가 창(0.8초)에 남으면 직후의 아래/좌/우 쓸기 이동량을
+                # 상쇄해 확정이 ~0.5초 지연되거나 짧은 쓸기가 묻힌다 (2026-07-20 실증).
+                # 수평 쓸기(허리 높이 포함)는 위 진행이 없어 영향받지 않는다
+                self._swipe_tracker.reset()
             if direction is not None:
                 event = self._judge_swipe(direction, side, now_sec, point, body_scale)
 

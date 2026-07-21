@@ -19,3 +19,6 @@ bundle_models/
 .vscode/
 !models/weights/YOLOv10n_gestures.onnx
 models/weights/trt_cache/
+
+# INT8 양자화 모델 — 기기별 생성물 (scripts/quantize_models.py)
+models/quantized/

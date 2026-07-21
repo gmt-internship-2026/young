@@ -162,6 +162,37 @@ class ResolveLoopIntervalTest(unittest.TestCase):
         self.assertAlmostEqual(resolve_loop_interval_sec(model, False), 1.0 / 30)
 
 
+class QuantizedSwapTest(unittest.TestCase):
+    """INT8 세션 교체(2026-07-22) — 파일 없음/모델 경로 없음일 때의 안전 동작."""
+
+    def test_missing_int8_file_keeps_fp32_session(self):
+        from src.inference.pose_estimator import _swap_session_to_quantized
+
+        sentinel = object()
+        tool = types.SimpleNamespace(onnx_model="/없는경로/model.onnx", session=sentinel)
+        _swap_session_to_quantized(tool, "/없는경로/quantized", "테스트")
+        self.assertIs(tool.session, sentinel)          # fp32 세션 그대로 (경고만)
+
+    def test_quantized_config_with_modelless_tools_is_safe(self):
+        # onnx_model 속성이 없는 도구(테스트 대역 등) — 교체 시도 없이 통과
+        fake_rtmlib = types.ModuleType("rtmlib")
+        fake_rtmlib.Body = _FakeSolution
+        fake_rtmlib.Wholebody = _FakeSolution
+        saved = sys.modules.get("rtmlib")
+        sys.modules["rtmlib"] = fake_rtmlib
+        try:
+            from src.inference.pose_estimator import PoseEstimator
+
+            config = _make_config(det_interval_frames=10)
+            config["model"]["quantized"] = True
+            PoseEstimator(config)                      # 예외 없이 생성되면 통과
+        finally:
+            if saved is None:
+                sys.modules.pop("rtmlib", None)
+            else:
+                sys.modules["rtmlib"] = saved
+
+
 class ViewerCountTest(unittest.TestCase):
     """CAM 시청자 계수 — 0명이면 오버레이 렌더링 생략 (2026-07-20 최적화)."""
 

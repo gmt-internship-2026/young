@@ -101,6 +101,11 @@ class PersonLock:
         self._release_sec = lock_cfg["release_sec"]
         self._sharpness_weight = lock_cfg["sharpness_weight"]
         self._is_mirror = config["camera"]["mirror"]
+        # 해부학적 도달 거리 게이트(2026-07-20 — 오귀속 차단): 톱다운 포즈는 몸 박스에
+        # 걸친 **옆 사람의 팔**을 잠긴 사용자의 손목으로 출력할 수 있다(실기 관찰).
+        # 사람 팔은 자기 어깨에서 팔 길이 이상 떨어질 수 없으므로, 추적점이 같은 쪽
+        # 어깨로부터 어깨너비 N배 안일 때만 인정한다. 키 없으면 게이트 없음(구 config)
+        self._reach_limit_shoulder = lock_cfg.get("reach_limit_shoulder") or {}
 
         self._frame_width_px = frame_width_px
         self._frame_height_px = frame_height_px
@@ -206,23 +211,46 @@ class PersonLock:
         if self.locked_person is None:
             return {"left": None, "right": None}
 
-        def swipe_point(tip_indices, wrist_idx, elbow_idx):
+        shoulder_width_px = self._shoulder_width_px()
+
+        def swipe_point(tip_indices, wrist_idx, elbow_idx, shoulder_idx):
+            # 같은 쪽 어깨 = 도달 거리 게이트의 기준점 (모델 좌표계 — 좌/우 스왑 전이라
+            # 손목과 어깨의 해부학적 쪽이 일치한다). 어깨가 안 보이면 게이트 생략
+            shoulder = self.locked_person.keypoint(shoulder_idx, self._kpt_conf)
+
+            def is_within_reach(point, source):
+                limit = self._reach_limit_shoulder.get(source)
+                if shoulder is None or shoulder_width_px is None or limit is None:
+                    return True   # 판단 근거 부족 — 종전 동작 유지 (측면 자세 등)
+                return math.dist(point, shoulder) <= limit * shoulder_width_px
+
             hand_tip = self._hand_tip_point(tip_indices)
-            if hand_tip is not None:
+            if hand_tip is not None and is_within_reach(hand_tip, "hand"):
                 return ("hand", hand_tip)
             wrist = self.locked_person.keypoint(wrist_idx, self._kpt_conf)
-            if wrist is not None:
+            if wrist is not None and is_within_reach(wrist, "wrist"):
                 return ("wrist", wrist)
             elbow = self.locked_person.keypoint(elbow_idx, self._kpt_conf)
-            if elbow is not None:
+            if elbow is not None and is_within_reach(elbow, "elbow"):
                 return ("elbow", elbow)
-            return None
+            return None   # 전부 미검출/도달 밖(남의 팔 오귀속) — 이 팔은 없음으로 처리
 
         return user_side_points(
-            swipe_point(LEFT_HAND_TIP_INDICES, KPT_LEFT_WRIST, KPT_LEFT_ELBOW),
-            swipe_point(RIGHT_HAND_TIP_INDICES, KPT_RIGHT_WRIST, KPT_RIGHT_ELBOW),
+            swipe_point(LEFT_HAND_TIP_INDICES, KPT_LEFT_WRIST, KPT_LEFT_ELBOW,
+                        KPT_LEFT_SHOULDER),
+            swipe_point(RIGHT_HAND_TIP_INDICES, KPT_RIGHT_WRIST, KPT_RIGHT_ELBOW,
+                        KPT_RIGHT_SHOULDER),
             self._is_mirror,
         )
+
+    def _shoulder_width_px(self):
+        """잠긴 사용자의 어깨너비(px) — 도달 거리 게이트의 자. 측정 불가면 None."""
+        left = self.locked_person.keypoint(KPT_LEFT_SHOULDER, self._kpt_conf)
+        right = self.locked_person.keypoint(KPT_RIGHT_SHOULDER, self._kpt_conf)
+        if left is None or right is None:
+            return None
+        width_px = math.dist(left, right)
+        return width_px if width_px >= MIN_SHOULDER_WIDTH_PX else None
 
     def _hand_tip_point(self, tip_indices):
         """신뢰도 통과한 손끝들의 평균 좌표 — 미달이면 None (손목 폴백).
@@ -252,12 +280,6 @@ class PersonLock:
         """
         if self.locked_person is None:
             return None
-        left = self.locked_person.keypoint(KPT_LEFT_SHOULDER, self._kpt_conf)
-        right = self.locked_person.keypoint(KPT_RIGHT_SHOULDER, self._kpt_conf)
-        if left is None or right is None:
-            return None
-        shoulder_width_px = math.dist(left, right)
-        if shoulder_width_px < MIN_SHOULDER_WIDTH_PX:
-            return None   # 측면 자세·검출 불량 — 정규화 자로 못 쓴다
-        return shoulder_width_px / self._frame_width_px
+        shoulder_width_px = self._shoulder_width_px()   # 미측정(측면 자세 등)이면 None
+        return None if shoulder_width_px is None else shoulder_width_px / self._frame_width_px
 

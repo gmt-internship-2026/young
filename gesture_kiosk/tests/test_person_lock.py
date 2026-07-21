@@ -224,6 +224,55 @@ class FingertipTest(unittest.TestCase):
         self.assertEqual(source, "hand")
 
 
+class ReachGateTest(unittest.TestCase):
+    """해부학적 도달 거리 게이트(2026-07-20) — 몸 박스에 걸친 옆 사람 팔 오귀속 차단.
+
+    어깨너비 200px 기준 한도: 손끝 440px / 손목 360px / 팔꿈치 240px.
+    """
+
+    def _locked(self, **person_kwargs):
+        config = make_config(mirror=False)   # 모델 좌표 그대로 검증 (스왑 무관)
+        config["person_lock"]["reach_limit_shoulder"] = {
+            "hand": 2.2, "wrist": 1.8, "elbow": 1.2,
+        }
+        lock, clock = make_lock(config)
+        person = FakePerson(640, 360, **person_kwargs)
+        lock_person(lock, clock, person)
+        return lock
+
+    def test_neighbor_arm_beyond_reach_is_rejected(self):
+        # 자기 팔 안 보임 + 남의 팔이 손목으로 출력(어깨에서 ~475px > 360) → 없음 처리
+        lock = self._locked(left_shoulder=(540, 480), right_shoulder=(740, 480),
+                            left_wrist=(100, 300))
+        self.assertIsNone(lock.user_swipe_points()["left"])
+
+    def test_own_arm_within_reach_passes(self):
+        # 자기 손목(어깨에서 89px)은 그대로 통과 — 정상 제스처 무영향
+        lock = self._locked(left_shoulder=(540, 480), right_shoulder=(740, 480),
+                            left_wrist=(500, 400))
+        self.assertEqual(lock.user_swipe_points()["left"], ("wrist", (500.0, 400.0)))
+
+    def test_far_fingertips_fall_back_to_own_wrist(self):
+        # 남의 손끝(도달 밖) + 자기 손목(도달 안) — 손끝 기각 후 손목으로 폴백
+        tips = [(60, 300), (70, 300), (80, 300), (90, 300), (100, 300)]
+        lock = self._locked(left_shoulder=(540, 480), right_shoulder=(740, 480),
+                            left_wrist=(500, 400), left_hand_tips=tips)
+        self.assertEqual(lock.user_swipe_points()["left"], ("wrist", (500.0, 400.0)))
+
+    def test_gate_skipped_without_shoulders(self):
+        # 어깨 미검출(측면 자세) — 게이트 생략, 종전 동작 유지 (인식을 죽이지 않는다)
+        lock = self._locked(left_wrist=(100, 300))
+        self.assertEqual(lock.user_swipe_points()["left"], ("wrist", (100.0, 300.0)))
+
+    def test_missing_config_key_disables_gate(self):
+        # 구 config(키 없음) — 게이트 없음 (브랜치 이식 안전)
+        lock, clock = make_lock(make_config(mirror=False))
+        person = FakePerson(640, 360, left_shoulder=(540, 480), right_shoulder=(740, 480),
+                            left_wrist=(100, 300))
+        lock_person(lock, clock, person)
+        self.assertEqual(lock.user_swipe_points()["left"], ("wrist", (100.0, 300.0)))
+
+
 class UserShoulderWidthRatioTest(unittest.TestCase):
     """어깨너비/프레임폭 — 쓸기 임계의 몸 크기 정규화 자 (2026-07-16)."""
 

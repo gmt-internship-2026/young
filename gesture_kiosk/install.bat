@@ -40,7 +40,7 @@ python -m pip install --upgrade pip >nul
 REM ---- 3) 패키지 설치 (오프라인 wheelhouse 우선) --------------
 if exist wheelhouse goto :install_offline
 
-echo [INFO] 온라인 설치 — 고정 버전 일괄 설치 (torch는 EasyOCR용 CPU 빌드 포함)
+echo [INFO] 온라인 설치 — 고정 버전 일괄 설치
 pip install -r requirements.txt || goto :pip_fail
 goto :prepare_models
 

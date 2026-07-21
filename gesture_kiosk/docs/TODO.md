@@ -110,9 +110,9 @@
 ## 🟡 윈도우 실기기 검증 (설치 PC 확보 시 — 맥 개발기에서 불가한 항목)
 
 - [ ] install.bat / run.bat / make_offline_bundle.bat 실기 동작 확인 (작성만 됨 — 미검증)
-- [ ] torch(EasyOCR용) 2.11.0 CPU + onnxruntime 1.23.2 설치 확인 (smoke_test)
+- [ ] onnxruntime 1.23.2 설치 확인 (smoke_test — EasyOCR 제거로 torch 불필요)
 - [ ] CPU 추론 benchmark — 30 FPS 충족 확인 (미달 시 input_size_px 480, 그래도 미달이면 GPU판 검토)
-- [ ] 오토포커스 카메라로 person_lock 튜닝 (sharpness_weight·wrist_match_ratio)
+- [ ] 오토포커스 카메라로 person_lock 튜닝 (sharpness_weight·reach_limit_shoulder)
 - [ ] 한국어 TTS 보이스(Heami 등) 설치 확인 + 안내 문구 낭독 품질
 - [ ] 두 사람 동시 프레임 진입 시 잠금 유지 확인 (다른 사람 손 차단)
 

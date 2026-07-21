@@ -84,7 +84,7 @@ gesture_kiosk/
 | `run.bat` / `python scripts/run_demo.py` | 파이프라인 + 예시 UI (시연용) |
 | `run.bat --headless` | 파이프라인만 — 이벤트는 `event_output` 설정대로 전송 |
 | `python scripts/benchmark.py` | 추론 단독 FPS 측정 (기획서 6.1 — KPI 30 FPS) |
-| `python -m unittest discover tests -v` | 판정·잠금·OCR 파싱·단위 테스트 (43건) |
+| `python -m unittest discover tests -v` | 판정·잠금·쓸기 시나리오 단위 테스트 (104건) |
 
 ## 회사 프로그램(UI) 연동 계약
 
@@ -96,10 +96,10 @@ gesture_kiosk/
 
 ## 개인정보·라이선스 주의
 
-- **주민등록번호 처리 법적 근거(개인정보보호법 제24조의2) — 회사 확인 필수** (docs/TODO.md №11).
-  엔진은 프레임·인식값을 저장하지 않고 로그는 마스킹한다 (설치가이드.md F절)
+- **개인정보**: 2026-07-16 OCR 제거로 엔진은 개인정보를 다루지 않는다 — 입력은 포즈
+  좌표뿐, 카메라 프레임 미저장 (구 №11 쟁점 소멸)
 - **라이선스 (2026-07-15 2차 기준)**: 스택 전체가 상업 사용 가능 + 코드 공개(카피레프트) 의무 없음 —
-  rtmlib/RTMPose(Apache-2.0) · ONNX Runtime(MIT) · EasyOCR(Apache-2.0) ·
+  rtmlib/RTMPose(Apache-2.0) · ONNX Runtime(MIT) ·
   pyttsx3(MPL-2.0 — 무수정 사용이라 공개 의무 없음). 추론 모델이 포즈 하나뿐이라
   검토 대상 자체가 최소화됐다 (MediaPipe·자체 학습 CNN도 2차에서 제거).
   Apache/MIT의 라이선스 문서 동봉(배포물 내 고지)은 통상 절차 — 제품 화면 표시 의무는 없다.

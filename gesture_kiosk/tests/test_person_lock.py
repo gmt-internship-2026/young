@@ -350,6 +350,24 @@ class SourceLockTest(unittest.TestCase):
         self.assertEqual(outputs[0][0], "hand")
         self.assertEqual(outputs[1], ("wrist", (505.0, 400.0)))
 
+    def test_arm_appearing_after_lock_works_immediately(self):
+        # v2 정정(2026-07-21 실기 "처음에 팔이 바로 안 잡히네"): 잠금 때 팔을 안 들고
+        # 있어도 None으로 오고정되지 않는다 — 나중에 들면 첫 프레임부터 즉시 인식
+        lock, clock = self._make_lock()
+        lock_person(lock, clock, self._person(wrist=False))       # 팔 전무 상태로 잠금
+        self._run(lock, clock, [self._person(wrist=False)] * 35)  # 관찰 창 내내 팔 없음
+        outputs = self._run(lock, clock, [self._person(wrist=True)] * 2)
+        self.assertEqual(outputs[0], ("wrist", (505.0, 400.0)))   # 든 즉시 인식 (v1은 None)
+
+    def test_elbow_fix_upgrades_when_wrist_persists(self):
+        # v2: 팔꿈치로 오고정돼도 상위 출처(손목)가 지속되면 승급 재판정 — 비결손
+        # 사용자가 팔을 제대로 들면 자동 교정된다 (elbow_gain 오발의 근본 차단)
+        lock, clock = self._make_lock()
+        lock_person(lock, clock, self._person(wrist=False, elbow=True))
+        self._run(lock, clock, [self._person(wrist=False, elbow=True)] * 35)  # elbow 고정
+        outputs = self._run(lock, clock, [self._person(wrist=True, elbow=True)] * 60)
+        self.assertEqual(outputs[-1], ("wrist", (505.0, 400.0)))  # 승급 후 손목 고정
+
 
 class UserShoulderWidthRatioTest(unittest.TestCase):
     """어깨너비/프레임폭 — 쓸기 임계의 몸 크기 정규화 자 (2026-07-16)."""

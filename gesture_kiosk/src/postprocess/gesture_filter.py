@@ -155,6 +155,12 @@ class GestureFilter:
         self._raise_guard_below_shoulder = swipe.get("raise_guard_below_shoulder")
         self._raise_guard_grace_sec = swipe.get("raise_guard_grace_sec", 0.6)
         self._shoulder_line_y = None       # 어깨선 높이(등방 단위) — person_lock 공급
+        # 근거리 보강(2026-07-21): 어깨선 기준 휴식 존이 화면 아래로 나가는 근거리에선
+        # **화면 하단 띠**(바닥에서 어깨너비 0.3배)를 휴식 존으로 인정 — 내린 팔의
+        # 손목·팔꿈치가 화면 하단에 걸쳐 보이는 경우를 잡는다. y는 폭 정규화라
+        # 화면 바닥 = height/width (720p = 0.5625)
+        camera = config.get("camera") or {}
+        self._frame_bottom_y = camera.get("height_px", 720) / camera.get("width_px", 1280)
         self._last_rest_zone_sec = None    # 추적점이 휴식 존에 마지막으로 있던 시각
         self._raise_ignored_count = 0      # 계기판 — 들어올리기로 무시된 위 쓸기 수
 
@@ -346,10 +352,19 @@ class GestureFilter:
         return None
 
     def _stamp_rest_zone(self, point, now_sec, body_scale):
-        """추적점이 휴식 존(어깨선 아래 N배)에 있으면 시각을 기록 — 들어올리기 판별 근거."""
-        if self._raise_guard_below_shoulder is None or self._shoulder_line_y is None:
+        """추적점이 휴식 존에 있으면 시각을 기록 — 들어올리기 판별 근거.
+
+        휴식 존 = 어깨선 아래 N배 **또는** 화면 하단 띠(근거리에선 어깨 기준 존이
+        화면 밖이라 하단 띠가 대신한다 — 2026-07-21 보강).
+        """
+        if self._raise_guard_below_shoulder is None:
             return
-        zone_top_y = self._shoulder_line_y + self._raise_guard_below_shoulder * body_scale
+        bottom_strip_top_y = self._frame_bottom_y - 0.3 * body_scale
+        zone_top_y = (
+            min(self._shoulder_line_y + self._raise_guard_below_shoulder * body_scale,
+                bottom_strip_top_y)
+            if self._shoulder_line_y is not None else bottom_strip_top_y
+        )
         if point[1] > zone_top_y:
             self._last_rest_zone_sec = now_sec
 

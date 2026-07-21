@@ -52,6 +52,8 @@ gestures:
     return_suppress_sec: 1.6    # 반대 방향 1회 삼킴 창 — config.yaml 주석 참고
     return_origin_shoulder: 0.6     # 복귀 위치 조건 — config.yaml 주석 참고
     double_return_min_shoulder: 0.15    # 2연속 전 복귀 확인 — config.yaml 주석 참고
+    raise_guard_below_shoulder: 1.2   # 팔 들어올리기 게이트 — config.yaml 주석 참고 (07-20)
+    raise_guard_grace_sec: 0.6
     point_filter:             # 추적점 One Euro 필터 (2026-07-20) — config.yaml 주석 참고
       enabled: true
       min_cutoff_hz: 1.5

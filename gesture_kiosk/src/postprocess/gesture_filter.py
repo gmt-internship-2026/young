@@ -144,6 +144,18 @@ class GestureFilter:
             if point_filter.get("enabled") else None
         )
 
+        # 팔 들어올리기(예비 동작) 게이트(2026-07-20 실기): 아래 쓸기를 하려면 먼저
+        # 팔을 올려야 하는데 그 동작이 기하학적으로 위 쓸기와 같아 select로 오발됐다.
+        # 추적점이 **휴식 존**(어깨선 아래 어깨너비 raise_guard_below_shoulder배)에
+        # 최근(raise_guard_grace_sec 안) 있었다면 위 방향을 select로 치지 않는다 —
+        # 의도적 select는 팔을 가슴께 들고 하므로 휴식 존 이력이 없다.
+        # 키 미설정이면 게이트 없음(구 config 하위 호환)
+        self._raise_guard_below_shoulder = swipe.get("raise_guard_below_shoulder")
+        self._raise_guard_grace_sec = swipe.get("raise_guard_grace_sec", 0.6)
+        self._shoulder_line_y = None       # 어깨선 높이(등방 단위) — person_lock 공급
+        self._last_rest_zone_sec = None    # 추적점이 휴식 존에 마지막으로 있던 시각
+        self._raise_ignored_count = 0      # 계기판 — 들어올리기로 무시된 위 쓸기 수
+
         # 수직 쓸기 1회/2연속 분기 — 1회째는 보류했다가 판정 창이 지나면 단발로 확정
         self._double_within_sec = swipe["double_within_sec"]
         self._pending_direction = None   # "up"/"down" — 보류 중인 수직 쓸기
@@ -169,7 +181,8 @@ class GestureFilter:
         self._last_event_ts_sec = None
         self.debug = {}   # 실기 튜닝 계기판 — /data·화면 오버레이로 노출 (판정에 미사용)
 
-    def filter_signals(self, swipe_points, shoulder_width_ratio=None):
+    def filter_signals(self, swipe_points, shoulder_width_ratio=None,
+                       shoulder_line_y_ratio=None):
         """포즈 신호 -> gesture_event | None (기획서 4.6 계약).
 
         swipe_points: {"left": (출처, (x_ratio, y_ratio)) | None, ...} — 잠긴 사용자의
@@ -182,13 +195,17 @@ class GestureFilter:
         """
         now_sec = self._clock()
         body_scale = self._update_body_scale(shoulder_width_ratio)
+        if shoulder_line_y_ratio is not None:
+            self._shoulder_line_y = shoulder_line_y_ratio   # 관측 없으면 마지막 값 유지
         side, point_info = self._select_active_arm(swipe_points or {}, body_scale)
 
         if self._is_in_cooldown(now_sec):
             # 쿨다운 중엔 궤적을 쌓지 않는다 — 다만 획이 계속 뻗는 중이면
-            # 삼킴 기준점(직전 획의 끝)은 따라가야 복귀 판정이 정확하다
+            # 삼킴 기준점(직전 획의 끝)은 따라가야 복귀 판정이 정확하고,
+            # 휴식 존 체류(팔 내리기)도 기록해야 이후 들어올리기를 알아본다
             if point_info is not None:
                 self._update_swallow_origin(point_info[1])
+                self._stamp_rest_zone(point_info[1], now_sec, body_scale)
             return None
 
         # 보류 중인 수직 쓸기 — 판정 창이 지나도록 2회째가 없으면 1회 동작으로 확정
@@ -227,6 +244,7 @@ class GestureFilter:
             if self._point_filter is not None:
                 point = self._point_filter.filter(point, now_sec)   # 떨림 저감 (One Euro)
             gain = self._elbow_gain if source == "elbow" else 1.0
+            self._stamp_rest_zone(point, now_sec, body_scale)
             self._update_swallow_origin(point)
             self._watch_pending_return(point, body_scale)
             direction = self._swipe_tracker.update(
@@ -257,6 +275,15 @@ class GestureFilter:
             self._swipe_tracker.reset()
             return None
 
+        if direction == "up" and self._is_arm_raise(now_sec):
+            # 팔 들어올리기(예비 동작) — 휴식 존(팔 처진 위치)에서 방금 올라온 위
+            # 방향은 select가 아니라 다음 동작 준비다 (2026-07-20 실기: 아래 쓸기
+            # 전 들어올리기가 select로 오발). 무시하고 궤적을 비워, 이어지는
+            # 동작(아래 쓸기 등)이 올라간 위치 기준으로 새로 판정되게 한다
+            self._raise_ignored_count += 1
+            self._swipe_tracker.reset()
+            return None
+
         if direction in IMMEDIATE_EVENT_BY_DIRECTION:
             self._clear_pending()
             event = self._confirm(
@@ -282,6 +309,21 @@ class GestureFilter:
         self._set_swallow(direction, now_sec, point)   # 1회째 복귀의 위 오인 방지
         self._swipe_tracker.reset()
         return None
+
+    def _stamp_rest_zone(self, point, now_sec, body_scale):
+        """추적점이 휴식 존(어깨선 아래 N배)에 있으면 시각을 기록 — 들어올리기 판별 근거."""
+        if self._raise_guard_below_shoulder is None or self._shoulder_line_y is None:
+            return
+        zone_top_y = self._shoulder_line_y + self._raise_guard_below_shoulder * body_scale
+        if point[1] > zone_top_y:
+            self._last_rest_zone_sec = now_sec
+
+    def _is_arm_raise(self, now_sec):
+        """위 방향이 '들어올리기'인가 — 휴식 존을 떠난 지 유예 시간 안이면 참."""
+        return (
+            self._last_rest_zone_sec is not None
+            and now_sec - self._last_rest_zone_sec < self._raise_guard_grace_sec
+        )
 
     def _update_swallow_origin(self, point):
         """직전 획이 이벤트 방향으로 계속 뻗으면 끝 좌표(복귀 대조 기준)를 갱신한다."""
@@ -345,6 +387,7 @@ class GestureFilter:
             "swipe_progress_x": round(tracker.progress_x, 2), # ±1.0 도달 시 좌/우 확정
             "swipe_progress_y": round(tracker.progress_y, 2), # ±1.0 도달 시 상/하 판정
             "pending": self._pending_direction,               # 보류 중 수직 쓸기 (1회/2연속 분기 대기)
+            "raise_ignored": self._raise_ignored_count,       # 들어올리기로 무시된 위 쓸기 누계
         }
 
     def _update_body_scale(self, shoulder_width_ratio):

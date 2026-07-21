@@ -24,7 +24,10 @@ CONFIG_PATH = os.path.join(
 
 FPS = 30
 SHOULDER_RATIO = 0.22   # 키오스크 표준 거리(fallback_ratio와 동일) — 임계 환산 자(尺)
-REST = (0.5, 0.6)       # 팔의 기본 위치 (화면 비율 좌표 — x·y 모두 프레임 폭 기준)
+SHOULDER_LINE_Y = 0.48  # 어깨선 높이 — 들어올리기 게이트의 휴식 존 경계 계산에 사용
+                        #   (존 상단 = 0.48 + 1.2×0.22 = 0.744 — REST(0.6)는 존 밖)
+REST = (0.5, 0.6)       # 팔의 기본 위치: 가슴께 든 상태 (x·y 모두 프레임 폭 기준)
+HANG = (0.5, 0.98)      # 팔을 축 내린 위치 — 휴식 존 안 (들어올리기 시나리오용)
 
 # 진폭 (§4.3: 임계의 2배쯤이 현실적) — 임계 x=0.55·0.22≈0.121, y=0.35·0.22≈0.077
 AMP_X = 0.25
@@ -44,7 +47,7 @@ class _Sim:
 
     def _step(self, swipe_points):
         self._now_sec += self._dt_sec
-        event = self._filter.filter_signals(swipe_points, SHOULDER_RATIO)
+        event = self._filter.filter_signals(swipe_points, SHOULDER_RATIO, SHOULDER_LINE_Y)
         if event is not None:
             self.events.append(event.class_name)
 
@@ -141,6 +144,28 @@ class SwipeScenarioTest(unittest.TestCase):
             sim.move_by(0, AMP_Y, 0.3)      # 기본 위치에서 시작한 의도적 아래
             sim.hold(1.4)                   # go_back 확정 대기
         self._run(scenario, ["select", "go_back"])
+
+    def test_9_arm_raise_before_down_is_not_select(self):
+        # 2026-07-20 실기 — 팔을 내리고 있다가 아래 쓸기를 하려면 먼저 들어올려야
+        # 하는데, 그 들어올리기가 select로 오발됐다. 휴식 존 이력 게이트가 막는다
+        def scenario(sim):
+            sim.position = HANG             # 팔 축 처진 상태(휴식 존 안)에서 시작
+            sim.hold(0.5)
+            sim.move_by(0, REST[1] - HANG[1], 0.4)   # 들어올리기(위 방향 0.38 — select 금지)
+            sim.hold(0.3)
+            sim.move_by(0, AMP_Y, 0.3)               # 의도한 아래 쓸기
+            sim.hold(1.4)                            # go_back 확정 대기
+        self._run(scenario, ["go_back"])
+
+    def test_10_select_after_settling_above_rest_zone(self):
+        # 들어올린 뒤 유예(0.6초)를 넘겨 자세가 안정되면 위 스냅은 정상 select
+        def scenario(sim):
+            sim.position = HANG
+            sim.hold(0.5)
+            sim.move_by(0, REST[1] - HANG[1], 0.4)   # 들어올리기 — 무시
+            sim.hold(0.8)                            # 유예(0.6) 경과 — 팔 든 채 안정
+            sim.move_by(0, -AMP_Y, 0.3)              # 위 스냅 = 의도적 select
+        self._run(scenario, ["select"])
 
     def test_8_no_select_misfire_after_go_back(self):
         # 4dfb4b5 회귀 — go_back 확정 후 팔 복귀(위)가 select로 오발되면 안 된다:

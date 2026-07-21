@@ -283,3 +283,18 @@ class PersonLock:
         shoulder_width_px = self._shoulder_width_px()   # 미측정(측면 자세 등)이면 None
         return None if shoulder_width_px is None else shoulder_width_px / self._frame_width_px
 
+    def user_shoulder_line_y_ratio(self):
+        """잠긴 사용자의 어깨선 높이(양어깨 y 평균) / 프레임 폭 — 등방 단위 (2026-07-20).
+
+        위로 쓸기(select)의 시작 존 게이트용: 시작점이 어깨선보다 한참 아래면
+        "팔 들어올리기(예비 동작)"로 보고 select로 치지 않는다 (gesture_filter).
+        y도 프레임 **폭**으로 나눈다 — 쓸기 좌표·어깨너비 자와 단위를 맞추기 위해.
+        """
+        if self.locked_person is None:
+            return None
+        left = self.locked_person.keypoint(KPT_LEFT_SHOULDER, self._kpt_conf)
+        right = self.locked_person.keypoint(KPT_RIGHT_SHOULDER, self._kpt_conf)
+        if left is None or right is None:
+            return None
+        return ((left[1] + right[1]) / 2.0) / self._frame_width_px
+

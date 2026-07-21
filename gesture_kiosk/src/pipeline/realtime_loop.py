@@ -134,7 +134,8 @@ def run_pipeline(config):
                 for side, info in person_lock.user_swipe_points().items()
             }
             gesture_event = gesture_filter.filter_signals(
-                swipe_points_ratio, person_lock.user_shoulder_width_ratio()
+                swipe_points_ratio, person_lock.user_shoulder_width_ratio(),
+                person_lock.user_shoulder_line_y_ratio(),   # 시작 존 게이트(2026-07-20)
             )
             state.debug = gesture_filter.debug
 

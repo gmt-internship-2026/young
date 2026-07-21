@@ -2,7 +2,6 @@
 # 사용: python scripts/run_demo.py --config configs/config_mac.yaml
 # 원본과 다른 점 (docs/MAC_RUN_LOG.md 참고):
 #   demo_ui.port: 5000 → 5001   (맥 AirPlay 수신기(ControlCenter)가 5000 선점)
-#   announce.backend: tts       (pyttsx3가 맥 nsss로 동작 — 미설치면 자동 log 폴백)
 
 camera:
   model: "MacBook Pro 내장 FaceTime HD"  # 사용 카메라 기종 기록(2026-07-16) — config.yaml 주석 참고
@@ -70,17 +69,6 @@ gestures:
       min_ratio: 0.05         # 원거리 완화 2026-07-16 — config.yaml 주석 참고
       max_ratio: 0.32         # 근거리 상한 — config.yaml 주석 참고
       alpha: 0.1
-announce:
-  enabled: true
-  backend: tts            # 맥 nsss — pyttsx3 미설치 시 자동 log 폴백
-  rate_wpm: 200
-  volume: 1.0
-  event_templates:
-    move_left: "왼쪽으로 이동"
-    move_right: "오른쪽으로 이동"
-    select: "선택했습니다"
-    go_back: "이전 화면으로 이동합니다"
-    go_home: "처음 화면으로 돌아갑니다"
 
 classes:
   [move_left, move_right, select, go_back, go_home]

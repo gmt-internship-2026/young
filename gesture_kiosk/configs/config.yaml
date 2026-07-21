@@ -132,19 +132,6 @@ gestures:
       max_ratio: 0.32         # 상한 클램프(2026-07-16) — 카메라 근접 시 요구 이동량이
                               #   화면폭 ~26%를 넘지 않게: 팔이 프레임을 나가기 전에 확정된다
       alpha: 0.1              # EMA 평활 계수 — 프레임 단위 출렁임 흡수
-announce:                   # 토크백(보이스오버) — 현재 위치·기능 음성 안내
-  enabled: true
-  backend: tts              # tts(pyttsx3 — 윈도우 SAPI/맥 nsss) | log(개발용: 로그로만 출력)
-  rate_wpm: 200             # 말하기 속도
-  volume: 1.0
-  event_templates:          # 제스처 이벤트 자동 안내 문구
-    move_left: "왼쪽으로 이동"
-    move_right: "오른쪽으로 이동"
-    select: "선택했습니다"
-    go_back: "이전 화면으로 이동합니다"
-    go_home: "처음 화면으로 돌아갑니다"
-  # UI 화면 안내(현재 포커스 항목 설명)는 UI가 POST /announce {"text": "..."}로 요청한다
-  # (회사 프로그램 연동 계약 — 이벤트는 엔진→UI, 음성 안내 요청은 UI→엔진)
 
 classes:                    # 표준 동작 목록 — UI/이벤트 수신부와의 계약
                             # (07-16 확정: 위 1회=select 즉시 · 아래 1회=go_back·2연속=go_home)

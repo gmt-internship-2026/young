@@ -2,7 +2,7 @@
 
 install.bat 마지막 단계에서 자동 실행된다. 확인 항목:
 1. 파이썬 버전 (배포 기준 3.11.5 — 시험 장비의 다른 버전은 경고만)
-2. 핵심 패키지 임포트 (onnxruntime·rtmlib·cv2·fastapi / 선택: pyttsx3)
+2. 핵심 패키지 임포트 (onnxruntime·rtmlib·cv2·fastapi)
 3. GPU 가속 확인 (onnxruntime CUDA — 맥 시험 장비는 CPU 안내)
 4. 더미 프레임 추론 (포즈 — 유일한 모델: 쓸기·끄덕임·잠금 전부 이걸로 판정)
 
@@ -63,12 +63,6 @@ def main():
     except ImportError:
         pass  # 위 임포트 검사에서 이미 FAIL 처리됨
 
-    if config["announce"]["enabled"] and config["announce"]["backend"] == "tts":
-        try:
-            __import__("pyttsx3")
-            check("pyttsx3 임포트 (음성 안내)", True)
-        except ImportError as error:
-            check("pyttsx3 임포트 (음성 안내)", False, str(error))
 
     # 포즈가 유일한 모델 — 쓸기(손목 궤적)·선택(끄덕임)·잠금이 전부 이걸로 판정 (2026-07-15 2차)
     try:

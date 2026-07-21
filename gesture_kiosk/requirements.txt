@@ -15,4 +15,3 @@ fastapi==0.139.0
 uvicorn==0.51.0
 websockets==16.1.1                 # 웹소켓 이벤트 push(/ws/events) — uvicorn의 ws 프로토콜 구현 (2026-07-21 회사 결정: 웹소켓 전환)
 psutil==7.2.2
-pyttsx3==2.99                      # 음성 안내 TTS — 윈도우 SAPI (announce.backend=tts) — MPL-2.0: 무수정 사용이라 공개 의무 없음

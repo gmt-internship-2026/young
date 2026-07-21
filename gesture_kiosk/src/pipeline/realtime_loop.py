@@ -1,9 +1,9 @@
-"""pipeline 모듈 — 캡처·추론·판정·안내를 연결해 실시간 루프를 구동한다 (기획서 2.2, 3.2).
+"""pipeline 모듈 — 캡처·추론·판정·전송을 연결해 실시간 루프를 구동한다 (기획서 2.2, 3.2).
 
 프레임 흐름 (윈도우 + NVIDIA GPU 기준 — 2026-07-15 2차: 포즈 단일 엔진):
   카메라(스레드) → 거울 반전 → 사람 포즈(RTMPose) → 사용자 잠금(person_lock)
   → 동작 판정(gesture_filter: 손끝·손목 쓸기 궤적 — 토크백식 1회/2연속 분기)
-  → 이벤트 전송 + 음성 안내
+  → 이벤트 전송(웹소켓·UDP)
 
 2026-07-16: 주민등록증 OCR 기능 제거 — 제스처 집중(사용자 결정). 개인정보
 (주민등록번호) 처리 이슈가 함께 소멸했다. 백업: _before_ocr_removal/.
@@ -13,7 +13,6 @@ PipelineState가 예시 UI 서버와 공유되는 유일한 상태 저장소다.
 import threading
 import time
 
-from src.announce.announcer import Announcer
 from src.capture.camera_stream import CameraStream
 from src.utils.env_report import log_environment
 from src.inference.pose_estimator import PoseEstimator
@@ -53,7 +52,6 @@ class PipelineState:
         self.is_running = False
         self.is_user_locked = False
         self.debug = {}                # 판정 계기판(gesture_filter.debug) — 실기 튜닝용
-        self.announcer = None          # demo_server의 POST /announce가 사용한다
         self._viewer_count = 0         # CAM 스트림 시청자 수 — 0이면 오버레이 렌더링 생략
         self._event_listeners = []     # 웹소켓 구독자 [(asyncio 루프, 큐)] — 2026-07-21
 
@@ -120,8 +118,6 @@ def run_pipeline(config):
     person_lock = PersonLock(config, frame_width_px, frame_height_px)
     gesture_filter = GestureFilter(config)
     event_sender = create_event_sender(config)
-    announcer = Announcer(config)
-    state.announcer = announcer
 
     state.is_running = True
 
@@ -167,7 +163,6 @@ def run_pipeline(config):
                 # 델파이 수신부가 같은 파서를 쓴다 (2026-07-21 웹소켓 전환)
                 state.broadcast_event(build_text_payload(gesture_event).decode("ascii"))
                 state.append_event(gesture_event)
-                announcer.on_event(gesture_event)
 
             infer_fps_meter.update()
             state.capture_fps = camera.fps_meter.avg_fps

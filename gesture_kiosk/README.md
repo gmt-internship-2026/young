@@ -50,7 +50,7 @@ run.bat            :: 실행 — 브라우저 http://localhost:5000
 ```
 카메라(스레드) → 거울 반전 → 사람 포즈(rtmlib RTMPose — 유일한 모델)
   → 사용자 잠금(person_lock: 얼굴 선명도×크기) → 손목 좌/우 보정·목 길이 비율
-  → 동작 판정(gesture_filter: 손목 쓸기 궤적 — 1회/2연속 분기) → 이벤트 전송(event_sender) + 음성 안내(announce)
+  → 동작 판정(gesture_filter: 손목 쓸기 궤적 — 1회/2연속 분기) → 이벤트 전송(event_sender — 웹소켓·UDP)
 ```
 
 ## 폴더 구조 (기획서 2.3 + 신규 모듈)
@@ -65,10 +65,9 @@ gesture_kiosk/
 │   ├─ inference/pose_estimator.py   # 사람 포즈 (rtmlib RTMPose) — 유일한 추론 모델
 │   ├─ postprocess/person_lock.py    # 사용자 잠금 + 쓸기 추적점(손목→팔꿈치 폴백)·어깨너비
 │   ├─ postprocess/gesture_filter.py # 동작 판정 — 쓸기 궤적(1회/2연속 분기)
-│   ├─ announce/announcer.py         # 토크백 TTS (pyttsx3 — SAPI/nsss)
 │   ├─ pipeline/realtime_loop.py     # 실시간 루프 조립 (멀티스레딩)
 │   ├─ pipeline/event_sender.py      # ★ 회사 프로그램 연동 접점 (console/udp)
-│   └─ pipeline/demo_server.py       # ★ 예시 UI 서버 + /announce 계약
+│   └─ pipeline/demo_server.py       # ★ 예시 UI 서버 + 웹소켓 /ws/events
 ├─ scripts/                 # run_demo · download_weights · benchmark · smoke_test
 ├─ tests/                   # 단위 테스트 46건 (카메라·모델 없이 실행 가능)
 ├─ demo_ui/index.html       # ★ 예시 민원발급기 화면 (회사 UI 수령 시 교체)
@@ -90,7 +89,6 @@ gesture_kiosk/
 
 1. 이벤트(엔진→UI): `event_output.mode`(console/udp) 또는 `/data` 폴링 —
    JSON `{"class_name": "move_right", "conf": 0.87, "ts_sec": ..., "hand_side": "right"}`
-2. 음성 안내(UI→엔진): `POST /announce {"text": "발급하기 버튼"}` — 포커스 항목을 TTS로
 3. 새 수신 규격 확정 시 `event_sender.py`에 Sender 1개 추가 — 파이프라인 수정 불필요
 5. 연동 완료 후 `demo_server.py`·`demo_ui/`는 제거
 
@@ -100,7 +98,7 @@ gesture_kiosk/
   좌표뿐, 카메라 프레임 미저장 (구 №11 쟁점 소멸)
 - **라이선스 (2026-07-15 2차 기준)**: 스택 전체가 상업 사용 가능 + 코드 공개(카피레프트) 의무 없음 —
   rtmlib/RTMPose(Apache-2.0) · ONNX Runtime(MIT) ·
-  pyttsx3(MPL-2.0 — 무수정 사용이라 공개 의무 없음). 추론 모델이 포즈 하나뿐이라
+  추론 모델이 포즈 하나뿐이라
   검토 대상 자체가 최소화됐다 (MediaPipe·자체 학습 CNN도 2차에서 제거).
   Apache/MIT의 라이선스 문서 동봉(배포물 내 고지)은 통상 절차 — 제품 화면 표시 의무는 없다.
   구 HaGRID YOLOv10 ONNX 엔진(AGPL 리스크)은 코드·가중치 모두 제거 완료 (기획서 9장 №9 해소)

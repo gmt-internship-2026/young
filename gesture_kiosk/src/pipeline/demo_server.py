@@ -6,8 +6,6 @@ TODO(기획서 9장 №7·№8): 회사 프로그램(UI) 파일을 받으면 이
 회사 프로그램 연동 계약(이 서버가 시연하는 것):
 - 이벤트(엔진→UI): /data 폴링 또는 event_output(udp) — move_left/right, select,
   go_back, go_home (config classes 목록)
-- 음성 안내(UI→엔진): POST /announce {"text": "발급하기 버튼"} — 포커스 항목
-  설명처럼 화면 구조를 아는 쪽(UI)이 문구를 만들어 엔진 TTS로 읽힌다
 (2026-07-16: 주민등록증 OCR 기능 제거 — 제스처 집중, /ocr/* 엔드포인트 삭제)
 """
 import asyncio
@@ -16,7 +14,6 @@ import os
 import cv2
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
 
 try:
     import psutil
@@ -25,10 +22,6 @@ except ImportError:  # psutil 미설치 환경(개발 PC)에서도 서버는 떠
 
 DEMO_UI_HTML = "demo_ui/index.html"
 RECENT_EVENT_COUNT = 20
-
-
-class AnnounceBody(BaseModel):
-    text: str
 
 
 def create_app(state, config):
@@ -113,11 +106,6 @@ def create_app(state, config):
         finally:
             state.remove_event_listener(queue)
 
-    @app.post("/announce")
-    async def announce(body: AnnounceBody):
-        """UI가 화면 맥락(포커스 항목 등)을 음성 안내로 요청한다."""
-        state.announcer.announce(body.text)
-        return {"ok": True}
 
 
     return app

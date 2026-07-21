@@ -51,7 +51,7 @@
 </style>
 </head>
 <body>
-<div class="banner">⚠ 예시 UI — 회사 키오스크 프로그램으로 교체 예정 (연동 계약: /data 이벤트 · POST /announce)</div>
+<div class="banner">⚠ 예시 UI — 회사 키오스크 프로그램으로 교체 예정 (연동 계약: 웹소켓 /ws/events · /data 이벤트)</div>
 <header>
   <h1>배리어프리 민원발급기 <small style="color:var(--dim);font-size:12px;">제스처 인식 데모</small></h1>
   <div class="stats">
@@ -104,34 +104,21 @@ function focusLabels() {
   return ["처음으로"];
 }
 
-async function announce(text) {  // 화면 맥락 안내는 UI가 요청한다 (연동 계약 시연)
-  try {
-    await fetch("/announce", { method: "POST", headers: { "Content-Type": "application/json" },
-                               body: JSON.stringify({ text }) });
-  } catch (err) { /* 엔진 재시작 중 실패는 무시 */ }
-}
-
-function setFocus(nextIdx, isAnnounce = true) {
+function setFocus(nextIdx) {
   const labels = focusLabels();
-  focusIdx = (nextIdx + labels.length) % labels.length;  // 끝에서 다음 줄 첫째칸(토크백식 랩)
+  focusIdx = (nextIdx + labels.length) % labels.length;  // 끝에서 다음 줄 첫째칸(랩)
   render();
-  if (isAnnounce) announce(labels[focusIdx]);
 }
 
 function enterScreen(nextScreen) {
   screen = nextScreen;
   focusIdx = 0;
   if (doneTimer !== null) { clearTimeout(doneTimer); doneTimer = null; }  // 화면 이탈 시 예약 해제
-  if (screen === "confirm") {
-    announce(`${chosenCert} 발급 확인. 발급하기 또는 취소를 선택하세요`);
-  } else if (screen === "done") {
-    announce(`${chosenCert} 발급이 완료되었습니다. ${DONE_AUTO_HOME_SEC}초 후 처음 화면으로 돌아갑니다`);
+  if (screen === "done") {
     doneTimer = setTimeout(() => {
       doneTimer = null;
       if (screen === "done") enterScreen("home");   // 제스처로 이미 떠났으면 아무것도 안 한다
     }, DONE_AUTO_HOME_SEC * 1000);
-  } else {
-    announce("증명서 선택 화면. 발급할 증명서를 선택하세요");
   }
   render();
 }
@@ -139,13 +126,10 @@ function enterScreen(nextScreen) {
 function applyEvent(e) {
   // 발급 완료 화면 — 자동 복귀 대기 중 아무 제스처나 오면 즉시 처음으로 (단축)
   if (screen === "done") { enterScreen("home"); return; }
-  // 처음 화면에서 go_back/go_home은 갈 곳이 없다 — 화면 전환·포커스 리셋 없이
-  // 무시하되, 토크백 사용자가 "왜 아무 일도 없지" 하지 않도록 현재 위치만 안내한다
-  // (№7 참조 동작 — 무효 이벤트 처리는 화면 상태를 아는 UI 책임.
-  //  한계: 엔진 자동 안내("이전 화면으로 이동합니다")가 먼저 나가는 불일치는
-  //  이벤트 안내 주체를 UI로 옮길지와 함께 №7 회사 협의 안건)
+  // 처음 화면에서 go_back/go_home은 갈 곳이 없다 — 화면 전환·포커스 리셋 없이 무시
+  // (№7 참조 동작 — 무효 이벤트 처리는 화면 상태를 아는 UI 책임)
   if (e.class_name === "go_home" || e.class_name === "go_back") {
-    if (screen === "home") { announce("이미 처음 화면입니다"); return; }
+    if (screen === "home") return;   // 무효 이벤트 — 화면·포커스 유지
     enterScreen("home");
     return;
   }

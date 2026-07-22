@@ -84,9 +84,34 @@ def _ensure_opset13(onnx_path):
         return onnx_path, False
 
 
-def quantize(onnx_path, samples, output_path, label):
+def _tail_node_names(onnx_path, depth):
+    """그래프 출력에 가까운 마지막 노드들의 이름 — 양자화 제외 대상 (2026-07-22 v2).
+
+    키포인트 모델(SimCC)은 출력층 정밀도에 민감하다 — 마지막 층을 fp32로 남기면
+    속도 손해는 미미한데 좌표 잡음이 크게 준다 (실기: 파이에서 관절 흔들림).
+    """
+    import onnx
+
+    graph = onnx.load(onnx_path).graph
+    producers = {}
+    for node in graph.node:
+        for out in node.output:
+            producers[out] = node
+    tail, frontier = set(), {o.name for o in graph.output}
+    for _ in range(depth):
+        next_frontier = set()
+        for tensor in frontier:
+            node = producers.get(tensor)
+            if node is not None and node.name:
+                tail.add(node.name)
+                next_frontier.update(node.input)
+        frontier = next_frontier
+    return sorted(tail)
+
+
+def quantize(onnx_path, samples, output_path, label, exclude_tail_depth=0):
     from onnxruntime.quantization import (
-        CalibrationDataReader, QuantFormat, QuantType, quantize_static,
+        CalibrationDataReader, CalibrationMethod, QuantFormat, QuantType, quantize_static,
     )
 
     class _Reader(CalibrationDataReader):
@@ -98,10 +123,18 @@ def quantize(onnx_path, samples, output_path, label):
             return None if sample is None else {"input": sample}
 
     source_path, per_channel = _ensure_opset13(onnx_path)
+    exclude = _tail_node_names(source_path, exclude_tail_depth) if exclude_tail_depth else []
+    if exclude:
+        print(f"  (출력층 fp32 유지: {len(exclude)}개 노드 제외)")
     quantize_static(
         source_path, output_path, _Reader(),
         quant_format=QuantFormat.QDQ, per_channel=per_channel,
         activation_type=QuantType.QUInt8, weight_type=QuantType.QInt8,
+        nodes_to_exclude=exclude,
+        # 백분위 보정(v2): MinMax는 이상치 하나가 눈금 전체를 넓혀 반올림 잡음을 키운다
+        # — 실기(파이) 관절 흔들림의 주범. 상위 0.1% 이상치를 잘라내고 눈금을 잡는다
+        calibrate_method=CalibrationMethod.Percentile,
+        extra_options={"CalibPercentile": 99.9},
     )
     if source_path != onnx_path and os.path.exists(source_path):
         os.remove(source_path)   # 임시 변환본 정리
@@ -148,7 +181,8 @@ def main():
     det_out = os.path.join(OUTPUT_DIR, os.path.basename(det.onnx_model).replace(".onnx", ".int8.onnx"))
     pose_out = os.path.join(OUTPUT_DIR, os.path.basename(pose.onnx_model).replace(".onnx", ".int8.onnx"))
     quantize(det.onnx_model, det_samples, det_out, "검출(YOLOX)")
-    quantize(pose.onnx_model, pose_samples, pose_out, "포즈(RTMPose)")
+    # 포즈는 출력층(SimCC 좌표 헤드) 2단계를 fp32로 남긴다 — 관절 좌표 잡음 억제 (v2)
+    quantize(pose.onnx_model, pose_samples, pose_out, "포즈(RTMPose)", exclude_tail_depth=2)
 
     # ── 자가 검증: fp32 vs int8 키포인트 오차 + 속도 ──
     import onnxruntime as ort

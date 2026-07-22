@@ -144,11 +144,18 @@ class PoseEstimator:
         self._cached_bboxes = []      # 신뢰도 통과 사람 박스 — 검출 건너뛰는 프레임의 포즈 입력
         self._frames_since_det = 0
         self._pose = solution(mode=model["pose_mode"], backend="onnxruntime", device=device)
-        if model.get("quantized"):
+        quantized = model.get("quantized")
+        if quantized:
             # INT8 양자화(2026-07-22) — 저사양 CPU(파이 5 등) 가속. 미니 트래커가
-            # 호출하는 det_model/pose_model의 세션을 int8 모델로 교체한다
+            # 호출하는 det_model/pose_model의 세션을 int8 모델로 교체한다.
+            # 값: true(둘 다) | "det"(검출만 — 포즈 잡음 없이 부분 가속) | "pose"(포즈만)
             quantized_dir = os.path.join(config.get("root_dir", "."), "models", "quantized")
-            for name, label in (("det_model", "사람검출(YOLOX)"), ("pose_model", "포즈(RTMPose)")):
+            targets = {"det_model": "사람검출(YOLOX)", "pose_model": "포즈(RTMPose)"}
+            if quantized == "det":
+                targets.pop("pose_model")
+            elif quantized == "pose":
+                targets.pop("det_model")
+            for name, label in targets.items():
                 tool = getattr(self._pose, name, None)
                 if tool is not None and getattr(tool, "onnx_model", None):
                     _swap_session_to_quantized(tool, quantized_dir, label)

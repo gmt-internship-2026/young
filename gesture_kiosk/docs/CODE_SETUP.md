@@ -49,12 +49,12 @@ source venv/bin/activate        # 맥·리눅스 공통 / 윈도우: venv\Script
 pip install -r requirements.txt
 ```
 
-- rtmlib(포즈 — 유일한 모델)·onnxruntime(실행기)·opencv(카메라)·fastapi(서버) 등이
-  한 번에 설치된다 — 라이선스 검토 완료 스택 (docs/TODO.md №9). 2026-07-16 OCR 제거로 가벼워짐
+- rtmlib(포즈 — 유일한 모델)·onnxruntime(실행기)·opencv(카메라) 등이 한 번에
+  설치된다 — 라이선스 검토 완료 스택 (docs/TODO.md №9). 2026-07-23 서버류 의존성 제거로 더 가벼워짐
 - 윈도우 + NVIDIA GPU는 onnxruntime-gpu의 CUDA DLL 등록용 torch를 별도 설치
   (배포 기준 cu128 — feat/think_win_gpu의 install.bat이 자동 처리)
-- 리눅스 x86 PC는 기본 pip torch에 CUDA가 이미 포함 — NVIDIA 드라이버만 있으면 끝
-  (`nvidia-smi`가 정상 출력되는지, `python3 -c "import torch; print(torch.cuda.is_available())"`가 True인지 확인)
+- 리눅스 x86 PC는 requirements의 onnxruntime-gpu 겸용 빌드가 CUDA 있으면 자동 가속
+  (`nvidia-smi`가 정상 출력되는지 확인 — 없으면 CPU 폴백으로 동일 동작)
 
 ## 6. 동작 확인 (순서대로)
 
@@ -81,8 +81,7 @@ python scripts/run_demo.py
 | `ModuleNotFoundError: yaml` 등 | 가상환경 미활성 — 터미널에 `(venv)` 있는지 확인 후 `source venv/bin/activate` |
 | VS Code가 임포트에 빨간 줄 | 인터프리터가 venv가 아님 — 4단계의 Select Interpreter 다시 |
 | 카메라가 안 열림 | 맥: 시스템 설정 → 개인정보 보호 → 카메라에서 터미널/VS Code 허용. 리눅스: `sudo usermod -aG video $USER` 후 재로그인. 외장 캠이면 `config.yaml`의 `camera.device_id`를 1, 2로 변경 |
-| 맥에서 MPS 관련 연산 오류 | 터미널에서 `export PYTORCH_ENABLE_MPS_FALLBACK=1` 후 재실행 (미지원 연산만 CPU로 우회) |
-| 추론이 너무 느림 | `python3 -c "import torch; print(torch.backends.mps.is_available())"` 가 True인지 확인 |
+| 추론이 너무 느림 | `pose_mode: lightweight`·`input_size_px: 480` 확인 — CPU 기기는 INT8 양자화(quantize_models.py) 검토 |
 
 ## 개발 시 지켜야 할 것 (기획서 4장)
 

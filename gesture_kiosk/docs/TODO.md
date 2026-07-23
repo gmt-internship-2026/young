@@ -6,6 +6,69 @@
 2026-07-10(타깃)·2026-07-15(동작 체계)·2026-07-16(선택 재확정·OCR 제거·TTS 보강) 변경을
 반영해 개정 필요.**
 
+## ✅ 완료 (2026-07-23 2차 — 델파이7 실연동: 네임드 파이프 프로토콜)
+
+- [x] **전송 방식 팀 확정 — 네임드 파이프.** 델파이7이 파이프 **서버**로 열고, 이 엔진이
+      **클라이언트**로 접속(WebSocket 검토안과 같은 방향 — Delphi가 서버, 엔진이 클라이언트,
+      GMtech_project 참고). JSON 페이로드가 아니라 **평문 명령어 7개 고정**을 개행 구분
+      한 줄로 전송한다: `up`/`down`/`left`/`right`/`home`/`back`/`ok` — 델파이 쪽은 파이프에
+      들어온 문자열을 그대로 인식해 실행(팀장 확인, 별도 파싱 코드 불필요)
+- [x] `src/pipeline/event_sender.py`에 `PipeEventSender` 추가 — `PIPE_COMMAND_BY_CLASS_NAME`
+      (우리 7개 제스처 클래스 = 프로토콜 7개 토큰과 1:1 대응). 파이썬 표준 `open()`으로
+      윈도우 네임드 파이프 경로(`\\.\pipe\이름`)를 여는 방식이라 pywin32 등 추가 의존성
+      없음. 연결 끊김 시 `reconnect_backoff_sec` 간격으로만 재접속 시도 —
+      `WebSocketEventSender`(GMtech_project)와 같은 패턴을 그대로 이식
+- [x] `configs/config.yaml`/`config_mac.yaml`에 `event_output.pipe`(name·
+      reconnect_backoff_sec) 신설. `event_output.mode`는 여전히 `console` 기본값 —
+      `pipe.name`이 placeholder(`\\.\pipe\GestureKiosk`)라 실제 이름 확정 전까지는
+      전환하지 않는다(WebSocket 때와 같은 원칙)
+- [x] `tests/test_event_sender.py` 신규(이 저장소에 원래 없던 파일 — GMtech_project
+      패턴 이식) — open_fn·clock 주입으로 연결/재접속 backoff/전송 실패 경로 검증,
+      7개 클래스 전부가 서로 다른 토큰에 매핑되는지 확인. 전체 79건 통과
+- [ ] **★TODO(팀 확인 필요)** — `PipeEventSender`가 파이프를 `"r+b"`(duplex 가정)로
+      여는데, 델파이 쪽 `CreateNamedPipe`가 인바운드 전용(`PIPE_ACCESS_INBOUND`)이면
+      `"wb"`로 바꿔야 열린다. 델파이7 개발자에게 파이프 접근 모드 확인 필요
+- [ ] **실기 확인 필요** — 실제 델파이7 파이프 서버 기동 후 연결·명령어 수신·재접속
+      시나리오(델파이 재시작 등) 검증. 파이프 이름 확정되는 대로 `mode: pipe`로 전환
+
+## ✅ 완료 (2026-07-23 — 동작 체계 전면 개편: 손 모양+이동 통합)
+
+- [x] **동작 스펙 변경(사용자 확정, 회사 정식 확인은 아직 — №1과 함께 처리)** —
+      point(검지 1개, "가리키기") + 좌/우/상/하 이동 = move_left/move_right/move_up/
+      move_down(포커스 이동 4방향, 신규 확장). fist(주먹) + 좌/우/상 이동 = go_back/
+      select/go_home(이전/확인/홈). fist+아래는 미정의(사용자 확정 — 매핑 없음, 방향은
+      감지되나 이벤트 없음). 옛 체계(팔 쓸기=좌/우 이동, 손 위치 이동=화면 전환, 손가락
+      1개 정지 유지=선택)는 전면 폐기
+- [x] **손 모양·이동 판정을 한 곳(MediaPipe 손 랜드마크)으로 통합** — 옛 팔 쓸기는
+      RTMPose 포즈 손목 궤적, 화면 전환은 MediaPipe 손 위치로 출처가 달라 손 모양을
+      이동 판정에 반영할 수 없었다. 이제 손 모양(gestures.shapes)과 이동(gestures.
+      hand_move)이 같은 프레임에서 나와 항상 동기화된다
+- [x] `src/postprocess/gesture_filter.py` 전면 재작성 — `_SwipeTracker`는 그대로 재사용
+      (판정 로직 검증됨), point/fist 전용 트래커 2개로 분리(모양 전환 시 서로 리셋해
+      다른 모양의 이동량이 섞이지 않게 함). `_FingerSelectTracker`(정지 유지 판정)는
+      더 이상 필요 없어 제거
+- [x] `src/postprocess/person_lock.py`에서 `user_swipe_points()`·`user_side_points()`·
+      `KPT_LEFT/RIGHT_WRIST`·`KPT_LEFT/RIGHT_ELBOW` 제거 — 포즈 손목/팔꿈치 궤적 기반
+      쓸기 추적점 공급을 아무도 안 쓰게 됐다. 이 클래스는 이제 얼굴 기반 사용자 잠금·
+      bbox 산출만 담당(포즈 모델은 여전히 필요 — 잠금용 얼굴 검출)
+- [x] `configs/config.yaml`/`config_mac.yaml` — `gestures.swipe`·`gestures.hand_swipe`·
+      `gestures.select` 3섹션을 `gestures.hand_move`(이동 판정 1개, 4방향 공용)·
+      `gestures.shapes`(손 모양 판정)로 통폐합. `classes`에 move_up/move_down 신설,
+      `announce.event_templates`에 문구 추가
+- [x] `GestureEvent.hand_side`(옛 쓸기 팔 좌/우) → `GestureEvent.shape`(point/fist)로
+      필드명·의미 변경 — `event_sender.py`·`demo_server.py`·`demo_ui/index.html` 함께 수정
+- [x] 단위 테스트 재작성 — `test_gesture_filter.py`(PointMoveTest·FistMoveTest·
+      ShapeSwitchTest 등 신규), `test_person_lock.py`(SwipePointTest 삭제, 쓸기 관련
+      단언 제거)
+- [ ] **★잠정치 주의** — `hand_move.min_dist_x_ratio`(0.18)는 이번 개편으로 처음
+      "손 위치만으로 좌/우"를 판정하게 되며 새로 정한 값(옛 팔 쓸기 임계 0.25는 팔
+      전체 스케일이라 못 씀, 옛 hand_swipe의 0.4는 좌/우를 애초에 비활성화하려던
+      값이라 역시 못 씀) — 실기 재튜닝 전 가정값. 계기판 POINT/FIST x 진행도로
+      확인할 것
+- [ ] **실기 확인 필요** — fist(주먹) 상태에서 손가락 인식(count_extended_fingers)이
+      point(검지 1개)만큼 안정적으로 0으로 잡히는지(주먹도 오검출 가능성 있음),
+      실제 사용자가 "내밀고 이동"하는 동작에서 hand_move 임계값들이 적절한지
+
 ## ✅ 완료 (2026-07-16 — CPU 추론 성능 최적화: 잠금 중 검출 스킵)
 
 - **문제 실측(이 개발 PC — AMD Ryzen 5 3550H 4C/8T, 배포 기준과 동일한 윈도우+
@@ -180,9 +243,10 @@
 
 ## 🔴 회사 확인 필요 — 멋대로 진행 금지 (기획서 9장 연동)
 
-- [ ] **№1 제스처 스펙 확정** — 2026-07-16 기준 스펙(쓸기 4방향 + 손가락 1개 인식 선택)으로
-      재구현. 무손·무지 사용자 접근성 요건이 계획에서 빠졌다는 전제로 진행 중 — **회사에
-      정식 확인 필요** (빠지지 않는다면 꾸벅 등 대체 판정 재검토).
+- [ ] **№1 제스처 스펙 확정** — 2026-07-23 기준 스펙(point+이동 4방향 / fist+이동 3방향
+      확인·이전·홈)으로 재구현(위 "동작 체계 전면 개편" 절 참고) — 사용자 확정으로 진행
+      중이나 **회사에 정식 확인 필요**. 무손·무지 사용자 접근성 요건이 계획에서 빠졌다는
+      전제도 함께 진행 중이라 재확인 필요 (빠지지 않는다면 대체 판정 재검토).
       직원 호출(help_call)은 트리거(양 손바닥)가 사라져 이벤트 계약에서 제외됨 —
       필요 시 대체 트리거(예: 위로 쓸기 길게) 회사 협의 필요
 - [ ] **№7 회사 키오스크 프로그램(UI) 파일 수령** — 수령 후 demo_ui 교체 작업 시작

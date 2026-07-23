@@ -11,7 +11,15 @@ person_lock이 잠근 사용자의 bbox로 크롭한 영역만 추론한다(pipe
 
 count_extended_fingers()는 mediapipe 없이 좌표만으로 판정하는 순수 함수라 단위
 테스트가 가볍다(카메라·모델 없이 테스트 원칙 — tests/test_hand_estimator.py).
+
+2026-07-22 판정식 교체(사용자 실기 리포트 — "손가락 선택이 여러 번 해야 한 번 잡힘"):
+구 판정(TIP.y < PIP.y, 손가락이 화면에서 수직으로 곧게 위를 향할 때만 "폄"으로 인식)은
+손을 살짝 기울여 들면(예: 얼굴 옆, 가슴 높이) 실제로 편 손가락도 놓치는 각도 의존
+문제가 있었다. GMtech_project(gesture_kiosk 자매 코드베이스)가 이미 쓰는 "TIP-손목
+거리가 PIP-손목 거리보다 충분히 크면 폄"(거리 비율) 방식으로 교체 — 손이 화면에서
+어느 방향으로 돌아가 있어도(면내 회전) 같은 결과를 준다.
 """
+import math
 import os
 
 import cv2
@@ -19,6 +27,8 @@ import cv2
 from src.utils.logger import get_logger
 
 logger = get_logger("inference")
+
+WRIST = 0   # MediaPipe 21포인트 손 랜드마크 — 손목(모든 손가락 신전 판정의 기준점)
 
 # MediaPipe 21포인트 손 랜드마크 인덱스 — 검지~새끼(엄지 제외)의 MCP·PIP·DIP·TIP.
 # 엄지(1~4)는 손 방향(좌/우 손 · 거울 반전)에 따라 신전 판정 축이 달라져 복잡하므로
@@ -30,16 +40,26 @@ FINGER_JOINTS = {
     "pinky": (17, 18, 19, 20),
 }
 
+DEFAULT_EXTENDED_RATIO = 1.3   # gestures.select.extended_ratio 미설정 시 기본값
 
-def count_extended_fingers(landmarks):
+
+def count_extended_fingers(landmarks, extended_ratio=DEFAULT_EXTENDED_RATIO):
     """21개 (x, y) 좌표 -> 편 손가락 개수(0~4, 엄지 제외).
 
-    TIP의 y가 PIP보다 작으면(이미지 좌표는 y가 아래로 증가) 편 것으로 본다 — 카메라를
-    정면으로 보고 손을 세워 드는 키오스크 사용 자세를 전제한 단순 판정이다.
+    TIP-손목 거리가 PIP-손목 거리의 extended_ratio배 이상이면 "폄"으로 본다 — 편
+    손가락은 TIP이 관절을 지나 쭉 뻗어 손목에서 멀고, 접힌 손가락은 TIP이 손목 쪽으로
+    말려 들어와 가깝다(2026-07-22, GMtech_project finger_select.py와 같은 원리).
+    손이 화면에서 기울어 있어도(면내 회전) 흔들리지 않는다 — 구 y좌표 비교 방식은
+    손가락이 수직일 때만 정확했다.
     """
+    wrist = landmarks[WRIST]
     count = 0
     for _mcp, pip_idx, _dip, tip_idx in FINGER_JOINTS.values():
-        if landmarks[tip_idx][1] < landmarks[pip_idx][1]:
+        pip_dist = math.dist(wrist, landmarks[pip_idx])
+        if pip_dist < 1e-6:
+            continue   # 손목·PIP가 겹치는 퇴화 좌표 — 판단 불가로 접힘 취급
+        tip_dist = math.dist(wrist, landmarks[tip_idx])
+        if tip_dist >= pip_dist * extended_ratio:
             count += 1
     return count
 

@@ -14,6 +14,18 @@
 #   위/아래 이동으로 교체(hand_swipe 섹션 신설). 팔은 좌/우 이동(move_left/move_right)
 #   전용으로 남는다. hand_swipe는 손가락 개수를 안 본다(손 모양 무관, 손만 움직이면 됨)
 #   — "손가락 1개"는 select 전용 신호로 남긴다(재확정: 굳이 손가락 1개가 아니어도 됨).
+# 2026-07-23 동작 체계 전면 개편(사용자 확정 — 회사 스펙 변경) — 팔 쓸기(포즈)와 손
+#   위치 이동(MediaPipe)으로 나뉘어 있던 판정을 손 모양+이동 하나로 통합:
+#   point(검지 1개만 폄, "가리키기") + 좌/우/상/하 이동 = move_left/move_right/
+#   move_up/move_down(포커스 이동 4방향). fist(주먹, 전부 접음) + 좌/우/상 이동 =
+#   go_back/select/go_home(이전 화면/선택·확인/처음 화면). 아래(fist+down)는
+#   미사용 — 회사 스펙에 정의되지 않음(사용자 확정). swipe(팔, 좌우 전용)·
+#   hand_swipe(손, 상하 전용)·select(정지 유지) 세 섹션을 hand_move(이동 판정 1개)·
+#   shapes(손 모양 판정)로 통폐합. 손 모양·이동이 이제 같은 MediaPipe 손 랜드마크
+#   프레임에서 나와 항상 동기화된다(과거엔 팔 쓸기가 RTMPose 포즈 손목이라 손
+#   모양을 반영할 수 없었다) — person_lock.user_swipe_points()·RTMPose 손목/팔꿈치
+#   폴백은 더 이상 쓰이지 않아 제거. 무손 사용자 접근성 요건은 2026-07-16에 이미
+#   계획에서 빠졌으므로(회사 확인) 이번 개편으로 새로 잃는 요건은 없다.
 
 camera:
   device_id: 0            # USB 웹캠 장치 번호
@@ -57,13 +69,18 @@ hand_model:                # 손 랜드마크(MediaPipe HandLandmarker, Apache-2
   min_hand_detection_conf: 0.5
   min_hand_presence_conf: 0.5
   min_tracking_conf: 0.5
-  infer_interval_frames: 3  # 2026-07-16 성능 최적화 — 포즈 검출 스킵(redetect_interval_frames)
+  infer_interval_frames: 2  # 2026-07-16 성능 최적화 — 포즈 검출 스킵(redetect_interval_frames)
                           #   적용 후 실측하니 손 인식이 새 병목이었다(단독 ~32ms, 포즈
                           #   패스트패스(~22ms)와 매 프레임 같이 돌리면 77.8ms/프레임까지
                           #   떨어짐). select.hold_sec(0.6초)는 몇 프레임 지연을 견디므로
                           #   매 프레임 대신 이 프레임 수마다 한 번만 재인식, 나머지는
                           #   마지막 결과를 재사용(realtime_loop.py — 절대 None으로
                           #   덮어쓰지 않는다: 그러면 유지 타이머가 매번 리셋된다)
+                          #   ★2026-07-23 3→2(사용자 실기 리포트 — "선택이 잘 안 잡힘"):
+                          #   실측 루프가 8.3 FPS(더미 벤치마크 23~30 FPS보다 훨씬 낮음)라
+                          #   3이면 재인식 간격이 ~0.36초 — hold_sec(0.6초) 안에 신선한
+                          #   샘플이 1~2번뿐이었다. 2로 낮춰 간격을 ~0.24초로 좁힘(FPS 소폭
+                          #   하락과 맞바꿈 — 헤더의 "추론 FPS"로 영향 확인할 것)
 
 person_lock:              # 오토포커스 카메라 — 초점 맞은 사용자에게 잠금, 다른 사람 무시
   enabled: true
@@ -75,57 +92,55 @@ person_lock:              # 오토포커스 카메라 — 초점 맞은 사용�
 
 gestures:
   cooldown_sec: 1.2           # 이벤트 확정 직후 입력 무시 시간 — 연타 방지.
-                              #   swipe.window_sec보다 길게 유지할 것 —
-                              #   쿨다운이 지나면 쓸기 궤적의 잔여 점이 전부 만료되게
-  swipe:                      # 팔 쓸기 — 좌/우 이동(move_left/move_right) 전용 (2026-07-20:
-                              #   위/아래(go_home/go_back)는 hand_swipe로 이관, 팔에서는
-                              #   더 이상 확정하지 않는다). min_dist_y_ratio·axis_dominance는
-                              #   여전히 쓴다 — 대각선(팔이 살짝 위아래로 흔들리는) 이동을
-                              #   좌/우로 오판하지 않게 걸러내는 축 우세 판정용으로 남아있다
-    window_sec: 1.0           # 이 시간 안의 이동량으로 판정 (cooldown_sec보다 짧게).
-                              #   2026-07-16 0.6→1.0 상향: 이 CPU(Ryzen 5 3550H) 실측
-                              #   포즈 추론이 4~7 FPS(목표 30 FPS 미달, benchmark.py 실측)라
-                              #   구 window_sec(0.6초)·min_track_frames(4)로는 시간창 안에
-                              #   4프레임이 채 안 들어와 쓸기가 거의 확정되지 않았음
-                              #   (min_track_frames/window_sec ≈ 6.7 FPS 필요 — 실측 미달)
-    min_dist_x_ratio: 0.25    # 좌/우 쓸기 확정 최소 이동 (프레임 폭 비율)
-    min_dist_y_ratio: 0.25    # 대각선 판정용 — 위/아래 자체는 더 이상 팔로 확정하지 않는다
+                              #   hand_move.window_sec보다 길게 유지할 것 —
+                              #   쿨다운이 지나면 궤적의 잔여 점이 전부 만료되게
+  hand_move:                  # 손 위치 이동 판정 — 4방향 공용(2026-07-23 개편: 옛
+                              #   swipe(팔, 좌우 전용)·hand_swipe(손, 상하 전용)를 통합).
+                              #   어느 이벤트로 확정될지는 손 모양(gestures.shapes)에
+                              #   달려 있다 — point면 move_*, fist면 select/go_back/go_home.
+                              #   MediaPipe 손 랜드마크(손목, 0번)로 판정, hand_model.
+                              #   infer_interval_frames 주기로만 갱신되는 값이라도 window_sec
+                              #   안에 min_track_frames만큼은 쌓이도록 값을 맞췄다.
+    window_sec: 1.0           # 이 시간 안의 이동량으로 판정 (cooldown_sec보다 짧게)
+    min_dist_x_ratio: 0.18    # 좌/우 이동 확정 최소 이동 (프레임 폭 비율) — 옛 hand_swipe가
+                              #   실측한 손 흔들림 잡음 상한(~0.12)보다는 크게, 옛 팔 쓸기
+                              #   임계(0.25, 이제 못 쓸 전체 팔 스케일)보다는 작게 잡은
+                              #   잠정치 — 손만으로 좌/우를 판정하는 건 이번이 처음이라
+                              #   실기 재튜닝 전 가정값. 계기판 POINT/FIST x 진행도로 확인할 것
+    min_dist_y_ratio: 0.05    # min_dist_up/down_ratio 둘 다 있으면 미사용 — 안전망으로만 유지
+    min_dist_up_ratio: 0.09   # 위(go_home) 전용 — 옛 hand_swipe 3차 실측값 이어받음
+    min_dist_down_ratio: 0.05 # 아래 전용 — 옛 hand_swipe 2차 실측값 이어받음 (현재 fist+down은
+                              #   미사용이라 이 값은 point+아래(move_down)에만 적용된다)
     axis_dominance: 1.5       # 주축 진행도가 부축의 N배 이상일 때만 확정 — 대각선 오인 보류
     min_track_frames: 3       # 최소 궤적 프레임 — 키포인트 튐 1~2프레임 오발 방지
-                              #   (2026-07-16 4→3 하향 — 위 window_sec 조정과 세트, 저FPS에서도
-                              #   시간창 안에 채워지도록. 근본 해결은 추론 FPS 자체 개선 — TODO 참고)
-    elbow_gain: 2.0           # 팔꿈치 폴백(손목 신뢰도 미달 — 손 절단 등) 진행도 배율.
-                              #   팔꿈치는 어깨 기준 회전 반경이 손목의 절반쯤이라 같은
-                              #   팔 휘두름에도 이동량이 절반 — 같은 기준으로 판정되게 보정
-  hand_swipe:                 # 손(모양 무관 — 손가락 개수를 안 본다)을 위/아래로 이동 =
-                              #   go_home/go_back (2026-07-20 신설 — 팔 위/아래 쓸기 대체).
-                              #   select(정확히 손가락 1개)와 달리 손 모양을 만들 필요 없이
-                              #   손만 움직이면 된다 — 손가락 개수는 select 전용 신호로 남긴다.
-                              #   MediaPipe 손 랜드마크(손목, 0번)로 판정 — hand_model.
-                              #   infer_interval_frames 주기로만 갱신되는 값이라도 window_sec
-                              #   안에 min_track_frames만큼은 쌓이도록 값을 맞췄다(swipe와 동일
-                              #   구조 재사용, _SwipeTracker).
-                              #   2026-07-20 실측(TEMP-DEBUG 로그) 후 재조정: 손만 움직이면
-                              #   세로(dy) 이동량이 최대 0.05 안팎이라 min_dist_y_ratio 0.15는
-                              #   거의 안 걸렸다. 반대로 손이 흔들리며 생기는 가로(dx) 잡음이
-                              #   0.12까지도 나와 axis_dominance 판정에서 세로를 밀어냈다 —
-                              #   그래서 min_dist_y_ratio는 크게 낮추고 min_dist_x_ratio는 크게
-                              #   올렸다(가로는 애초에 go_home/go_back 판정에 안 쓰이니, 가로
-                              #   잡음이 "이건 좌우 동작"이라고 오판해 세로를 막지 못하게 하는
-                              #   용도로만 쓴다).
-    window_sec: 1.0
-    min_dist_x_ratio: 0.4
-    min_dist_y_ratio: 0.08
-    axis_dominance: 1.5
-    min_track_frames: 3
-  select:                     # 손가락 1개(엄지 제외)를 "제자리에서" hold_sec 이상 유지 =
-                              #   선택/확인 (2026-07-20: 위치가 아니라 정지 유지로 화면
-                              #   전환(hand_swipe)과 구분). 2026-07-16 재확정 — 무손·무지
-                              #   접근성 요건 제외, 꾸벅임은 UX 부담으로 기각.
-    required_finger_count: 1  # 검지~새끼 중 정확히 이 개수만 편 상태 — 엄지는 손 방향
-                              #   (좌/우 손·거울 반전)에 따라 판정 축이 달라져 집계에서 제외
-    hold_sec: 0.6             # 이 시간 이상 끊기지 않고 유지해야 확정 — 순간 오탐 방지
-                              #   (구 꾸벅 2회 요구와 같은 목적을 "유지 시간"으로 대체)
+    return_suppress_sec: 0.0  # 복귀 스트로크 삼킴 — 기본 꺼짐. 옛 hand_swipe가 "손 이동엔
+                              #   팔처럼 뚜렷한 중앙 쉬는 자세가 없어 켜면 정당한 반대 방향
+                              #   시도까지 삼켜버렸다"(2026-07-23 2차 리포트)는 이유로 껐던
+                              #   것을 그대로 승계 — 이번에 좌/우도 손 위치 기반으로 바뀌어
+                              #   같은 문제가 재현될 가능성이 있다. 실기에서 "쓸기 후 되돌리는
+                              #   동작이 반대 방향으로 또 잡힘" 리포트가 나오면 옛 swipe처럼
+                              #   1.6초로 켜볼 것 (return_origin_ratio와 함께)
+    return_origin_ratio: 0.15 # return_suppress_sec이 0이라 현재 미사용 — 나중에 켤 경우 대비
+    point_filter:              # 추적점 One Euro 필터(2026-07-23, GMtech_project 이식) — 정지
+                              #   시에도 손 키포인트가 프레임마다 떨려 궤적에 섞이면 진행도가
+                              #   출렁여, 가만히 있어도 방향이 번갈아 확정되는 오탐이 났다
+                              #   (구 swipe/hand_swipe 공통 문제였던 것을 그대로 승계). 값은
+                              #   기존과 동일 — 이 CPU는 실측 FPS가 낮아(4~7 FPS) 필터 반응이
+                              #   다를 수 있다. 실기 재확인 필요
+      enabled: true
+      min_cutoff_hz: 1.5      # 정지 시 컷오프 — 낮출수록 떨림 제거 강함(대신 느린 동작 지연↑)
+      beta: 1.0               # 속도 반응 계수 — 클수록 빠른 이동에서 원신호를 더 믿는다(지연↓)
+      d_cutoff_hz: 1.0        # 속도 추정 자체의 평활 컷오프 (보통 1.0 고정)
+  shapes:                     # 손 모양 판정 — hand_estimator.count_extended_fingers(엄지
+                              #   제외) 결과로 point/fist를 구분한다 (2026-07-23 신설).
+    point_finger_count: 1     # 검지 1개만 폄 = "가리키기" → hand_move 결과가 move_left/
+                              #   move_right/move_up/move_down으로 확정된다
+    fist_finger_count: 0      # 전부 접음 = "주먹" → hand_move 결과가 select(우)/go_back(좌)/
+                              #   go_home(상)으로 확정된다. 아래는 매핑 없음(미사용, 사용자 확정)
+    extended_ratio: 1.3       # 2026-07-22 도입 — TIP-손목 거리가 PIP-손목 거리의 이 배수
+                              #   이상이면 "폄"으로 판정(hand_estimator.count_extended_fingers).
+                              #   손이 화면에서 수직이 아니어도(얼굴 옆 등으로 기울여 듦) 흔들리지
+                              #   않는다. GMtech_project finger_select.py와 같은 값(가정값)
 
 announce:                   # 토크백(보이스오버) — 현재 위치·기능 음성 안내
   enabled: true
@@ -139,6 +154,8 @@ announce:                   # 토크백(보이스오버) — 현재 위치·기�
   event_templates:          # 제스처 이벤트 자동 안내 문구
     move_left: "왼쪽으로 이동"
     move_right: "오른쪽으로 이동"
+    move_up: "위로 이동"
+    move_down: "아래로 이동"
     select: "선택했습니다"
     go_back: "이전 화면으로 이동합니다"
     go_home: "처음 화면으로 돌아갑니다"
@@ -150,17 +167,24 @@ announce:                   # 토크백(보이스오버) — 현재 위치·기�
   # UI 화면 안내(현재 포커스 항목 설명)는 UI가 POST /announce {"text": "..."}로 요청한다
   # (회사 프로그램 연동 계약 — 이벤트는 엔진→UI, 음성 안내 요청은 UI→엔진)
 
-classes:                    # 표준 동작 목록 — UI/이벤트 수신부와의 계약 (2026-07-16:
-                              #   주민등록증 인식(fill_id_fields) 기능 제거로 목록에서도 제외)
-  [move_left, move_right, select, go_back, go_home]
+classes:                    # 표준 동작 목록 — UI/이벤트 수신부와의 계약 (2026-07-23:
+                              #   point+상하 이동으로 move_up/move_down 신설)
+  [move_left, move_right, move_up, move_down, select, go_back, go_home]
 
 event_output:
-  # TODO(기획서 9장 №7): 회사 키오스크 프로그램의 이벤트 수신 규격(소켓/시리얼/공유메모리)
-  #                      확정 후 mode 추가 및 event_sender.py 구현 교체
-  mode: console           # console | udp
-  udp:
+  # 2026-07-23 팀 확정(№7): 델파이7 실연동은 네임드 파이프로 결정 — event_sender.py의
+  # PipeEventSender 참고(평문 명령어 7개: up/down/left/right/home/back/ok). pipe.name이
+  # 아직 placeholder라 실제 파이프 이름 확정 전까지는 mode를 console로 둔다 —
+  # 확정되면 mode: pipe로 전환할 것
+  mode: console           # console | udp | pipe
+  udp:                     # 개발·디버깅용 예시 — 실연동은 pipe
     host: 127.0.0.1
     port: 9999
+  pipe:                    # 델파이7 네임드 파이프 — 델파이7이 서버, 이 엔진이 클라이언트
+    name: '\\.\pipe\GestureKiosk'   # ★placeholder — 델파이7 개발자 확정 파이프 이름으로 교체 필요
+    reconnect_backoff_sec: 2.0      # 연결 끊김 시 재접속 최소 간격 — WebSocketEventSender와
+                                     #   같은 이유(GMtech_project 참고): 매 프레임 재시도로
+                                     #   추론 루프를 막지 않기 위한 안전장치
 
 demo_ui:                  # 예시 UI 서버 — 회사 프로그램 인수 후 제거 예정
   host: 0.0.0.0

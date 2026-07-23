@@ -64,8 +64,8 @@ def create_app(state, config):
         events = []
         for e in state.event_log[-RECENT_EVENT_COUNT:]:
             item = {"class_name": e.class_name, "conf": round(e.conf, 2), "ts_sec": e.ts_sec}
-            if e.hand_side is not None:
-                item["hand_side"] = e.hand_side
+            if e.shape is not None:
+                item["shape"] = e.shape
             if e.data is not None:
                 item["data"] = e.data
             events.append(item)
@@ -79,6 +79,7 @@ def create_app(state, config):
             "status": {
                 "is_user_locked": state.is_user_locked,
             },
+            "debug": state.debug,   # 판정 계기판 — 실기 튜닝용 (연동 계약 아님, 2026-07-22)
             "classes": config["classes"],
             "events": events,
         }

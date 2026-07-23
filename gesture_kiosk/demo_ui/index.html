@@ -83,9 +83,10 @@
     <h2>실시간 인식 화면 (CAM)</h2>
     <img id="cam" src="/video_feed" alt="camera stream">
     <div class="guide">
-      <span>👋 좌/우로 쓸기</span>포커스 이동 &nbsp; <span>✋⬇ 손 내리기</span>이전 화면<br>
-      <span>✋⬆ 손 올리기</span>처음으로 &nbsp; <span>☝ 손가락 1개 유지</span>선택·확인
+      <span>☝ 가리키고 좌/우/상/하 이동</span>포커스 이동 &nbsp; <span>✊ 주먹 내밀고 우측 이동</span>선택·확인<br>
+      <span>✊ 주먹 내밀고 좌측 이동</span>이전 화면 &nbsp; <span>✊ 주먹 내밀고 상단 이동</span>처음으로
     </div>
+    <div class="guide" id="dbg" style="margin-top:6px;"></div>
     <div style="margin-top:12px;">
       <h2>이벤트 로그</h2>
       <ul id="evlog"></ul>
@@ -225,20 +226,20 @@ function render() {
     // 처음 화면은 원래 데모 UI처럼 단계 표시줄·수수료 없이 단순하게 유지한다
     s.innerHTML = `
       <div class="screen-head"><div class="title">증명서 선택</div>
-        <div class="hint">👋 좌/우 쓸기 이동 · ☝ 손가락 1개 들기 선택</div></div>
+        <div class="hint">☝ 가리키고 좌/우 이동 · ✊ 주먹 내밀고 우측 이동 선택</div></div>
       <div class="menu">${CERTS.map((c, i) =>
         `<div class="item ${i === fIdx ? "hl" : ""}">${c.name}</div>`).join("")}</div>`;
   } else if (scr === "copies") {
     s.innerHTML = steps + `
       <div class="screen-head"><div class="title">발급 부수 선택 — ${chosenCert.name}</div>
-        <div class="hint">👋 좌/우 쓸기 이동 · ☝ 손가락 1개 들기 선택</div></div>
+        <div class="hint">☝ 가리키고 좌/우 이동 · ✊ 주먹 내밀고 우측 이동 선택</div></div>
       <div class="copies-row">${COPIES_OPTIONS.map((n, i) =>
         `<div class="item ${i === fIdx ? "hl" : ""}">${n}부</div>`).join("")}</div>`;
   } else if (scr === "pay") {
     const total = chosenCert.fee * copiesCount;
     s.innerHTML = steps + `
       <div class="screen-head"><div class="title">결제 확인</div>
-        <div class="hint">☝ 손가락 1개 들기 선택</div></div>
+        <div class="hint">✊ 주먹 내밀고 우측 이동 선택</div></div>
       <div class="fee-summary">
         <div class="row"><span>${chosenCert.name}</span><span>${won(chosenCert.fee)} × ${copiesCount}부</span></div>
         <div class="row total"><span>결제 금액</span><span>${won(total)}</span></div>
@@ -279,9 +280,14 @@ async function poll() {
     lock.className = "badge " + (d.status.is_user_locked ? "on" : "off");
     lock.textContent = d.status.is_user_locked ? "사용자 고정됨" : "사용자 인식 대기";
 
+    const g = d.debug || {};
+    const swallowBits = [["P", g.swallow_point], ["F", g.swallow_fist]]
+      .filter(([, v]) => v).map(([k, v]) => `${k}:${v}`).join(" ");
+    $("dbg").textContent = `계기판 — 손가락 ${g.finger_count ?? "-"} · 모양 ${g.hand_shape ?? "-"} · 가리키기 x${g.point_x ?? 0} y${g.point_y ?? 0} · 주먹 x${g.fist_x ?? 0} y${g.fist_y ?? 0}${swallowBits ? ` · 복귀무시 예약(${swallowBits})` : ""}`;
+
     const log = $("evlog");
     log.innerHTML = d.events.slice().reverse().map(e =>
-      `<li><b>${e.class_name}</b>${e.hand_side ? ` (${e.hand_side})` : ""} conf=${e.conf}</li>`).join("");
+      `<li><b>${e.class_name}</b>${e.shape ? ` (${e.shape})` : ""} conf=${e.conf}</li>`).join("");
     for (const e of d.events) {
       if (e.ts_sec > lastEventTs) { lastEventTs = e.ts_sec; applyEvent(e); }
     }

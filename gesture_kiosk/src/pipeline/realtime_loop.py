@@ -1,12 +1,13 @@
 """pipeline 모듈 — 캡처·추론·판정·안내를 연결해 실시간 루프를 구동한다 (기획서 2.2, 3.2).
 
-프레임 흐름 (2026-07-16: 선택 판정에 손 모델 추가 + 성능 최적화):
+프레임 흐름 (2026-07-23: 동작 판정을 손 모양+이동으로 통합):
   카메라(스레드) → 거울 반전 → 사람 포즈(RTMPose — 잠금 상태면 검출 생략 패스트패스,
-  아래 should_refresh 참고) → 사용자 잠금(person_lock)
+  아래 should_refresh 참고, 사용자 잠금 전용) → 사용자 잠금(person_lock)
   → 잠긴 사용자 bbox 크롭 → 손 랜드마크(MediaPipe HandLandmarker — 역시 매 프레임이
   아니라 should_refresh 주기로만 재인식, 그 사이는 마지막 결과 재사용)
-  → 동작 판정(gesture_filter: 손목 쓸기 궤적(좌/우 이동) + 손가락 1개 신호(위치 이동=
-  화면 전환, 제자리 유지=선택) — 2026-07-20 역할 분리, gesture_filter.py 모듈 docstring 참고)
+  → 동작 판정(gesture_filter: 손 모양(point/fist) + 손 위치 이동 방향을 함께 봐서
+  move_left/right/up/down·select·go_back·go_home 확정 — gesture_filter.py 모듈
+  docstring 참고)
   → 이벤트 전송 + 음성 안내
 
 2026-07-20 유휴 적응 FPS(GMtech feat/think_win_cpu 이식, resolve_loop_interval_sec 참고):
@@ -20,7 +21,7 @@ import time
 
 from src.announce.announcer import Announcer
 from src.capture.camera_stream import CameraStream
-from src.inference.hand_estimator import HandEstimator, count_extended_fingers
+from src.inference.hand_estimator import DEFAULT_EXTENDED_RATIO, HandEstimator, count_extended_fingers
 from src.inference.pose_estimator import PoseEstimator, pad_bbox
 from src.inference.preprocessor import Preprocessor
 from src.pipeline.event_sender import create_event_sender
@@ -28,7 +29,7 @@ from src.postprocess.gesture_filter import GestureFilter
 from src.postprocess.person_lock import PersonLock
 from src.utils.logger import get_logger
 from src.utils.metrics import FpsMeter
-from src.utils.visualize import draw_person_lock, draw_status
+from src.utils.visualize import draw_debug_panel, draw_person_lock, draw_status
 
 logger = get_logger("pipeline")
 
@@ -46,7 +47,7 @@ def _crop_bbox(frame, bbox):
 
 
 def _hand_point_ratio(bbox, point, frame_width_px, frame_height_px):
-    """손 랜드마크(bbox 크롭-로컬 픽셀 좌표) -> 전체 프레임 비율 좌표 (2026-07-20 hand_swipe용).
+    """손 랜드마크(bbox 크롭-로컬 픽셀 좌표) -> 전체 프레임 비율 좌표 (gestures.hand_move용).
 
     hand_estimator.infer()는 _crop_bbox()로 잘라낸 영역 기준 좌표를 돌려주므로,
     원점 오프셋을 _crop_bbox와 똑같이 클램프해서 더해야 프레임 전체 기준으로 맞는다.
@@ -99,6 +100,7 @@ class PipelineState:
         self.is_running = False
         self.is_user_locked = False
         self.announcer = None          # demo_server의 POST /announce가 사용한다
+        self.debug = {}                # 판정 계기판 — gesture_filter.debug 스냅샷(2026-07-22)
 
     def update_frame(self, frame):
         with self._lock:
@@ -135,6 +137,9 @@ def run_pipeline(config):
     redetect_interval_frames = config["model"]["redetect_interval_frames"]
     bbox_pad_ratio = config["model"]["bbox_pad_ratio"]
     hand_infer_interval_frames = config["hand_model"]["infer_interval_frames"]
+    finger_extended_ratio = config["gestures"]["shapes"].get(
+        "extended_ratio", DEFAULT_EXTENDED_RATIO
+    )
 
     state.is_running = True
 
@@ -187,18 +192,11 @@ def run_pipeline(config):
                 )
                 was_active = is_active
 
-            # 쓸기 판정용 추적점(손목 — 없으면 팔꿈치) — 프레임 폭/높이 비율 좌표로 넘긴다
-            swipe_points_ratio = {
-                side: None if info is None
-                else (info[0], (info[1][0] / frame_width_px, info[1][1] / frame_height_px))
-                for side, info in person_lock.user_swipe_points().items()
-            }
-
-            # 손가락 신호 — 선택(제자리 유지)·화면 전환(위/아래 이동) 판정용. 잠긴 사용자
-            # bbox 크롭만 봐서 다른 사람 손을 거른다. 매 프레임 재인식하지 않고
-            # infer_interval_frames마다만(2026-07-16 성능 최적화) — 건너뛴 프레임은 반드시
-            # last_finger_count/last_hand_point_ratio를 재사용한다(finger_count를 None으로
-            # 덮으면 select의 hold_sec 유지 타이머와 hand_swipe 궤적이 매번 리셋된다)
+            # 손 신호 — 손 모양(point/fist)·손 위치 이동 판정용. 잠긴 사용자 bbox 크롭만
+            # 봐서 다른 사람 손을 거른다. 매 프레임 재인식하지 않고 infer_interval_frames
+            # 마다만(2026-07-16 성능 최적화) — 건너뛴 프레임은 반드시 last_finger_count/
+            # last_hand_point_ratio를 재사용한다(finger_count를 None으로 덮으면 손 모양이
+            # 매번 끊긴 것으로 리셋돼 이동 궤적이 매번 날아간다)
             finger_count = None
             hand_point_ratio = None
             if person_lock.locked_person is not None:
@@ -206,8 +204,8 @@ def run_pipeline(config):
                     hand_crop = _crop_bbox(input_tensor, person_lock.locked_person.bbox)
                     hands = hand_estimator.infer(hand_crop)
                     if hands:
-                        last_finger_count = count_extended_fingers(hands[0])
-                        # 랜드마크 0번(손목) — hand_swipe가 위/아래 이동 추적에 쓰는 대표점
+                        last_finger_count = count_extended_fingers(hands[0], finger_extended_ratio)
+                        # 랜드마크 0번(손목) — hand_move가 이동 추적에 쓰는 대표점
                         last_hand_point_ratio = _hand_point_ratio(
                             person_lock.locked_person.bbox, hands[0][0],
                             frame_width_px, frame_height_px,
@@ -221,9 +219,8 @@ def run_pipeline(config):
                 finger_count = last_finger_count
                 hand_point_ratio = last_hand_point_ratio
 
-            gesture_event = gesture_filter.filter_signals(
-                swipe_points_ratio, finger_count, hand_point_ratio
-            )
+            gesture_event = gesture_filter.filter_signals(finger_count, hand_point_ratio)
+            state.debug = gesture_filter.debug
 
             if gesture_event is not None:
                 event_sender.send(gesture_event)
@@ -235,6 +232,7 @@ def run_pipeline(config):
             state.infer_fps = infer_fps_meter.avg_fps
 
             annotated = draw_person_lock(input_tensor, person_lock, finger_count)
+            annotated = draw_debug_panel(annotated, state.debug)
             overlay_event = state.last_event
             if overlay_event is not None and (
                 time.monotonic() - overlay_event.ts_sec > EVENT_OVERLAY_HOLD_SEC

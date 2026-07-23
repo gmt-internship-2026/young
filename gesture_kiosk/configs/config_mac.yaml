@@ -29,7 +29,7 @@ hand_model:                # MediaPipe HandLandmarker(Apache-2.0) — 선택 판
   min_hand_detection_conf: 0.5
   min_hand_presence_conf: 0.5
   min_tracking_conf: 0.5
-  infer_interval_frames: 3  # 2026-07-16 성능 최적화 — config.yaml 주석 참고
+  infer_interval_frames: 2  # 2026-07-16 성능 최적화, 2026-07-23 3→2 — config.yaml 주석 참고
 
 person_lock:
   enabled: true
@@ -40,25 +40,27 @@ person_lock:
   sharpness_weight: 0.5
 
 gestures:
-  cooldown_sec: 1.2       # swipe.window_sec보다 길게 (config.yaml 주석 참고)
-  swipe:                   # 좌/우 이동 전용 — 위/아래는 hand_swipe로 이관 (config.yaml 주석 참고)
-    window_sec: 1.0         # 2026-07-16 0.6→1.0 (저FPS 대응 — config.yaml 주석 참고)
-    min_dist_x_ratio: 0.25
-    min_dist_y_ratio: 0.25
-    axis_dominance: 1.5
-    min_track_frames: 3     # 2026-07-16 4→3 (config.yaml 주석 참고)
-    elbow_gain: 2.0         # 손목 미검출 시 팔꿈치 폴백 배율 — config.yaml 주석 참고
-  hand_swipe:              # 손(모양 무관) 위/아래 이동 = go_home/go_back (2026-07-20 신설,
-                           # 같은 날 실측 후 임계값 재조정 — config.yaml 주석 참고)
+  cooldown_sec: 1.2       # hand_move.window_sec보다 길게 (config.yaml 주석 참고)
+  hand_move:               # 손 위치 이동 판정 4방향 공용 (2026-07-23 개편, swipe·hand_swipe
+                           # 통합 — config.yaml 주석 참고). 어느 이벤트인지는 shapes로 결정
     window_sec: 1.0
-    min_dist_x_ratio: 0.4
-    min_dist_y_ratio: 0.08
+    min_dist_x_ratio: 0.18  # 잠정치 — config.yaml 주석 참고 (실기 재튜닝 전)
+    min_dist_y_ratio: 0.05
+    min_dist_up_ratio: 0.09    # 위(go_home) 전용 — config.yaml 주석 참고
+    min_dist_down_ratio: 0.05  # 아래 전용(현재 point+move_down에만 적용) — config.yaml 주석 참고
     axis_dominance: 1.5
     min_track_frames: 3
-  select:                 # 손가락 1개(엄지 제외)를 제자리에서 유지 — config.yaml 주석 참고
-                           # (2026-07-20: 화면 전환은 hand_swipe로 이관)
-    required_finger_count: 1
-    hold_sec: 0.6
+    return_suppress_sec: 0.0  # 기본 꺼짐 — config.yaml 주석 참고(옛 hand_swipe 문제 승계)
+    return_origin_ratio: 0.15
+    point_filter:            # One Euro 필터 — config.yaml 주석 참고 (정지 시 떨림 오탐 방지)
+      enabled: true
+      min_cutoff_hz: 1.5
+      beta: 1.0
+      d_cutoff_hz: 1.0
+  shapes:                  # 손 모양 판정 — point/fist 구분 (2026-07-23 신설, config.yaml 주석 참고)
+    point_finger_count: 1  # 검지 1개 = 가리키기 → move_left/right/up/down
+    fist_finger_count: 0   # 주먹 → select(우)/go_back(좌)/go_home(상), 아래 미사용
+    extended_ratio: 1.3    # 2026-07-22 — config.yaml 주석 참고 (각도 무관 손가락 판정)
 
 announce:
   enabled: true
@@ -71,6 +73,8 @@ announce:
   event_templates:
     move_left: "왼쪽으로 이동"
     move_right: "오른쪽으로 이동"
+    move_up: "위로 이동"
+    move_down: "아래로 이동"
     select: "선택했습니다"
     go_back: "이전 화면으로 이동합니다"
     go_home: "처음 화면으로 돌아갑니다"
@@ -79,13 +83,17 @@ announce:
     released: "사용자 인식이 해제되었습니다. 화면 앞에 서 주세요"
 
 classes:
-  [move_left, move_right, select, go_back, go_home]
+  [move_left, move_right, move_up, move_down, select, go_back, go_home]
 
 event_output:
-  mode: console
+  mode: console            # console | udp | pipe — pipe(네임드 파이프)는 윈도우 전용,
+                            #   맥에서는 쓰지 않는다 — config.yaml 주석 참고
   udp:
     host: 127.0.0.1
     port: 9999
+  pipe:
+    name: '\\.\pipe\GestureKiosk'   # 맥에서는 미사용 — config.yaml 주석 참고
+    reconnect_backoff_sec: 2.0
 
 demo_ui:
   host: 0.0.0.0

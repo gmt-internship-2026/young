@@ -5,10 +5,10 @@ object Form1: TForm1
   Height = 660
   Caption = 'Gesture Kiosk Demo'
   Color = clBtnFace
-  Font.Charset = DEFAULT_CHARSET
+  Font.Charset = HANGEUL_CHARSET
   Font.Color = clWindowText
   Font.Height = -12
-  Font.Name = 'Tahoma'
+  Font.Name = 'Gulim'
   Font.Style = []
   KeyPreview = True
   OldCreateOrder = False
@@ -25,10 +25,10 @@ object Form1: TForm1
     Height = 150
     Align = alBottom
     Color = clWhite
-    Font.Charset = DEFAULT_CHARSET
+    Font.Charset = HANGEUL_CHARSET
     Font.Color = clWindowText
     Font.Height = -11
-    Font.Name = 'Tahoma'
+    Font.Name = 'Gulim'
     Font.Style = []
     ParentFont = False
     ReadOnly = True

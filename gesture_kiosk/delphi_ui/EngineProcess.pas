@@ -6,6 +6,13 @@ unit EngineProcess;
   -> 수신 스레드가 ReadFile로 읽어 CRLF 단위로 잘라 메인 폼에 PostMessage.
   UI는 절대 이 유닛(수신 스레드)에서 만지지 않는다 - 메시지로만 전달.
 
+  호환(2026-07-23 2차): 델파이7과 최신 델파이(Community Edition 포함) 양쪽에서
+  컴파일되도록 파이프 바이트 처리를 전부 AnsiChar/AnsiString으로 명시했다 -
+  델파이 2009+는 Char/string이 2바이트(유니코드)라, 그대로 두면 ReadFile
+  바이트 수와 문자 수가 어긋난다. 이벤트 줄은 ASCII라 Ansi로 충분하다.
+  문자열 전달도 StrNew/StrDispose(버전별 소속 유닛이 다름) 대신
+  GetMem/FreeMem으로 통일 - 수신 측은 FreeMem으로 해제한다.
+
   규칙:
   - 부모 쪽 파이프 "쓰기 끝"은 CreateProcess 직후 닫는다 - 안 닫으면 엔진이
     죽어도 EOF가 오지 않아 스레드가 영원히 기다린다.
@@ -18,7 +25,7 @@ uses
   Windows, Messages, Classes, SysUtils;
 
 const
-  WM_GESTURE_EVENT = WM_USER + 101;   // LParam = PChar 한 줄 (수신 측이 StrDispose)
+  WM_GESTURE_EVENT = WM_USER + 101;   // LParam = PAnsiChar 한 줄 (수신 측이 FreeMem)
   WM_ENGINE_EXITED = WM_USER + 102;   // 엔진 종료(EOF) 알림 - 재기동 판단용
 
 type
@@ -45,6 +52,16 @@ type
 
 implementation
 
+function NewAnsiLine(const S: AnsiString): PAnsiChar;
+{ 수신 줄 1개를 힙에 복사 - PostMessage로 스레드 경계를 넘기기 위해.
+  수신 측(메인 폼)이 FreeMem으로 해제한다 (소유권 이전). }
+begin
+  GetMem(Result, Length(S) + 1);
+  if Length(S) > 0 then
+    Move(S[1], Result^, Length(S));
+  Result[Length(S)] := #0;
+end;
+
 { TReadThread }
 
 constructor TReadThread.Create(APipe: THandle; ANotify: HWND);
@@ -57,24 +74,24 @@ end;
 
 procedure TReadThread.Execute;
 var
-  Buf: array[0..1023] of Char;
+  Buf: array[0..1023] of AnsiChar;   // 바이트 버퍼 - 신형 델파이에서도 1바이트 유지
   Got: Cardinal;
-  Acc, Line: string;
+  Acc, Line: AnsiString;
   P: Integer;
 begin
   Acc := '';
   while ReadFile(FPipe, Buf, SizeOf(Buf), Got, nil) and (Got > 0) do
   begin
-    SetString(Line, Buf, Got);
+    SetString(Line, PAnsiChar(@Buf[0]), Integer(Got));
     Acc := Acc + Line;
-    P := Pos(#13#10, Acc);
+    P := Pos(AnsiString(#13#10), Acc);
     while P > 0 do
     begin
       Line := Copy(Acc, 1, P - 1);
       Delete(Acc, 1, P + 1);
       if Line <> '' then
-        PostMessage(FNotify, WM_GESTURE_EVENT, 0, LParam(StrNew(PChar(Line))));
-      P := Pos(#13#10, Acc);
+        PostMessage(FNotify, WM_GESTURE_EVENT, 0, LPARAM(NewAnsiLine(Line)));
+      P := Pos(AnsiString(#13#10), Acc);
     end;
   end;
   PostMessage(FNotify, WM_ENGINE_EXITED, 0, 0);

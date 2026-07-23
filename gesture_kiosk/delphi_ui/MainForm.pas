@@ -10,6 +10,9 @@ unit MainForm;
   - 첫 화면에서 back/home은 무시(로그만) - 화면 이탈 사고 방지 정책
   - 키보드 폴백: 방향키/Enter/Backspace/Home - 엔진 없이도 포커스 동작 확인 가능
 
+  호환(2026-07-23 2차): 델파이7 + 최신 델파이(Community Edition) 양쪽 컴파일 가능 -
+  수신 문자열은 PAnsiChar로 받고 FreeMem으로 해제한다 (EngineProcess.pas 참고).
+
   실전 이식 시: HandleEvent 이하의 포커스·화면 로직을 실제 발급 화면의
   컨트롤 목록에 연결하면 된다 (수신부 EngineProcess.pas는 그대로 재사용). }
 
@@ -144,13 +147,15 @@ end;
 
 procedure TForm1.WMGestureEvent(var Msg: TMessage);
 var
-  Raw: PChar;
+  Raw: PAnsiChar;
+  Ansi: AnsiString;
   Line, Rest, EventName: string;
   Sep: Integer;
 begin
-  Raw := PChar(Msg.LParam);
-  Line := StrPas(Raw);
-  StrDispose(Raw);                 // EngineProcess가 StrNew로 넘긴 소유권 회수
+  Raw := PAnsiChar(Msg.LParam);
+  Ansi := Raw;
+  FreeMem(Raw);                    // EngineProcess가 GetMem으로 넘긴 소유권 회수
+  Line := string(Ansi);            // 델파이7=무변환 · 신형=ANSI->유니코드
 
   Log('[수신] ' + Line);
   Rest := Line;

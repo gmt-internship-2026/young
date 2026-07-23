@@ -189,13 +189,16 @@ function onEnterScreen(s) {
 }
 
 function applyEvent(e) {
+  // 2026-07-23 회사 확정 이벤트명(left/right/up/down/back/home/ok) 반영 —
+  // 이 데모의 메뉴는 1줄짜리 목록이라 up/down은 아직 연결하지 않는다(실제
+  // 회사 UI가 여러 줄 레이아웃에서 처리할 몫 — README "상하 포커스 이동" 참고)
   const s = screen();
   if (s === "printing") return;           // 발급 중엔 모든 입력 무시
-  if (e.class_name === "go_home") { goHome(); return; }
-  if (e.class_name === "go_back") { goBack(); return; }
-  if (e.class_name === "move_left")  setFocus(focusIdx() - 1);
-  if (e.class_name === "move_right") setFocus(focusIdx() + 1);
-  if (e.class_name === "select") {
+  if (e.class_name === "home") { goHome(); return; }
+  if (e.class_name === "back") { goBack(); return; }
+  if (e.class_name === "left")  setFocus(focusIdx() - 1);
+  if (e.class_name === "right") setFocus(focusIdx() + 1);
+  if (e.class_name === "ok") {
     const idx = focusIdx();
     if (s === "home") { chosenCert = CERTS[idx]; goForward("copies"); }
     else if (s === "copies") { copiesCount = COPIES_OPTIONS[idx]; goForward("pay"); }
@@ -203,7 +206,7 @@ function applyEvent(e) {
       if (PAY_BUTTONS[idx] === "발급하기") goForward("printing");
       else goHome();
     }
-    else goHome();                        // done에서 select — 처음으로
+    else goHome();                        // done에서 ok — 처음으로
   }
 }
 

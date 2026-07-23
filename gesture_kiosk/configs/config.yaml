@@ -26,6 +26,15 @@
 #   모양을 반영할 수 없었다) — person_lock.user_swipe_points()·RTMPose 손목/팔꿈치
 #   폴백은 더 이상 쓰이지 않아 제거. 무손 사용자 접근성 요건은 2026-07-16에 이미
 #   계획에서 빠졌으므로(회사 확인) 이번 개편으로 새로 잃는 요건은 없다.
+# 2026-07-23 2차 정정 — 이벤트 이름·전송 프로토콜을 회사 확정 스펙으로 교체.
+#   move_left/move_right/move_up/move_down/select/go_back/go_home(위에서 임시로
+#   지었던 이름) → left/right/up/down/ok/back/home(회사 확정 7개 고정 명칭,
+#   델파이 파싱 코드와 문자열 일치 필요 — 사용자 직접 확인, 2026-07-23)로 전면
+#   교체. 참고: 자매 코드베이스 GMtech_project(다른 팀원 G0Sun9M0 커밋)의 같은 날
+#   커밋은 위/아래를 top/bottom으로 썼다 — 이 저장소는 사용자가 직접 재확인한
+#   up/down을 채택했다. 델파이 실측 전 델파이 담당자와 문자열 재확인 필요(★TODO).
+#   손 모양+방향 매핑 로직 자체(위 문단)는 이미 일치해 바뀐 것 없음 — 이벤트
+#   문자열과 전송 방식(아래 event_output)만 교체.
 
 camera:
   device_id: 0            # USB 웹캠 장치 번호
@@ -151,14 +160,15 @@ announce:                   # 토크백(보이스오버) — 현재 위치·기�
                              #   것을 선택 — 미설치·미일치면 기본 보이스로 폴백(경고 로그).
                              #   윈도우 SAPI 한국어 보이스(Heami 등)는 보통 이름에 "Korean"이
                              #   들어간다 — 실제 보이스명은 실기 확인 필요 (docs/TODO.md)
-  event_templates:          # 제스처 이벤트 자동 안내 문구
-    move_left: "왼쪽으로 이동"
-    move_right: "오른쪽으로 이동"
-    move_up: "위로 이동"
-    move_down: "아래로 이동"
-    select: "선택했습니다"
-    go_back: "이전 화면으로 이동합니다"
-    go_home: "처음 화면으로 돌아갑니다"
+  event_templates:          # 제스처 이벤트 자동 안내 문구 (키는 회사 확정 이벤트명 —
+                             #   gesture_filter.py 상단 주석 참고)
+    left: "왼쪽으로 이동"
+    right: "오른쪽으로 이동"
+    up: "위로 이동"
+    down: "아래로 이동"
+    ok: "선택했습니다"
+    back: "이전 화면으로 이동합니다"
+    home: "처음 화면으로 돌아갑니다"
   status_templates:          # 사용자 인식 상태 전환 안내 (2026-07-16 추가) — person_lock이
                              #   잠금/해제될 때 1회만 안내한다(연속 프레임 반복 없음).
                              #   화면을 못 보는 사용자가 카메라에 인식됐는지 아는 유일한 수단
@@ -167,24 +177,22 @@ announce:                   # 토크백(보이스오버) — 현재 위치·기�
   # UI 화면 안내(현재 포커스 항목 설명)는 UI가 POST /announce {"text": "..."}로 요청한다
   # (회사 프로그램 연동 계약 — 이벤트는 엔진→UI, 음성 안내 요청은 UI→엔진)
 
-classes:                    # 표준 동작 목록 — UI/이벤트 수신부와의 계약 (2026-07-23:
-                              #   point+상하 이동으로 move_up/move_down 신설)
-  [move_left, move_right, move_up, move_down, select, go_back, go_home]
+classes:                    # 표준 동작 목록 — 「제스처 정의 보고서」(2026-07-23 회사 확정)
+                              #   7개 고정 명칭. UI/델파이7 파싱 코드와 문자열이 정확히
+                              #   일치해야 한다 — 임의 변경 금지
+  [left, right, up, down, back, home, ok]
 
 event_output:
-  # 2026-07-23 팀 확정(№7): 델파이7 실연동은 네임드 파이프로 결정 — event_sender.py의
-  # PipeEventSender 참고(평문 명령어 7개: up/down/left/right/home/back/ok). pipe.name이
-  # 아직 placeholder라 실제 파이프 이름 확정 전까지는 mode를 console로 둔다 —
-  # 확정되면 mode: pipe로 전환할 것
-  mode: console           # console | udp | pipe
-  udp:                     # 개발·디버깅용 예시 — 실연동은 pipe
+  # 2026-07-23 회사 확정(GMtech_project 팀원 커밋으로 확인): 델파이7 실연동은
+  # stdio(표준출력) — 델파이가 엔진을 자식 프로세스로 실행하고 stdout에 찍히는
+  # 한 줄(GESTURE|이벤트|손|신뢰도|시각\r\n)을 익명 파이프로 읽는다. event_sender.py의
+  # StdioEventSender 참고. 로그는 stderr·파일로만 나가므로(logger.py 기본) stdout은
+  # 이벤트 전용 채널로 유지된다. 델파이 쪽 예제: GMtech_project/gesture_kiosk/delphi_ui,
+  # docs/델파이7_연동가이드.md
+  mode: console           # console(개발용, 로그만) | stdio(배포 — 델파이7 실연동)
+  udp:                     # 개발·디버깅용 예시(레거시, 실연동에는 안 쓴다)
     host: 127.0.0.1
     port: 9999
-  pipe:                    # 델파이7 네임드 파이프 — 델파이7이 서버, 이 엔진이 클라이언트
-    name: '\\.\pipe\GestureKiosk'   # ★placeholder — 델파이7 개발자 확정 파이프 이름으로 교체 필요
-    reconnect_backoff_sec: 2.0      # 연결 끊김 시 재접속 최소 간격 — WebSocketEventSender와
-                                     #   같은 이유(GMtech_project 참고): 매 프레임 재시도로
-                                     #   추론 루프를 막지 않기 위한 안전장치
 
 demo_ui:                  # 예시 UI 서버 — 회사 프로그램 인수 후 제거 예정
   host: 0.0.0.0

@@ -84,20 +84,20 @@ class PointMoveTest(GestureFilterTestBase):
     def test_point_right_fires_move_right(self):
         event = self._feed_move(ONE_FINGER, path(0.2, 0.6, 8, y_ratio=0.4))
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "move_right")
+        self.assertEqual(event.class_name, "right")
         self.assertEqual(event.shape, "point")
 
     def test_point_left_fires_move_left(self):
         event = self._feed_move(ONE_FINGER, path(0.6, 0.2, 8, y_ratio=0.4))
-        self.assertEqual(event.class_name, "move_left")
+        self.assertEqual(event.class_name, "left")
 
     def test_point_up_fires_move_up(self):
         event = self._feed_move(ONE_FINGER, path(0.8, 0.3, 8, x_ratio=0.5))
-        self.assertEqual(event.class_name, "move_up")
+        self.assertEqual(event.class_name, "up")
 
     def test_point_down_fires_move_down(self):
         event = self._feed_move(ONE_FINGER, path(0.3, 0.8, 8, x_ratio=0.5))
-        self.assertEqual(event.class_name, "move_down")
+        self.assertEqual(event.class_name, "down")
 
     def test_short_move_does_not_fire(self):
         # min_dist_x_ratio(0.25) 미만 이동 — 이벤트 없음
@@ -116,7 +116,7 @@ class PointMoveTest(GestureFilterTestBase):
         self.assertIsNone(event)
         event = self._feed_move(ONE_FINGER, [(0.5, 0.4)])
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "move_right")
+        self.assertEqual(event.class_name, "right")
 
     def test_hand_loss_resets_track(self):
         # 절반 이동 후 손 소실(hand_point_ratio=None) — 궤적이 리셋돼 나머지 절반로는 미확정
@@ -137,16 +137,16 @@ class FistMoveTest(GestureFilterTestBase):
     def test_fist_right_fires_select(self):
         event = self._feed_move(ZERO_FINGERS, path(0.2, 0.6, 8, y_ratio=0.4))
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "select")
+        self.assertEqual(event.class_name, "ok")
         self.assertEqual(event.shape, "fist")
 
     def test_fist_left_fires_go_back(self):
         event = self._feed_move(ZERO_FINGERS, path(0.6, 0.2, 8, y_ratio=0.4))
-        self.assertEqual(event.class_name, "go_back")
+        self.assertEqual(event.class_name, "back")
 
     def test_fist_up_fires_go_home(self):
         event = self._feed_move(ZERO_FINGERS, path(0.8, 0.3, 8, x_ratio=0.5))
-        self.assertEqual(event.class_name, "go_home")
+        self.assertEqual(event.class_name, "home")
 
     def test_fist_down_does_not_fire(self):
         # 방향은 감지되지만 fist+아래는 매핑이 없다 — 아무 이벤트도 확정되지 않는다
@@ -196,7 +196,7 @@ class ReturnSwallowTest(unittest.TestCase):
     def test_small_return_after_confirm_is_swallowed(self):
         gesture_filter = self._make_filter()
         event = self._feed_move(gesture_filter, ONE_FINGER, path(0.2, 0.6, 8, y_ratio=0.4))
-        self.assertEqual(event.class_name, "move_right")
+        self.assertEqual(event.class_name, "right")
 
         self.clock.tick(1.2)   # 쿨다운(1.2초) 통과 — 삼킴 창(1.6초) 안
         event = self._feed_move(gesture_filter, ONE_FINGER, path(0.6, 0.25, 8, y_ratio=0.4))
@@ -207,12 +207,12 @@ class ReturnSwallowTest(unittest.TestCase):
         self.clock = FakeClock()
         gesture_filter = GestureFilter(make_config(), clock=self.clock)
         event = self._feed_move(gesture_filter, ONE_FINGER, path(0.2, 0.6, 8, y_ratio=0.4))
-        self.assertEqual(event.class_name, "move_right")
+        self.assertEqual(event.class_name, "right")
 
         self.clock.tick(1.2)
         event = self._feed_move(gesture_filter, ONE_FINGER, path(0.6, 0.25, 8, y_ratio=0.4))
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "move_left")
+        self.assertEqual(event.class_name, "left")
 
 
 class AsymmetricVerticalThresholdTest(unittest.TestCase):
@@ -245,23 +245,23 @@ class AsymmetricVerticalThresholdTest(unittest.TestCase):
         gesture_filter = self._make_filter(up_ratio=0.4, down_ratio=0.1)
         event = self._feed(gesture_filter, ONE_FINGER, path(0.5, 0.7, 8, x_ratio=0.5))
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "move_down")
+        self.assertEqual(event.class_name, "down")
 
 
 class CooldownTest(GestureFilterTestBase):
     def test_cooldown_blocks_repeat_event(self):
         event = self._feed_move(ONE_FINGER, path(0.2, 0.6, 8, y_ratio=0.4))
-        self.assertEqual(event.class_name, "move_right")
+        self.assertEqual(event.class_name, "right")
         event = self._feed_move(ONE_FINGER, path(0.6, 0.2, 8, y_ratio=0.4))   # 쿨다운 내
         self.assertIsNone(event)
         self.clock.tick(1.2)
         event = self._feed_move(ONE_FINGER, path(0.6, 0.2, 8, y_ratio=0.4))
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "move_left")
+        self.assertEqual(event.class_name, "left")
 
     def test_cooldown_blocks_other_shape_after_confirm(self):
         event = self._feed_move(ONE_FINGER, path(0.2, 0.6, 8, y_ratio=0.4))
-        self.assertEqual(event.class_name, "move_right")
+        self.assertEqual(event.class_name, "right")
         event = self._feed_move(ZERO_FINGERS, path(0.2, 0.6, 8, y_ratio=0.4))
         self.assertIsNone(event)   # 쿨다운 내 — 모양이 달라도 무시
 

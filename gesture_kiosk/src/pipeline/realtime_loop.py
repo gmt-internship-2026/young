@@ -6,8 +6,7 @@
   → 잠긴 사용자 bbox 크롭 → 손 랜드마크(MediaPipe HandLandmarker — 역시 매 프레임이
   아니라 should_refresh 주기로만 재인식, 그 사이는 마지막 결과 재사용)
   → 동작 판정(gesture_filter: 손 모양(point/fist) + 손 위치 이동 방향을 함께 봐서
-  move_left/right/up/down·select·go_back·go_home 확정 — gesture_filter.py 모듈
-  docstring 참고)
+  left/right/up/down·ok·back·home 확정 — gesture_filter.py 모듈 docstring 참고)
   → 이벤트 전송 + 음성 안내
 
 2026-07-20 유휴 적응 FPS(GMtech feat/think_win_cpu 이식, resolve_loop_interval_sec 참고):

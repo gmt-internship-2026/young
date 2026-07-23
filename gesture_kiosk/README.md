@@ -26,14 +26,16 @@ run.bat            :: 실행 — 브라우저 http://localhost:5000
 > 상세 절차·내부망(오프라인) 반입·문제 해결: **[설치가이드.md](설치가이드.md)**
 > 개발 맥에서는 `venv` 활성화 후 `python scripts/run_demo.py` (torch 백엔드 그대로).
 
-## 인식 동작 (2026-07-23 전면 개편 스펙 — 손 모양(point/fist) + 이동 방향으로 확정)
+## 인식 동작 (2026-07-23 전면 개편 스펙 — 손 모양(point/fist) + 이동 방향으로 확정.
+이벤트 이름은 「제스처 정의 보고서」 회사 확정 7종 고정 명칭 — 델파이 파싱 코드와
+문자열이 정확히 일치해야 하므로 임의 변경 금지)
 
 | action | 동작 | 판정 방식 | 키오스크 명령 |
 |---|---|---|---|
-| move_left / move_right / move_up / move_down | **검지 1개만 편 채(point)** 손을 좌/우/상/하로 이동 | MediaPipe 손 랜드마크(손목) 궤적 (window 내 이동량·주축 우세) | 포커스 이동 4방향 |
-| select | **주먹(fist)을 낸 채** 손을 우측으로 이동 | 〃 | 선택·확인 |
-| go_back | **주먹을 낸 채** 손을 좌측으로 이동 | 〃 | 이전 화면 |
-| go_home | **주먹을 낸 채** 손을 상단으로 이동 | 〃 | 처음 화면으로 |
+| left / right / up / down | **검지 1개만 편 채(point)** 손을 좌/우/상/하로 이동 | MediaPipe 손 랜드마크(손목) 궤적 (window 내 이동량·주축 우세) | 포커스 이동 4방향 |
+| ok | **주먹(fist)을 낸 채** 손을 우측으로 이동 | 〃 | 선택·확인 |
+| back | **주먹을 낸 채** 손을 좌측으로 이동 | 〃 | 이전 화면 |
+| home | **주먹을 낸 채** 손을 상단으로 이동 | 〃 | 처음 화면으로 |
 
 - 손 모양(point=검지 1개, fist=전부 접음)과 이동 궤적이 **같은 MediaPipe 손 랜드마크
   프레임**에서 나와 항상 동기화된다 — 옛 체계(팔 쓸기는 RTMPose 포즈 손목, 화면 전환은
@@ -76,10 +78,10 @@ gesture_kiosk/
 │   ├─ postprocess/gesture_filter.py # 동작 판정 — 손 모양(point/fist) + 이동 방향
 │   ├─ announce/announcer.py         # 토크백 TTS (pyttsx3 — SAPI/nsss)
 │   ├─ pipeline/realtime_loop.py     # 실시간 루프 조립 (멀티스레딩)
-│   ├─ pipeline/event_sender.py      # ★ 회사 프로그램 연동 접점 (console/udp/pipe — 실연동은 pipe)
+│   ├─ pipeline/event_sender.py      # ★ 회사 프로그램 연동 접점 (console/udp/stdio — 실연동은 stdio)
 │   └─ pipeline/demo_server.py       # ★ 예시 UI 서버 + /announce 계약
 ├─ scripts/                 # run_demo · download_weights · benchmark · smoke_test
-├─ tests/                   # 단위 테스트 79건 (카메라·모델 없이 실행 가능)
+├─ tests/                   # 단위 테스트 78건 (카메라·모델 없이 실행 가능)
 ├─ demo_ui/index.html       # ★ 예시 민원발급기 화면 (회사 UI 수령 시 교체)
 └─ docs/TODO.md             # 작업 분해 및 회사 확인 필요 항목
 ```
@@ -93,21 +95,29 @@ gesture_kiosk/
 | `run.bat` / `python scripts/run_demo.py` | 파이프라인 + 예시 UI (시연용) |
 | `run.bat --headless` | 파이프라인만 — 이벤트는 `event_output` 설정대로 전송 |
 | `python scripts/benchmark.py` | 추론 단독 FPS 측정 (기획서 6.1 — KPI 30 FPS) |
-| `python -m unittest discover tests -v` | 판정·잠금·이벤트 전송 단위 테스트 (79건) |
+| `python -m unittest discover tests -v` | 판정·잠금·이벤트 전송 단위 테스트 (78건) |
 
 ## 회사 프로그램(델파이7) 연동 계약
 
-1. **실연동: 네임드 파이프**(2026-07-23 팀 확정) — 델파이7이 파이프 **서버**, 이 엔진이
-   **클라이언트**로 접속(`event_output.mode: pipe`, `event_sender.py`의
-   `PipeEventSender`). JSON이 아니라 **평문 명령어 7개 고정**을 개행 구분으로 전송한다:
-   `up`/`down`/`left`/`right`/`home`/`back`/`ok` — 델파이 쪽은 파이프에 들어온 한 줄을
-   그대로 인식해 실행(팀장 확인, 별도 파싱 불필요)
-2. `event_output.pipe.name`은 아직 placeholder(`\\.\pipe\GestureKiosk`) — 델파이7
-   개발자가 확정한 실제 파이프 이름으로 교체 후 `mode: pipe`로 전환할 것
-3. 개발·디버깅용으로 `console`/`udp`도 남아있다(`/data` 폴링으로 JSON 확인 가능)
-4. 새 수신 규격이 필요해지면 `event_sender.py`에 Sender 1개만 추가 — 파이프라인 수정 불필요
-5. 음성 안내(UI→엔진): `POST /announce {"text": "발급하기 버튼"}` — 포커스 항목을 TTS로
-6. 연동 완료 후 `demo_server.py`·`demo_ui/`는 제거
+1. **실연동: 파이프(stdio)**(2026-07-23 회사 확정 — "엔진은 이벤트를 print만 하면
+   된다") — 델파이7이 이 엔진을 **자식 프로세스로 직접 실행**하고, 엔진이 stdout에
+   찍는 텍스트 한 줄을 익명 파이프로 읽는다(`event_output.mode: stdio`,
+   `event_sender.py`의 `StdioEventSender`). 네트워크(UDP·웹소켓)는 전면 철회됐다.
+2. 전송 규격: `GESTURE|이벤트|손|신뢰도|시각\r\n` 한 줄(ASCII). 이벤트명은 7개 고정
+   — `left`/`right`/`up`/`down`/`back`/`home`/`ok`. "손" 필드는 이 엔진이 손 좌/우
+   정체성을 구분하지 않아 항상 빈 문자열이다(현재 델파이 파싱도 이 필드는 안 씀).
+   델파이 쪽 수신 예제(CreateProcess + ReadFile, Delphi 소스 포함)는 자매 코드베이스
+   `GMtech_project/gesture_kiosk`의 `delphi_ui/`·`docs/델파이7_연동가이드.md` 참고.
+3. **로그는 stderr·파일로만 나가야 한다** — stdout은 이벤트 전용 채널. `logger.py`의
+   `StreamHandler()`는 기본이 stderr라 별도 조치 없이 이미 안전하다.
+4. Delphi가 실행할 명령은 `cmd /c run.bat --headless`(반드시 `--headless`) — 인자
+   없이 `run.bat`만 실행하면 브라우저 데모 서버(uvicorn)까지 같이 뜬다(불필요).
+5. 개발·디버깅용으로 `console`/`udp`도 남아있다(`/data` 폴링으로 JSON 확인 가능)
+6. 새 수신 규격이 필요해지면 `event_sender.py`에 Sender 1개만 추가 — 파이프라인 수정 불필요
+7. 음성 안내(UI→엔진): `POST /announce {"text": "발급하기 버튼"}` — 포커스 항목을 TTS로
+   (참고: GMtech_project는 2026-07-22 TTS를 엔진에서 전면 제거하고 UI가 담당하도록
+   바꿨다 — 이 저장소는 아직 엔진 TTS를 유지 중, 필요시 재검토)
+8. 연동 완료 후 `demo_server.py`·`demo_ui/`는 제거
 
 ## 개인정보·라이선스 주의
 

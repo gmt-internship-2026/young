@@ -6,30 +6,53 @@
 2026-07-10(타깃)·2026-07-15(동작 체계)·2026-07-16(선택 재확정·OCR 제거·TTS 보강) 변경을
 반영해 개정 필요.**
 
-## ✅ 완료 (2026-07-23 2차 — 델파이7 실연동: 네임드 파이프 프로토콜)
+## ✅ 완료 (2026-07-23 3차 — 델파이7 실연동 정정: 네임드 파이프 → stdio + 이벤트명 교체)
 
-- [x] **전송 방식 팀 확정 — 네임드 파이프.** 델파이7이 파이프 **서버**로 열고, 이 엔진이
-      **클라이언트**로 접속(WebSocket 검토안과 같은 방향 — Delphi가 서버, 엔진이 클라이언트,
-      GMtech_project 참고). JSON 페이로드가 아니라 **평문 명령어 7개 고정**을 개행 구분
-      한 줄로 전송한다: `up`/`down`/`left`/`right`/`home`/`back`/`ok` — 델파이 쪽은 파이프에
-      들어온 문자열을 그대로 인식해 실행(팀장 확인, 별도 파싱 코드 불필요)
-- [x] `src/pipeline/event_sender.py`에 `PipeEventSender` 추가 — `PIPE_COMMAND_BY_CLASS_NAME`
-      (우리 7개 제스처 클래스 = 프로토콜 7개 토큰과 1:1 대응). 파이썬 표준 `open()`으로
-      윈도우 네임드 파이프 경로(`\\.\pipe\이름`)를 여는 방식이라 pywin32 등 추가 의존성
-      없음. 연결 끊김 시 `reconnect_backoff_sec` 간격으로만 재접속 시도 —
-      `WebSocketEventSender`(GMtech_project)와 같은 패턴을 그대로 이식
-- [x] `configs/config.yaml`/`config_mac.yaml`에 `event_output.pipe`(name·
-      reconnect_backoff_sec) 신설. `event_output.mode`는 여전히 `console` 기본값 —
-      `pipe.name`이 placeholder(`\\.\pipe\GestureKiosk`)라 실제 이름 확정 전까지는
-      전환하지 않는다(WebSocket 때와 같은 원칙)
-- [x] `tests/test_event_sender.py` 신규(이 저장소에 원래 없던 파일 — GMtech_project
-      패턴 이식) — open_fn·clock 주입으로 연결/재접속 backoff/전송 실패 경로 검증,
-      7개 클래스 전부가 서로 다른 토큰에 매핑되는지 확인. 전체 79건 통과
-- [ ] **★TODO(팀 확인 필요)** — `PipeEventSender`가 파이프를 `"r+b"`(duplex 가정)로
-      여는데, 델파이 쪽 `CreateNamedPipe`가 인바운드 전용(`PIPE_ACCESS_INBOUND`)이면
-      `"wb"`로 바꿔야 열린다. 델파이7 개발자에게 파이프 접근 모드 확인 필요
-- [ ] **실기 확인 필요** — 실제 델파이7 파이프 서버 기동 후 연결·명령어 수신·재접속
-      시나리오(델파이 재시작 등) 검증. 파이프 이름 확정되는 대로 `mode: pipe`로 전환
+- [x] **2차(아래 절)에서 만든 네임드 파이프(`\\.\pipe\...`) 구현은 폐기.** 실제 회사
+      확정 방식을 자매 코드베이스 GMtech_project(다른 팀원 G0Sun9M0의 커밋
+      `11de115`)에서 확인한 결과 **stdio(표준출력)**였다 — 델파이7이 엔진을
+      **자식 프로세스로 직접 실행**하고, 엔진이 stdout에 찍는 한 줄을 익명 파이프로
+      읽는 방식("엔진은 print만 하면 된다" — 회사 요청). 네임드 파이프처럼 엔진이
+      서버/클라이언트로 별도 연결을 여는 구조가 아니라, 프로세스 생성 자체가 연결이다.
+      2차의 "손 모양+방향 매핑 로직"은 회사 확정 스펙과 정확히 일치해 그대로 유지 —
+      바뀐 건 **이벤트 문자열**과 **전송 방식**뿐
+- [x] **이벤트 이름 전면 교체** — `move_left/move_right/move_up/move_down/select/
+      go_back/go_home`(2차까지 임시로 지었던 이름) → `left/right/up/down/back/home/
+      ok`(회사 확정 7개 고정 명칭, 사용자가 직접 재확인). gesture_filter.py의
+      `POINT_EVENT_BY_DIRECTION`/`FIST_EVENT_BY_DIRECTION`, config.yaml/config_mac.yaml의
+      `classes`·`announce.event_templates`, 모든 테스트·데모UI 반영
+      - ⚠ GMtech_project의 같은 날 커밋은 위/아래를 `top`/`bottom`으로 썼다 — 이
+        저장소는 사용자가 직접 재확인한 `up`/`down`을 채택했다. **델파이 실측 전
+        델파이 담당자와 문자열 재확인 필요**(정확히 일치하지 않으면 인식 안 됨)
+- [x] `src/pipeline/event_sender.py`의 `PipeEventSender`(네임드 파이프)를
+      `StdioEventSender`로 교체 — `print(GESTURE|이벤트|손|신뢰도|시각, flush=True)`
+      한 줄. "손" 필드는 이 저장소가 손 좌/우 정체성을 안 가려서 항상 빈 문자열
+      (GestureEvent.shape는 손 모양이지 손 정체성이 아니라 별개 개념 — 섞으면 안 됨).
+      print()의 "\n"이 윈도우에서 os.linesep("\r\n")으로 자동 변환되는 데 기대어
+      CRLF를 만든다 — 문자열에 "\r\n"을 직접 넣지 않는다(넣으면 이중 변환으로
+      "\r\r\n"이 되는 버그). `event_output.pipe` 섹션(name·reconnect_backoff_sec)은
+      더 이상 필요 없어 config.yaml/config_mac.yaml에서 제거
+- [x] `logger.py`의 `StreamHandler()`가 기본으로 stderr를 쓰는지 재확인(맞음) —
+      stdout이 이벤트 전용 채널로 오염되지 않는다는 전제가 성립함을 확인
+- [x] `tests/test_event_sender.py`를 `StdioEventSender` 기준으로 재작성 —
+      `sys.stdout`을 `io.StringIO()`로 임시 교체해 실제 와이어 포맷
+      (`GESTURE|left||1.00|1.000\n`)을 직접 검증. 전체 78건 통과
+- [ ] **실기 확인 필요** — 델파이7이 `cmd /c run.bat --headless`로 이 엔진을 자식
+      프로세스로 실행했을 때 stdout 라인이 제대로 도착하는지, `\r\n` 종결이 실제로
+      맞는지(자매 코드베이스는 `\\r\\n`을 문자열에 직접 넣는 방식이라 다름 — 결과물
+      바이트가 같은지 확인 필요) 실기 검증
+- [ ] GMtech_project의 `delphi_ui/`(완성된 델파이 예제 UI)·
+      `docs/델파이7_연동가이드.md`를 참고 자료로 계속 추적 — 팀원이 프로토콜을 또
+      바꾸면(예: 위/아래 명칭) 이 저장소에도 반영해야 함
+
+## ✅ 완료 (2026-07-23 2차 — 델파이7 실연동: 네임드 파이프 프로토콜, ★2차 정정으로 폐기됨 — 위 3차 참고)
+
+- [x] ~~전송 방식 팀 확정 — 네임드 파이프.~~ **폐기(3차 정정) — 실제는 stdio.** 델파이7이
+      네임드 파이프를 **서버**로 열고 엔진이 **클라이언트**로 접속한다고 이해했던 것이
+      부정확했다(사용자에게 전달된 설명이 불완전했음) — 실제로는 델파이가 엔진을
+      자식 프로세스로 실행하는 방식(stdio)이었다
+- [x] ~~`PipeEventSender` 추가~~ — 3차에서 `StdioEventSender`로 교체됨
+- [x] ~~`event_output.pipe` 설정 신설~~ — 3차에서 제거됨(더 이상 불필요)
 
 ## ✅ 완료 (2026-07-23 — 동작 체계 전면 개편: 손 모양+이동 통합)
 

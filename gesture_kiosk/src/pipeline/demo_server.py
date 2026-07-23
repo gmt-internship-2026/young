@@ -3,9 +3,10 @@
 TODO(기획서 9장 №7·№8): 회사 프로그램(UI) 파일을 받으면 이 서버와 demo_ui/는
 제거하고, event_sender.py 규격으로 이벤트만 전달한다.
 
-회사 프로그램 연동 계약(이 서버가 시연하는 것):
-- 이벤트(엔진→UI): /data 폴링 또는 event_output(udp) — move_left/right, select,
-  go_back, go_home 등 config classes 목록
+회사 프로그램 연동 계약(이 서버가 시연하는 것 — 실연동은 event_output.mode: stdio,
+이 서버는 개발용 대체 경로):
+- 이벤트(엔진→UI): /data 폴링 또는 event_output(udp, 개발용) — left/right/up/down/
+  back/home/ok (config classes 목록, 2026-07-23 회사 확정 명칭)
 - 음성 안내(UI→엔진): POST /announce {"text": "발급하기 버튼"} — 포커스 항목
   설명처럼 화면 구조를 아는 쪽(UI)이 문구를 만들어 엔진 TTS로 읽힌다
 """

@@ -1,11 +1,14 @@
 """postprocess 모듈 — 손 신호(손 위치 궤적·손가락 개수)를 동작 이벤트로 확정한다.
 
-동작 체계(2026-07-23 전면 개편 — 손 모양 + 이동으로 통합):
+동작 체계(2026-07-23 전면 개편 — 손 모양 + 이동으로 통합. 이벤트 이름은
+「제스처 정의 보고서」(2026-07-23 회사 확정, GMtech_project 팀원 커밋으로 확인)의
+7개 고정 명칭을 그대로 쓴다 — 델파이7 쪽 파싱 코드와 문자열이 정확히 일치해야
+하므로 임의로 바꾸지 않는다):
 - 검지 1개만 편 채(point, "가리키기") 손을 좌/우/상/하로 이동
-  → move_left / move_right / move_up / move_down (포커스 이동, 4방향)
+  → left / right / up / down (포커스 이동, 탐색 계층 — 4방향)
 - 주먹(fist, 전부 접음)을 낸 채 손을 좌/우/상으로 이동
-  → go_back / select / go_home (이전 화면 / 선택·확인 / 처음 화면). 아래(down)는
-  미정의(사용자 확정) — 방향은 잡히되 매핑이 없으므로 아무 이벤트도 나가지 않는다.
+  → back / ok / home (이전 화면 / 선택·확인 / 처음 화면, 명령 계층). 아래(down)는
+  미정의(회사 확정) — 방향은 잡히되 매핑이 없으므로 아무 이벤트도 나가지 않는다.
 
 옛 체계(팔 쓸기=좌/우 이동, 손 위치 이동=화면 전환, 손가락 1개 정지 유지=선택)는
 전면 폐기한다 — 손 모양(gestures.shapes)과 이동 판정이 이제 같은 MediaPipe 손
@@ -28,20 +31,20 @@ logger = get_logger("postprocess")
 
 OPPOSITE_DIRECTION = {"left": "right", "right": "left", "up": "down", "down": "up"}
 
-# point(검지 1개, "가리키기") + 이동 = 포커스 이동 4방향
+# point(검지 1개, "가리키기") + 이동 = 포커스 이동 4방향 (회사 확정 이벤트명 — 임의 변경 금지)
 POINT_EVENT_BY_DIRECTION = {
-    "left": "move_left",
-    "right": "move_right",
-    "up": "move_up",
-    "down": "move_down",
+    "left": "left",
+    "right": "right",
+    "up": "up",
+    "down": "down",
 }
 
-# fist(주먹) + 이동 = 확인/이전/홈. 아래(down)는 미사용 — 2026-07-23 사용자 확정
+# fist(주먹) + 이동 = 확인/이전/홈. 아래(down)는 미사용 — 2026-07-23 회사 확정
 # (방향은 감지되지만 매핑이 없어 아무 이벤트도 확정되지 않는다)
 FIST_EVENT_BY_DIRECTION = {
-    "right": "select",
-    "left": "go_back",
-    "up": "go_home",
+    "right": "ok",
+    "left": "back",
+    "up": "home",
 }
 
 
@@ -230,8 +233,8 @@ class GestureFilter:
         hand_point_ratio: 손 위치(프레임 폭/높이 비율 좌표, 랜드마크 0번 손목) — 손이
         안 보이면 None. 현재 손 모양에 맞는 궤적 트래커에 공급해 이동 방향을 판정한다.
 
-        point(검지 1개) 중 이동 -> move_left/right/up/down. fist(주먹) 중 이동 ->
-        select/go_back/go_home(아래 제외). 그 외 손가락 개수(2개 이상 등)는 어느
+        point(검지 1개) 중 이동 -> left/right/up/down. fist(주먹) 중 이동 ->
+        ok/back/home(아래 제외). 그 외 손가락 개수(2개 이상 등)는 어느
         트래커도 갱신하지 않는다 — 이동 중이 아닌 것으로 본다.
         """
         now_sec = self._clock()

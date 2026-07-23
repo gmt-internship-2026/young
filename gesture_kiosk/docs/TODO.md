@@ -6,6 +6,88 @@
 2026-07-10(타깃)·2026-07-15(동작 체계)·2026-07-16(선택 재확정·OCR 제거·TTS 보강) 변경을
 반영해 개정 필요.**
 
+## ✅ 완료 (2026-07-23 6차 — 사람 잠금 박스 여유(keypoint_bbox_pad_ratio) 신설)
+
+- [x] **실기 리포트: "팔을 옆(오른쪽)으로 뻗으면 손 인식이 잘 안 잡힘".** 손 인식
+      크롭 범위는 `person_lock.locked_person.bbox`(포즈 키포인트 묶음 박스)를 그대로
+      쓰는데, 팔을 옆으로 뻗으면 손목 키포인트 신뢰도가 떨어져 박스 계산에서 빠지고,
+      박스가 손을 놓쳐 그 이후 MediaPipe 손 인식 자체가 안 됨(학습 분류기 문제가
+      아니라 그 앞 단계인 크롭 범위 문제였다)
+- [x] `pose_estimator.py`의 `BBOX_PAD_RATIO`(하드코딩 0.10)를 `person_lock.
+      keypoint_bbox_pad_ratio`(config, 기본 0.4)로 이동 — 신뢰도 통과 키포인트 묶음에
+      더하는 여유분을 키워 손목 신뢰도가 살짝 떨어져도 박스가 손을 계속 덮게 함.
+      `_bbox_from_keypoints()`/`_persons_from_keypoints()`가 이제 이 값을 인자로 받음
+      (기획서 4.7 "코드에 숫자 하드코딩 금지" 원칙에도 더 맞음)
+- [x] `tests/test_pose_estimator.py`에 `BboxFromKeypointsTest` 3건 추가(여유 비율
+      조절·저신뢰도 keypoint 제외·keypoint 없음 케이스). 전체 92건 통과
+- [ ] **실기 재확인 필요** — 0.4가 적절한 값인지(너무 넓으면 다른 사람 손이 크롭에
+      섞여 들어올 위험). 오른쪽뿐 아니라 위/아래/왼쪽으로 뻗을 때도 확인할 것
+
+## ✅ 완료 (2026-07-23 5차 — 손 모양 학습 분류기 파이프라인 신설)
+
+- [x] **규칙 기반 판정(extended_ratio)을 실기에서 계속 못 믿게 되어 학습 기반 대안을
+      마련.** 1.3→1.6→1.45→1.3(z 3차원 판정 도입)까지 조정해도 카메라를 정면으로
+      가리키는 자세에서 point/fist 구분이 계속 불안정하다는 실기 리포트 — 사용자
+      요청으로 학습 파이프라인 신설
+- [x] **기존 `training/gesture/`(YOLO·ultralytics AGPL-3.0) 스캐폴드는 쓰지 않는다** —
+      이미지 전체를 다시 모아 라벨링해야 하고, 이 프로젝트가 예전에 일부러 걷어낸
+      AGPL 의존을 재도입하게 된다. 대신 이미 잘 잡히는 MediaPipe 21점 랜드마크
+      위에 작은 로지스틱 회귀 분류기 하나만 얹는 훨씬 가벼운 방식 채택 —
+      scikit-learn(BSD)은 학습 스크립트에서만 쓰고 추론 쪽엔 안 들어간다
+- [x] `src/postprocess/hand_shape_features.py` 신설 — 랜드마크 21점을 손목 기준
+      원점·손목-중지MCP 거리 기준 스케일로 정규화(60차원). 학습·추론 양쪽이 반드시
+      같은 정규화를 써야 해서 한 곳에만 둠(training/ 쪽은 sys.path로 가져다 씀)
+- [x] `scripts/collect_hand_shape_data.py`(+ `collect_hand_shape.bat`) 신설 —
+      카메라로 랜드마크를 라벨([1]=point [0]=fist [n]=none)과 함께 CSV로 수집.
+      gesture_kiosk 자체 venv_win 그대로 사용(별도 학습용 가상환경 불필요)
+- [x] `scripts/train_hand_shape_classifier.py`(+ `train_hand_shape.bat`) 신설 —
+      CSV로 로지스틱 회귀 학습, `models/weights/hand_shape_classifier.npz`로 내보냄
+      (계수+절편+클래스명뿐이라 추론 쪽은 numpy 행렬곱 하나로 끝남). 인물 단위 분할
+      (`--val-person`, 기획서 5.4) 지원
+- [x] `src/postprocess/hand_shape_classifier.py` 신설 — `.npz` 가중치 로드 후
+      `classify(landmarks) -> "point"|"fist"|"none"`. `realtime_loop.py`가
+      `gestures.shapes.classifier_weights_path` 설정 시 `count_extended_fingers()`
+      규칙 대신 이걸로 손 모양을 판정(같은 int 규약으로 변환해 gesture_filter.py는
+      무수정)
+- [x] `.gitignore`에 `data/hand_shape/`(개인 손 데이터)·`models/weights/*.npz`(개인
+      데이터로 학습된 결과물) 추가 — 커밋 안 함
+- [x] 테스트 7건 신규(`test_hand_shape_features.py`·`test_hand_shape_classifier.py`,
+      합성 가중치로 실제 학습 없이 결정적 검증). 전체 89건 통과
+- [ ] **사용자 진행 필요** — `collect_hand_shape.bat`로 데이터 수집(각 라벨 최소
+      수십 장, 카메라를 정면으로 가리키는 자세 포함) → `train_hand_shape.bat`로 학습
+      → `configs/config.yaml`의 `classifier_weights_path` 주석 해제 → 실기 확인.
+      아직 실제 데이터 수집·학습·검증은 안 됨(카메라 필요, 이 환경엔 없음)
+
+## ✅ 완료 (2026-07-23 4차 — 손 모양 판정 x,y,z 3차원화 + 실기 튜닝)
+
+- [x] **근본 원인 발견 — 손가락 신전 판정이 z(깊이)를 버리고 있었다.** 실기에서
+      "카메라 쪽으로 손을 쭉 내밀고 손가락을 펴면 오히려 주먹(0개)으로 잡힘" 리포트로
+      `extended_ratio`를 1.3→1.6→1.45로 세 번 조정해봤지만 안정화되지 않았다 — 이
+      프로젝트 제스처는 손을 카메라 쪽으로 내밀며 하는 동작이라 편 손가락이 화면
+      깊이 방향(카메라 시선과 거의 나란)으로 뻗는데, `hand_estimator.py`가 MediaPipe
+      가 주는 z(깊이, x와 같은 스케일)를 버리고 x,y 2차원 거리만 보고 있어서 원근
+      단축(foreshortening)으로 화면상 손가락 길이가 짧게 찍혀 어떤 임계값을 넣어도
+      안정적으로 판정되지 않았다
+- [x] `HandEstimator.infer()`가 이제 `(x, y, z)` 3튜플을 반환(기존 `(x, y)`에서 확장,
+      z는 x와 같은 픽셀 스케일로 맞춤). `count_extended_fingers()`의 거리 계산도
+      `math.dist()`가 3차원 튜플을 그대로 받아 3차원 유클리드 거리로 판정 —
+      손가락이 옆으로 뻗든 카메라 쪽으로 뻗든 같은 기준
+- [x] `extended_ratio`를 1.3으로 원복(z 3차원 판정 도입으로 임계값 우회 조정이 더는
+      필요 없어짐 — GMtech_project와 같은 값)
+- [x] `gestures.shapes.miss_grace_sec`(0.5초) 신설 — 손가락 개수가 프레임마다 흔들려
+      (예: 1↔4) 모양이 잠깐 어긋나 보여도 이 시간 안이면 직전 모양을 유지하고 이동
+      궤적을 리셋하지 않는다(`GestureFilter._resolve_shape_with_grace`, 옛
+      `_FingerSelectTracker.miss_grace_sec`과 같은 목적). 모양 전환 즉시 리셋 방식은
+      개수가 살짝만 흔들려도 `min_track_frames`가 쌓이기 전에 계속 끊겨 사실상
+      확정이 거의 안 됐었다
+- [x] `tests/test_hand_estimator.py`에 카메라 쪽 신전(z축으로만 뻗는 손가락) 회귀
+      테스트 추가, `tests/test_gesture_filter.py`에 `ShapeMissGraceTest` 3건 추가.
+      전체 82건 통과
+- [ ] **실기 재확인 필요** — 카메라를 정면으로 똑바로 가리켜도(각도 보정 없이) 검지 1개/
+      주먹이 안정적으로 잡히는지, `extended_ratio`(1.3)·`miss_grace_sec`(0.5초) 값이
+      적절한지. 이번 z 도입이 근본 수정이라 믿지만, MediaPipe의 z 정확도 자체가
+      x,y보다 떨어진다고 알려져 있어(공식 문서 명시) 실기에서 다시 어긋날 수 있음
+
 ## ✅ 완료 (2026-07-23 3차 — 델파이7 실연동 정정: 네임드 파이프 → stdio + 이벤트명 교체)
 
 - [x] **2차(아래 절)에서 만든 네임드 파이프(`\\.\pipe\...`) 구현은 폐기.** 실제 회사

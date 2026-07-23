@@ -98,6 +98,13 @@ person_lock:              # 오토포커스 카메라 — 초점 맞은 사용�
   follow_radius_ratio: 0.25   # 잠금 유지·추적 반경 (프레임 폭 대비 비율)
   release_sec: 2.0            # 이 시간 동안 안 보이면 잠금 해제 — 다음 사용자 인식
   sharpness_weight: 0.5       # 사용자 선정 점수에서 초점 선명도 비중 (0=크기만, 1=선명도만)
+  keypoint_bbox_pad_ratio: 0.4  # 2026-07-23 신설(옛 pose_estimator.BBOX_PAD_RATIO 하드코딩을
+                              #   config로 이동) — 신뢰도 통과 키포인트 묶음(어깨·손목 등)을
+                              #   감싸는 박스에 더하는 여유분(묶음의 큰 변 기준 비율). 이
+                              #   박스가 손 인식 크롭 범위까지 정하므로, 팔을 옆으로 뻗어
+                              #   손목 신뢰도가 떨어지면 박스가 손을 놓쳐 인식이 끊겼다
+                              #   (2026-07-23 실기 리포트 — "오른쪽으로 뻗으면 잘 안 잡힘").
+                              #   기존 0.10(하드코딩)에서 0.4로 상향 — 실기 재확인 필요
 
 gestures:
   cooldown_sec: 1.2           # 이벤트 확정 직후 입력 무시 시간 — 연타 방지.
@@ -142,14 +149,36 @@ gestures:
       d_cutoff_hz: 1.0        # 속도 추정 자체의 평활 컷오프 (보통 1.0 고정)
   shapes:                     # 손 모양 판정 — hand_estimator.count_extended_fingers(엄지
                               #   제외) 결과로 point/fist를 구분한다 (2026-07-23 신설).
-    point_finger_count: 1     # 검지 1개만 폄 = "가리키기" → hand_move 결과가 move_left/
-                              #   move_right/move_up/move_down으로 확정된다
-    fist_finger_count: 0      # 전부 접음 = "주먹" → hand_move 결과가 select(우)/go_back(좌)/
-                              #   go_home(상)으로 확정된다. 아래는 매핑 없음(미사용, 사용자 확정)
+    point_finger_count: 1     # 검지 1개만 폄 = "가리키기" → hand_move 결과가 left/right/
+                              #   up/down으로 확정된다
+    fist_finger_count: 0      # 전부 접음 = "주먹" → hand_move 결과가 ok(우)/back(좌)/
+                              #   home(상)으로 확정된다. 아래는 매핑 없음(미사용, 사용자 확정)
     extended_ratio: 1.3       # 2026-07-22 도입 — TIP-손목 거리가 PIP-손목 거리의 이 배수
                               #   이상이면 "폄"으로 판정(hand_estimator.count_extended_fingers).
-                              #   손이 화면에서 수직이 아니어도(얼굴 옆 등으로 기울여 듦) 흔들리지
-                              #   않는다. GMtech_project finger_select.py와 같은 값(가정값)
+                              #   ★2026-07-23 우여곡절: 실기에서 손을 카메라 쪽으로 곧게
+                              #   내밀 때 오판(1.3→과다계수/1.6→과소계수)이 계속돼 1.6·1.45로
+                              #   두 번 조정해봤지만 임계값만으로는 못 고쳤다 — 진짜 원인은
+                              #   판정 함수가 z(깊이)를 버리고 x,y만 봐서, 손가락이 카메라
+                              #   시선 방향(화면 깊이축)으로 뻗으면 원근 단축으로 2D 길이가
+                              #   짧게 찍혔던 것(hand_estimator.py 모듈 docstring 참고).
+                              #   x,y,z 3차원 거리로 판정식을 고친 뒤 원인이 해소돼 다시
+                              #   1.3(GMtech_project와 동일 가정값)으로 되돌렸다 — 실기 재확인 필요
+    miss_grace_sec: 0.5       # 2026-07-23 도입 — 손가락 개수가 프레임마다 흔들려(예:
+                              #   1→4→1) 모양이 잠깐 어긋나 보여도 이 시간 안이면 직전 모양을
+                              #   그대로 유지하고 이동 궤적을 리셋하지 않는다(옛
+                              #   _FingerSelectTracker.miss_grace_sec과 같은 목적 — 실기
+                              #   리포트: "손가락 인식이 흔들려서 거의 안 잡힘"). hand_model.
+                              #   infer_interval_frames(2) 기준 재인식 간격(~0.24초)보다
+                              #   넉넉히 크게 잡은 잠정치 — 실기 재확인 필요. 0.0이면 기능
+                              #   꺼짐(모양 어긋나면 즉시 리셋, 이전 동작과 동일)
+    classifier_weights_path: models/weights/hand_shape_classifier.npz
+                              # 2026-07-23 도입 — 학습된 손 모양 분류기(scripts/
+                              #   train_hand_shape_classifier.py로 생성). 주석 해제하고
+                              #   경로를 지정하면 count_extended_fingers()(extended_ratio
+                              #   규칙) 대신 이 분류기로 point/fist를 판정한다. 실기에서
+                              #   규칙 기반 판정이 계속 불안정할 때(1.3→1.6→1.45→1.3
+                              #   임계값 조정으로도 안 됨) 대안으로 마련 — 기본은 꺼짐
+                              #   (파일이 없으면 실행 자체가 안 되므로, 학습 전엔 주석 유지)
 
 announce:                   # 토크백(보이스오버) — 현재 위치·기능 음성 안내
   enabled: true
@@ -189,7 +218,7 @@ event_output:
   # StdioEventSender 참고. 로그는 stderr·파일로만 나가므로(logger.py 기본) stdout은
   # 이벤트 전용 채널로 유지된다. 델파이 쪽 예제: GMtech_project/gesture_kiosk/delphi_ui,
   # docs/델파이7_연동가이드.md
-  mode: console           # console(개발용, 로그만) | stdio(배포 — 델파이7 실연동)
+  mode: stdio             # console(개발용, 로그만) | stdio(배포 — 델파이7 실연동)
   udp:                     # 개발·디버깅용 예시(레거시, 실연동에는 안 쓴다)
     host: 127.0.0.1
     port: 9999

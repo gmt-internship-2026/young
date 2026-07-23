@@ -219,10 +219,12 @@ class GestureFilter:
         shapes = gestures["shapes"]
         self._point_finger_count = shapes["point_finger_count"]
         self._fist_finger_count = shapes["fist_finger_count"]
+        self._shape_miss_grace_sec = shapes.get("miss_grace_sec", 0.0)
 
         self._last_event_ts_sec = None
         self._last_finger_count = None
         self._last_hand_shape = None   # "point" | "fist" | None — 모양 전환 리셋 기준
+        self._shape_miss_since_sec = None   # 개수가 어긋난 시각 — miss_grace_sec 판단 기준
         self.debug = {}   # 실기 튜닝 계기판 — /data·화면 오버레이로 노출 (판정에 미사용, 2026-07-22)
 
     def filter_signals(self, finger_count, hand_point_ratio):
@@ -242,7 +244,7 @@ class GestureFilter:
             # 쿨다운 중엔 궤적을 쌓지 않는다 — 남은 점은 시간 창이 걸러낸다
             return None
 
-        shape = self._shape_category(finger_count)
+        shape = self._resolve_shape_with_grace(self._shape_category(finger_count), now_sec)
         if shape != self._last_hand_shape:
             # 손 모양이 바뀌면(주먹<->가리키기<->불명) 두 궤적 모두 리셋 — 다른
             # 모양으로 만든 이동량을 이어 붙이면 안 된다
@@ -277,6 +279,29 @@ class GestureFilter:
         if finger_count == self._fist_finger_count:
             return "fist"
         return None
+
+    def _resolve_shape_with_grace(self, raw_shape, now_sec):
+        """찰나의 손가락 개수 오검출로 이동 궤적이 매번 리셋되지 않도록 유예를 준다
+        (2026-07-23 실기 리포트 — "손가락 인식이 흔들려서 거의 안 잡힘". 개수가 프레임마다
+        1↔2↔4 등으로 흔들리면, 모양 전환 즉시 리셋 방식으로는 min_track_frames만큼
+        연속으로 쌓이기 전에 계속 끊겨 사실상 확정이 안 됐다 — 옛 _FingerSelectTracker의
+        miss_grace_sec과 같은 목적).
+
+        직전과 다른 모양이 감지돼도 miss_grace_sec 안이면 아직 리셋하지 않고 직전
+        모양을 그대로 유지한다(그동안 들어오는 점은 여전히 직전 모양의 트래커에 쌓인다).
+        grace를 넘겨도 계속 다르면 그때 실제로 전환한다. miss_grace_sec<=0(기본)이면
+        이 동작 자체가 꺼져 종전과 동일(즉시 전환)."""
+        if raw_shape == self._last_hand_shape:
+            self._shape_miss_since_sec = None
+            return raw_shape
+        if self._shape_miss_grace_sec <= 0 or self._last_hand_shape is None:
+            return raw_shape
+        if self._shape_miss_since_sec is None:
+            self._shape_miss_since_sec = now_sec
+        if now_sec - self._shape_miss_since_sec >= self._shape_miss_grace_sec:
+            self._shape_miss_since_sec = None
+            return raw_shape
+        return self._last_hand_shape   # grace 안 — 오검출로 보고 직전 모양 유지
 
     def _update_debug(self, now_sec):
         """판정 내부값 스냅샷 — 실기에서 왜 안/잘 넘는지 숫자로 보기 위한 계기판

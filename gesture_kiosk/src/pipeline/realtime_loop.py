@@ -15,6 +15,7 @@
 
 PipelineState가 예시 UI 서버와 공유되는 유일한 상태 저장소다.
 """
+import os
 import threading
 import time
 
@@ -139,6 +140,19 @@ def run_pipeline(config):
     finger_extended_ratio = config["gestures"]["shapes"].get(
         "extended_ratio", DEFAULT_EXTENDED_RATIO
     )
+    point_finger_count = config["gestures"]["shapes"]["point_finger_count"]
+    fist_finger_count = config["gestures"]["shapes"]["fist_finger_count"]
+    # 학습된 손 모양 분류기(2026-07-23) — 설정돼 있으면 count_extended_fingers() 규칙
+    # 대신 이걸로 point/fist를 판정한다. scripts/train_hand_shape_classifier.py 참고
+    shape_classifier = None
+    classifier_weights_path = config["gestures"]["shapes"].get("classifier_weights_path")
+    if classifier_weights_path:
+        from src.postprocess.hand_shape_classifier import HandShapeClassifier
+
+        shape_classifier = HandShapeClassifier(
+            os.path.join(config["root_dir"], classifier_weights_path)
+        )
+        logger.info("손 모양 학습 분류기 로딩 완료: %s", classifier_weights_path)
 
     state.is_running = True
 
@@ -203,7 +217,15 @@ def run_pipeline(config):
                     hand_crop = _crop_bbox(input_tensor, person_lock.locked_person.bbox)
                     hands = hand_estimator.infer(hand_crop)
                     if hands:
-                        last_finger_count = count_extended_fingers(hands[0], finger_extended_ratio)
+                        if shape_classifier is not None:
+                            shape_label = shape_classifier.classify(hands[0])
+                            # count_extended_fingers()와 같은 int 규약으로 맞춘다 — gesture_filter가
+                            # point_finger_count/fist_finger_count와 비교하는 로직을 그대로 재사용
+                            last_finger_count = {
+                                "point": point_finger_count, "fist": fist_finger_count,
+                            }.get(shape_label)   # 그 외 라벨("none" 등)이면 None — 어느 것도 매치 안 됨
+                        else:
+                            last_finger_count = count_extended_fingers(hands[0], finger_extended_ratio)
                         # 랜드마크 0번(손목) — hand_move가 이동 추적에 쓰는 대표점
                         last_hand_point_ratio = _hand_point_ratio(
                             person_lock.locked_person.bbox, hands[0][0],

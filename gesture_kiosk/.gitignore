@@ -3,6 +3,9 @@ data/raw/*
 data/labeled/*
 !data/raw/.gitkeep
 !data/labeled/.gitkeep
+data/hand_shape/            # 2026-07-23 — 손 모양 학습용 랜드마크 CSV(개인 손 형태 데이터,
+                             #   collect_hand_shape_data.py 산출물) — 커밋하지 않는다
+models/weights/*.npz        # 2026-07-23 — 학습된 손 모양 분류기(개인 데이터로 학습된 결과물)
 models/weights/*.pt
 models/engines/*.engine
 models/**/*.onnx

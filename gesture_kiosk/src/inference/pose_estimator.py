@@ -39,8 +39,6 @@ KPT_RIGHT_SHOULDER = 6
 KPT_LEFT_WRIST = 9
 KPT_RIGHT_WRIST = 10
 
-BBOX_PAD_RATIO = 0.10  # 키포인트 묶음 -> 사람 박스로 넓히는 패딩 (추적용)
-
 
 def ensure_cuda_dlls():
     """윈도우: onnxruntime CUDA는 torch(cu128)가 등록하는 CUDA DLL 경로에 의존한다.
@@ -87,14 +85,20 @@ def _resolve_device(device):
     return "cuda" if "CUDAExecutionProvider" in ort.get_available_providers() else "cpu"
 
 
-def _bbox_from_keypoints(keypoints, kpt_conf, frame_shape):
-    """신뢰도 통과 키포인트를 감싸는 박스. 통과점이 없으면 None."""
+def _bbox_from_keypoints(keypoints, kpt_conf, frame_shape, bbox_pad_ratio):
+    """신뢰도 통과 키포인트를 감싸는 박스. 통과점이 없으면 None.
+
+    bbox_pad_ratio: person_lock.keypoint_bbox_pad_ratio(config) — 손을 옆으로 뻗을 때
+    손목 키포인트 신뢰도가 떨어져 박스에서 빠지면 이 박스로 크롭하는 손 인식이
+    손을 놓친다(2026-07-23 실기 리포트 — "오른쪽으로 뻗으면 잘 안 잡힘"). 값을
+    키우면 신뢰도 통과 키포인트 묶음보다 더 넉넉하게 박스를 잡아 이런 경우를 줄인다.
+    """
     valid = keypoints[keypoints[:, 2] >= kpt_conf]
     if len(valid) == 0:
         return None
     x1, y1 = valid[:, 0].min(), valid[:, 1].min()
     x2, y2 = valid[:, 0].max(), valid[:, 1].max()
-    pad = max(x2 - x1, y2 - y1, 20.0) * BBOX_PAD_RATIO
+    pad = max(x2 - x1, y2 - y1, 20.0) * bbox_pad_ratio
     h_px, w_px = frame_shape[:2]
     return (
         max(0.0, float(x1 - pad)), max(0.0, float(y1 - pad)),
@@ -119,12 +123,12 @@ def pad_bbox(bbox, pad_ratio, frame_width_px, frame_height_px):
     )
 
 
-def _persons_from_keypoints(keypoints_xy, scores, frame_shape, kpt_conf):
+def _persons_from_keypoints(keypoints_xy, scores, frame_shape, kpt_conf, bbox_pad_ratio):
     """(N,17,2)+(N,17) 원시 출력 -> list[PersonPose] (infer/infer_at_bbox 공용)."""
     persons = []
     for xy, score in zip(keypoints_xy, scores):
         keypoints = np.concatenate([xy, score[:, None]], axis=1).astype(np.float32)
-        bbox = _bbox_from_keypoints(keypoints, kpt_conf, frame_shape)
+        bbox = _bbox_from_keypoints(keypoints, kpt_conf, frame_shape, bbox_pad_ratio)
         if bbox is None:
             continue
         head_points = [
@@ -150,6 +154,7 @@ class PoseEstimator:
         model = config["model"]
         device = _resolve_device(model["device"])
         self._kpt_conf_threshold = config["person_lock"]["kpt_conf_threshold"]
+        self._bbox_pad_ratio = config["person_lock"]["keypoint_bbox_pad_ratio"]
         # mode: lightweight(빠름) | balanced(기본) | performance(정확) — 첫 실행 시 자동 다운로드
         self._body = Body(mode=model["pose_mode"], backend="onnxruntime", device=device)
         logger.info("포즈 모델 로딩 완료: rtmlib Body(mode=%s, device=%s)", model["pose_mode"], device)
@@ -161,7 +166,9 @@ class PoseEstimator:
         매 프레임 쫓을 때는 infer_at_bbox()가 검출을 건너뛰어 훨씬 빠르다.
         """
         keypoints_xy, scores = self._body(frame)  # (N,17,2), (N,17)
-        return _persons_from_keypoints(keypoints_xy, scores, frame.shape, self._kpt_conf_threshold)
+        return _persons_from_keypoints(
+            keypoints_xy, scores, frame.shape, self._kpt_conf_threshold, self._bbox_pad_ratio
+        )
 
     def infer_at_bbox(self, frame, bbox):
         """bbox 안에서만 포즈를 추정한다 (검출기 생략 — 5배 이상 빠름, 2026-07-16).
@@ -173,4 +180,6 @@ class PoseEstimator:
         """
         bboxes = np.array([bbox], dtype=np.float32)
         keypoints_xy, scores = self._body.pose_model(frame, bboxes=bboxes)
-        return _persons_from_keypoints(keypoints_xy, scores, frame.shape, self._kpt_conf_threshold)
+        return _persons_from_keypoints(
+            keypoints_xy, scores, frame.shape, self._kpt_conf_threshold, self._bbox_pad_ratio
+        )

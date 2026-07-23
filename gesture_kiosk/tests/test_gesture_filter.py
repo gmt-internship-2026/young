@@ -172,6 +172,71 @@ class ShapeSwitchTest(GestureFilterTestBase):
         self.assertIsNone(event)
 
 
+class ShapeMissGraceTest(unittest.TestCase):
+    """shapes.miss_grace_sec(2026-07-23, 실기 리포트 — "손가락 인식이 흔들려서 거의
+    안 잡힘") — 손가락 개수가 잠깐 어긋나 보여도 이 시간 안이면 직전 모양을 유지하고
+    궤적을 리셋하지 않는다. 기본(미설정)은 ShapeSwitchTest의 즉시 리셋 동작과 동일
+    (그 테스트가 이미 회귀 방지) — 여기서는 grace를 명시적으로 켰을 때만 검증한다."""
+
+    def setUp(self):
+        self.clock = FakeClock()
+
+    def _make_filter(self, miss_grace_sec):
+        config = make_config()
+        config["gestures"]["shapes"]["miss_grace_sec"] = miss_grace_sec
+        return GestureFilter(config, clock=self.clock)
+
+    def _feed(self, gesture_filter, finger_count, hand_point_ratio, dt_sec=FRAME_DT_SEC):
+        event = gesture_filter.filter_signals(finger_count, hand_point_ratio)
+        self.clock.tick(dt_sec)
+        return event
+
+    def test_brief_misread_within_grace_does_not_reset_track(self):
+        gesture_filter = self._make_filter(miss_grace_sec=0.1)
+        # point로 절반 이동
+        for point in path(0.2, 0.4, 4, y_ratio=0.4):
+            self._feed(gesture_filter, ONE_FINGER, point)
+        # 순간 오검출 1프레임(TWO_FINGERS) — grace(0.1초) 안
+        self._feed(gesture_filter, TWO_FINGERS, (0.4, 0.4))
+        # 다시 point로 돌아와 나머지 절반 — grace 덕에 리셋 안 됐으면 총 이동량이
+        # 이어져 확정돼야 한다
+        event = None
+        for point in path(0.4, 0.6, 4, y_ratio=0.4):
+            event = self._feed(gesture_filter, ONE_FINGER, point)
+            if event is not None:
+                break
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "right")
+
+    def test_misread_longer_than_grace_resets_track(self):
+        gesture_filter = self._make_filter(miss_grace_sec=0.05)
+        for point in path(0.2, 0.4, 4, y_ratio=0.4):
+            self._feed(gesture_filter, ONE_FINGER, point)
+        # grace(0.05초)보다 오래 어긋난 채로 유지 — 진짜 모양 전환으로 봐야 한다
+        self._feed(gesture_filter, TWO_FINGERS, (0.4, 0.4))
+        self.clock.tick(0.2)
+        self._feed(gesture_filter, TWO_FINGERS, (0.4, 0.4))
+        event = None
+        for point in path(0.4, 0.6, 4, y_ratio=0.4):
+            event = self._feed(gesture_filter, ONE_FINGER, point)
+            if event is not None:
+                break
+        self.assertIsNone(event)   # 리셋됐으니 절반만으로는 아직 미확정
+
+    def test_default_grace_is_zero_and_resets_immediately(self):
+        # miss_grace_sec 미설정(기본 0.0) — ShapeSwitchTest와 같은 즉시 리셋 동작 재확인
+        gesture_filter = GestureFilter(make_config(), clock=self.clock)
+        for point in path(0.2, 0.4, 4, y_ratio=0.4):
+            self._feed(gesture_filter, ONE_FINGER, point)
+        self._feed(gesture_filter, TWO_FINGERS, (0.4, 0.4))
+        event = None
+        for point in path(0.4, 0.6, 4, y_ratio=0.4):
+            event = self._feed(gesture_filter, ONE_FINGER, point)
+            if event is not None:
+                break
+        self.assertIsNone(event)
+
+
 class ReturnSwallowTest(unittest.TestCase):
     """복귀 스트로크 삼킴(_SwipeTracker, 2026-07-23) — hand_move.return_suppress_sec을
     켰을 때 손 모양 기반 이동에도 그대로 적용되는지 확인한다. 세부 설계 근거는

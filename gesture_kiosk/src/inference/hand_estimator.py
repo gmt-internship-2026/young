@@ -18,6 +18,15 @@ count_extended_fingers()는 mediapipe 없이 좌표만으로 판정하는 순수
 문제가 있었다. GMtech_project(gesture_kiosk 자매 코드베이스)가 이미 쓰는 "TIP-손목
 거리가 PIP-손목 거리보다 충분히 크면 폄"(거리 비율) 방식으로 교체 — 손이 화면에서
 어느 방향으로 돌아가 있어도(면내 회전) 같은 결과를 준다.
+
+2026-07-23 2차 교체(x,y만 쓰던 걸 x,y,z 3차원 거리로) — 실기 리포트: "카메라 쪽으로
+손을 쭉 내밀고 손가락을 펴면 오히려 주먹(0개)으로 잡힘". 이 프로젝트의 제스처는
+손을 카메라 쪽으로 내밀며 하는 동작이라, 편 손가락이 화면 깊이 방향(카메라 시선과
+거의 나란한 방향)으로 뻗는다 — x,y만 보면 원근 단축(foreshortening)으로 화면상
+길이가 짧게 눌려 찍혀 임계값을 아무리 조절해도 안정적으로 판정이 안 됐다.
+MediaPipe가 이미 제공하는 z(깊이, 손목 기준 상대값 — x와 같은 스케일이라고 공식
+문서에 명시)를 x,y와 함께 3차원 거리로 써서, 손가락이 옆으로 뻗든 카메라 쪽으로
+뻗든 같은 기준으로 판정되게 한다. infer()가 이제 (x, y, z) 3튜플을 돌려준다.
 """
 import math
 import os
@@ -44,13 +53,15 @@ DEFAULT_EXTENDED_RATIO = 1.3   # gestures.select.extended_ratio 미설정 시 �
 
 
 def count_extended_fingers(landmarks, extended_ratio=DEFAULT_EXTENDED_RATIO):
-    """21개 (x, y) 좌표 -> 편 손가락 개수(0~4, 엄지 제외).
+    """21개 (x, y, z) 좌표 -> 편 손가락 개수(0~4, 엄지 제외).
 
     TIP-손목 거리가 PIP-손목 거리의 extended_ratio배 이상이면 "폄"으로 본다 — 편
     손가락은 TIP이 관절을 지나 쭉 뻗어 손목에서 멀고, 접힌 손가락은 TIP이 손목 쪽으로
     말려 들어와 가깝다(2026-07-22, GMtech_project finger_select.py와 같은 원리).
-    손이 화면에서 기울어 있어도(면내 회전) 흔들리지 않는다 — 구 y좌표 비교 방식은
-    손가락이 수직일 때만 정확했다.
+    거리는 z(깊이)까지 포함한 3차원 유클리드 거리다(2026-07-23) — 손이 화면에서
+    기울어 있어도(면내 회전) 흔들리지 않고, 손가락이 카메라 쪽으로(화면 깊이 방향)
+    뻗어도 원근 단축 없이 같은 기준으로 판정된다. math.dist는 튜플 길이가 같으면
+    차원 수 무관하게 유클리드 거리를 계산하므로 (x,y,z) 3튜플을 그대로 넣으면 된다.
     """
     wrist = landmarks[WRIST]
     count = 0
@@ -65,7 +76,9 @@ def count_extended_fingers(landmarks, extended_ratio=DEFAULT_EXTENDED_RATIO):
 
 
 class HandEstimator:
-    """MediaPipe HandLandmarker 래퍼. infer(crop_frame) -> list[list[(x, y)]] (손별 21점, 픽셀 좌표)."""
+    """MediaPipe HandLandmarker 래퍼. infer(crop_frame) -> list[list[(x, y, z)]] (손별 21점,
+    x·y는 크롭 기준 픽셀 좌표, z는 손목 기준 상대 깊이를 x와 같은 스케일(픽셀)로 맞춘 값 —
+    작을수록(음수) 카메라에 더 가깝다. count_extended_fingers()의 3차원 거리 판정용."""
 
     def __init__(self, config):
         from mediapipe import Image, ImageFormat
@@ -97,14 +110,17 @@ class HandEstimator:
         )
 
     def infer(self, crop_frame):
-        """BGR 크롭 프레임 -> 손별 21랜드마크(픽셀 좌표) 리스트. 손이 없거나 크롭이 비면 빈 리스트."""
+        """BGR 크롭 프레임 -> 손별 21랜드마크((x,y,z), 픽셀 스케일) 리스트. 손이 없거나
+        크롭이 비면 빈 리스트."""
         if crop_frame.size == 0:
             return []
         rgb_frame = cv2.cvtColor(crop_frame, cv2.COLOR_BGR2RGB)
         mp_image = self._Image(image_format=self._ImageFormat.SRGB, data=rgb_frame)
         result = self._landmarker.detect(mp_image)
         h_px, w_px = crop_frame.shape[:2]
+        # z는 MediaPipe 공식 문서 기준 "x와 대략 같은 스케일"이라 w_px로 함께 맞춘다
+        # (정규화 좌표계 기준값이 폭이라 x·z 모두 폭 기준 — 높이 h_px가 아님에 주의)
         return [
-            [(lm.x * w_px, lm.y * h_px) for lm in hand_landmarks]
+            [(lm.x * w_px, lm.y * h_px, lm.z * w_px) for lm in hand_landmarks]
             for hand_landmarks in result.hand_landmarks
         ]

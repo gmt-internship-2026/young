@@ -1,14 +1,14 @@
 """pipeline 모듈 — 캡처·추론·판정·전송을 연결해 실시간 루프를 구동한다 (기획서 2.2, 3.2).
 
-프레임 흐름 (윈도우 + NVIDIA GPU 기준 — 2026-07-15 2차: 포즈 단일 엔진):
-  카메라(스레드) → 거울 반전 → 사람 포즈(RTMPose) → 사용자 잠금(person_lock)
-  → 동작 판정(gesture_filter: 손끝·손목 쓸기 궤적 — 토크백식 1회/2연속 분기)
-  → 이벤트 전송(웹소켓·UDP)
+프레임 흐름 (2026-07-23 새 스펙 — 손 모양 기준):
+  카메라(스레드) → 거울 반전 → 사람 포즈(RTMPose wholebody) → 사용자 잠금(person_lock)
+  → 동작 판정(gesture_filter: 손 모양 다수결 + 손 중심 궤적 4방향)
+  → 이벤트 전송(stdio — stdout 한 줄, 델파이가 파이프로 수신)
 
-2026-07-16: 주민등록증 OCR 기능 제거 — 제스처 집중(사용자 결정). 개인정보
-(주민등록번호) 처리 이슈가 함께 소멸했다. 백업: _before_ocr_removal/.
+2026-07-23: 웹소켓·UDP·데모 웹 서버 제거(회사 결정 — 네트워크 철회, print 연동).
+디버그는 run_demo.py --debug 로컬 창(cv2)이 담당한다.
 
-PipelineState가 예시 UI 서버와 공유되는 유일한 상태 저장소다.
+PipelineState가 디버그 창과 공유되는 유일한 상태 저장소다.
 """
 import threading
 import time
@@ -17,7 +17,7 @@ from src.capture.camera_stream import CameraStream
 from src.utils.env_report import log_environment
 from src.inference.pose_estimator import PoseEstimator
 from src.inference.preprocessor import Preprocessor
-from src.pipeline.event_sender import build_text_payload, create_event_sender
+from src.pipeline.event_sender import create_event_sender
 from src.postprocess.gesture_filter import GestureFilter
 from src.postprocess.person_lock import PersonLock
 from src.utils.logger import get_logger
@@ -52,11 +52,10 @@ class PipelineState:
         self.is_running = False
         self.is_user_locked = False
         self.debug = {}                # 판정 계기판(gesture_filter.debug) — 실기 튜닝용
-        self._viewer_count = 0         # CAM 스트림 시청자 수 — 0이면 오버레이 렌더링 생략
-        self._event_listeners = []     # 웹소켓 구독자 [(asyncio 루프, 큐)] — 2026-07-21
+        self._viewer_count = 0         # 디버그 창 시청자 수 — 0이면 오버레이 렌더링 생략
 
     def add_viewer(self):
-        """CAM 스트림 접속 — 다음 루프부터 오버레이를 그린다 (2026-07-20 최적화)."""
+        """디버그 창 열림 — 다음 루프부터 오버레이를 그린다 (2026-07-20 최적화)."""
         with self._lock:
             self._viewer_count += 1
 
@@ -67,27 +66,6 @@ class PipelineState:
     @property
     def has_viewer(self):
         return self._viewer_count > 0
-
-    # ----- 웹소켓 이벤트 브로드캐스트 (2026-07-21 — 회사 결정: 웹소켓 전환) -----
-    # 추론 스레드(동기)에서 확정된 이벤트를 FastAPI 웹소켓(비동기 루프)의 구독자
-    # 큐로 넘긴다. call_soon_threadsafe가 스레드 경계를 안전하게 건넌다.
-
-    def add_event_listener(self, loop, queue):
-        with self._lock:
-            self._event_listeners.append((loop, queue))
-
-    def remove_event_listener(self, queue):
-        with self._lock:
-            self._event_listeners = [
-                (loop, q) for loop, q in self._event_listeners if q is not queue
-            ]
-
-    def broadcast_event(self, payload_text):
-        """접속 중인 웹소켓 구독자 전원에게 이벤트 텍스트를 push한다 (구독자 0명 = 무비용)."""
-        with self._lock:
-            listeners = list(self._event_listeners)
-        for loop, queue in listeners:
-            loop.call_soon_threadsafe(queue.put_nowait, payload_text)
 
     def update_frame(self, frame):
         with self._lock:
@@ -144,7 +122,7 @@ def run_pipeline(config):
                             "활성" if is_active else "유휴", len(persons), state.is_user_locked)
                 was_active = is_active
 
-            # 쓸기 판정용 추적점(손끝 → 손목 → 팔꿈치 폴백) — x·y 모두 프레임 폭으로 나눈
+            # 판정용 손 신호(손모양 + 손 중심) — x·y 모두 프레임 폭으로 나눈
             # 등방 좌표 (어깨너비 정규화와 단위 일치, 2026-07-16)
             swipe_points_ratio = {
                 side: None if info is None
@@ -153,15 +131,12 @@ def run_pipeline(config):
             }
             gesture_event = gesture_filter.filter_signals(
                 swipe_points_ratio, person_lock.user_shoulder_width_ratio(),
-                person_lock.user_shoulder_line_y_ratio(),   # 시작 존 게이트(2026-07-20)
+                person_lock.user_shoulder_line_y_ratio(),   # 들어올리기 게이트(2026-07-20)
             )
             state.debug = gesture_filter.debug
 
             if gesture_event is not None:
-                event_sender.send(gesture_event)
-                # 웹소켓 구독자에게도 push — UDP와 바이트 동일한 텍스트 규격이라
-                # 델파이 수신부가 같은 파서를 쓴다 (2026-07-21 웹소켓 전환)
-                state.broadcast_event(build_text_payload(gesture_event).decode("ascii"))
+                event_sender.send(gesture_event)   # stdio: stdout 한 줄 — 델파이 파이프 수신
                 state.append_event(gesture_event)
 
             infer_fps_meter.update()

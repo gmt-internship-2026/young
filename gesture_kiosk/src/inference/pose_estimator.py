@@ -1,8 +1,8 @@
-"""inference 모듈 — 사람 포즈(RTMPose)를 추론해 얼굴·어깨·손목·손끝 키포인트를 얻는다.
+"""inference 모듈 — 사람 포즈(RTMPose)를 추론해 얼굴·어깨·손 키포인트를 얻는다.
 
-2026-07-15 2차 개편으로 **유일한 추론 모델**이 됐다 — 쓸기(손목 궤적)·
-선택(고개 끄덕임)·사용자 잠금(얼굴)이 전부 이 포즈 키포인트로 판정된다
-(손 검출 MediaPipe·팔등 CNN 제거).
+2026-07-15 2차 개편으로 **유일한 추론 모델**이 됐다 — 손 모양(주먹/한 손가락)·
+손 중심 궤적·사용자 잠금(얼굴)이 전부 이 포즈 키포인트로 판정된다
+(2026-07-23 새 스펙 — 손 모양도 CNN 없이 손 21점 기하 규칙: hand_shape.py).
 
 2026-07-11 교체(라이선스 B안): ultralytics yolo11n-pose(AGPL-3.0)를 제거하고
 rtmlib(Apache-2.0, RTMPose 계열 + ONNX Runtime)로 바꿨다.
@@ -11,9 +11,9 @@ rtmlib(Apache-2.0, RTMPose 계열 + ONNX Runtime)로 바꿨다.
 내부망 반입 시에는 make_offline_bundle.bat이 이 캐시를 함께 담는다.
 
 키포인트 번호는 COCO 17 규격이다 (0=코, 1·2=눈, 3·4=귀, 5·6=어깨, 9·10=손목).
-pose_engine=wholebody(2026-07-16 손끝 추적)면 COCO-WholeBody 133 규격 — 앞 17개
-번호는 COCO 17과 동일해 기존 판정 코드가 그대로 돌고, 91~132가 양손 21점씩이다
-(손끝 인덱스는 person_lock 참고 — 유일한 사용처).
+pose_engine=wholebody면 COCO-WholeBody 133 규격 — 앞 17개 번호는 COCO 17과
+동일하고, 91~132가 양손 21점씩이다 (손 모양 판별·손 중심 추적의 입력 —
+hand_shape.py가 유일한 사용처. 새 스펙은 wholebody 필수: body 17은 손이 없다).
 주의: 이 라벨은 "화면에 보이는 사람" 기준의 해부학적 좌/우다. 거울 반전된
 프레임에서는 사용자의 실제 좌/우와 반대가 되며, 그 보정은 person_lock이 담당한다.
 """
@@ -62,7 +62,7 @@ class PersonPose:
     head_points: list = field(default_factory=list)  # 신뢰도 통과한 머리 키포인트 [(x, y)]
 
     def keypoint(self, index, min_conf):
-        """키포인트 신뢰도가 통과하면 (x_px, y_px), 아니면 None (손목·팔꿈치 공용)."""
+        """키포인트 신뢰도가 통과하면 (x_px, y_px), 아니면 None (어깨·손 등 공용)."""
         x, y, conf = self.keypoints[index]
         if conf < min_conf:
             return None
@@ -128,7 +128,7 @@ class PoseEstimator:
         # mode: lightweight(빠름) | balanced(기본) | performance(정확) — 첫 실행 시 자동 다운로드.
         # rtmlib은 무거운 의존이라 사용 시점에 임포트한다 (단위 테스트가 가벼워지게)
         if engine == "wholebody":
-            # 전신 133 키포인트 — 손끝 추적(2026-07-16). body보다 무겁다: 저사양 기기는 body 유지
+            # 전신 133 — 손 모양 판별(2026-07-23 스펙) 필수. body(17)는 손 키포인트가 없어 제스처 불가
             from rtmlib import Wholebody as solution
         else:
             from rtmlib import Body as solution

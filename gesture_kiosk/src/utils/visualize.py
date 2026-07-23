@@ -1,17 +1,17 @@
-"""디버그 시각화 — 포즈·잠금 상태를 프레임 위에 그린다 (예시 UI 스트림에도 사용)."""
+"""디버그 시각화 — 포즈·잠금 상태를 프레임 위에 그린다 (디버그 창에 사용)."""
 import cv2
 
 EVENT_COLOR = (0, 160, 255)
 TEXT_COLOR = (255, 255, 255)
 LOCK_COLOR = (255, 200, 0)       # 잠긴 사용자 얼굴 박스
-WRIST_COLOR = {"left": (255, 120, 60), "right": (60, 120, 255)}
-SOURCE_TAG = {"hand": "(F)", "elbow": "(E)"}   # F=손끝(fingertip) 평균, E=팔꿈치 폴백. 손목은 무표시
+HAND_COLOR = {"left": (255, 120, 60), "right": (60, 120, 255)}
+SHAPE_TAG = {"fist": "(F)", "finger": "(1)"}   # F=주먹(fist), 1=한 손가락. 불명은 무표시
 
 
 def draw_person_lock(frame, person_lock):
-    """잠긴 사용자의 얼굴 박스와 쓸기 추적점(사용자 기준 좌/우)을 그린다.
+    """잠긴 사용자의 얼굴 박스와 손 추적점(사용자 기준 좌/우)을 그린다.
 
-    라벨: L/R + 추적점 출처 — 손끝 "(F)" / 팔꿈치 폴백 "(E)" — 을 화면에서 확인할 수 있게.
+    라벨: L/R + 손 모양 — 주먹 "(F)" / 한 손가락 "(1)" — 을 화면에서 확인할 수 있게.
     """
     if person_lock.locked_face_box is not None:
         x1, y1, x2, y2 = person_lock.locked_face_box
@@ -22,13 +22,13 @@ def draw_person_lock(frame, person_lock):
     for side, point_info in person_lock.user_swipe_points().items():
         if point_info is None:
             continue
-        source, point = point_info
+        shape, point = point_info
         x_px, y_px = int(point[0]), int(point[1])
-        label = side[0].upper() + SOURCE_TAG.get(source, "")
-        cv2.circle(frame, (x_px, y_px), 10, WRIST_COLOR[side], 2)
+        label = side[0].upper() + SHAPE_TAG.get(shape, "")
+        cv2.circle(frame, (x_px, y_px), 10, HAND_COLOR[side], 2)
         cv2.putText(
             frame, label, (x_px + 12, y_px + 5),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.6, WRIST_COLOR[side], 2,
+            cv2.FONT_HERSHEY_SIMPLEX, 0.6, HAND_COLOR[side], 2,
         )
     return frame
 
@@ -37,7 +37,8 @@ def draw_person_lock(frame, person_lock):
 def draw_debug_panel(frame, debug):
     """판정 계기판 — 좌하단에 내부값 표시 (실기 튜닝용, 2026-07-16).
 
-    SCALE=어깨 스케일 / RET=복귀 삼킴 예약 방향 / SWIPE=진행도(±1.0 판정) / PEND=수직 1회 보류.
+    SCALE=어깨 스케일 / ARM=활성 팔+손 모양 / RET=복귀 삼킴 예약 방향 /
+    SWIPE=진행도(±1.0 판정) / VOTE=손 모양 다수결 현황(F=주먹, 1=한 손가락).
     """
     if not debug:
         return frame
@@ -45,13 +46,12 @@ def draw_debug_panel(frame, debug):
     swallow = debug.get("swallow")
     swallow_tag = f" [RET:{swallow}]" if swallow else ""
     side = debug.get("active_side") or "-"
-    source_tag = SOURCE_TAG.get(debug.get("active_source"), "")
+    shape_tag = SHAPE_TAG.get(debug.get("hand_shape"), "")
     lines = [
-        f"SCALE {debug.get('body_scale', 0):.2f}  ARM {side}{source_tag}{swallow_tag}",
-        f"SWIPE x{debug.get('swipe_progress_x', 0):+.2f} y{debug.get('swipe_progress_y', 0):+.2f}",
+        f"SCALE {debug.get('body_scale', 0):.2f}  ARM {side}{shape_tag}{swallow_tag}",
+        f"SWIPE x{debug.get('swipe_progress_x', 0):+.2f} y{debug.get('swipe_progress_y', 0):+.2f}"
+        f"  VOTE F{debug.get('votes_fist', 0)}/1-{debug.get('votes_finger', 0)}",
     ]
-    if debug.get("pending"):
-        lines.append(f"PEND {debug['pending']} (1/2)")
     for line_idx, line in enumerate(lines):
         y_px = h_px - 14 - 24 * (len(lines) - 1 - line_idx)
         cv2.putText(frame, line, (10, y_px),

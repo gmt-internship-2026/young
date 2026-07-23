@@ -64,7 +64,7 @@ python scripts\smoke_test.py
 if errorlevel 1 echo [경고] 검증 실패 항목이 있습니다 — 설치가이드.md의 "문제 해결" 참고
 
 echo.
-echo [DONE] 설치 완료 — run.bat 으로 실행하세요 (브라우저: http://localhost:5000)
+echo [DONE] 설치 완료 — run.bat 으로 실행하세요 (이벤트는 콘솔 GESTURE 줄, 디버그 창: run.bat --debug)
 echo [성능] 30 FPS 미달 시: configs\config.yaml 에서 input_size_px 640→480 확인
 echo        (pose_mode는 lightweight 기본 — 그래도 미달이면 GPU판 feat/think_win_gpu 검토)
 exit /b 0

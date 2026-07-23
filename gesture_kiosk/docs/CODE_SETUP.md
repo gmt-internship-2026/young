@@ -68,11 +68,11 @@ python scripts/download_weights.py
 # ③ 실시간 데모 — 개발 PC에서는 내장/USB 카메라가 USB 웹캠의 대역을 한다
 #    (실전 구성은 어디까지나 윈도우 + NVIDIA + USB 웹캠. 여기서는 코드 확인용일 뿐)
 python scripts/run_demo.py
-#   브라우저에서 http://localhost:5000 접속
+#   이벤트가 터미널(stdout)에 GESTURE| 줄로 찍히면 정상 (--debug = 디버그 창)
 #   macOS가 카메라 권한을 물으면 "허용"
 ```
 
-③에서 팔을 좌/우로 쓸면 `move_left`/`move_right`, 고개를 두 번 꾸벅하면 `select`가 뜨면 전체 파이프라인 정상.
+③에서 한 손가락으로 좌/우로 쓸면 `left`/`right`, 주먹+오른쪽이 `ok`로 찍히면 전체 파이프라인 정상.
 
 ## 문제 해결
 

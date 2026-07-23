@@ -2,9 +2,9 @@
 
 install.bat 마지막 단계에서 자동 실행된다. 확인 항목:
 1. 파이썬 버전 (배포 기준 3.11.5 — 시험 장비의 다른 버전은 경고만)
-2. 핵심 패키지 임포트 (onnxruntime·rtmlib·cv2·fastapi)
+2. 핵심 패키지 임포트 (onnxruntime·rtmlib·cv2)
 3. GPU 가속 확인 (onnxruntime CUDA — 맥 시험 장비는 CPU 안내)
-4. 더미 프레임 추론 (포즈 — 유일한 모델: 쓸기·끄덕임·잠금 전부 이걸로 판정)
+4. 더미 프레임 추론 (포즈 — 유일한 모델: 손 모양·궤적·잠금 전부 이걸로 판정)
 
 사용법 (프로젝트 루트에서):
     python scripts/smoke_test.py
@@ -45,7 +45,7 @@ def main():
         f"현재 {actual_python}" + ("" if actual_python == expected_python else " ← 배포 기준과 다름 (시험 장비면 무시)"),
     )
 
-    for module_name in ("onnxruntime", "rtmlib", "cv2", "fastapi", "yaml", "numpy"):
+    for module_name in ("onnxruntime", "rtmlib", "cv2", "yaml", "numpy"):
         try:
             __import__(module_name)
             check(f"{module_name} 임포트", True)
@@ -64,7 +64,7 @@ def main():
         pass  # 위 임포트 검사에서 이미 FAIL 처리됨
 
 
-    # 포즈가 유일한 모델 — 쓸기(손목 궤적)·선택(끄덕임)·잠금이 전부 이걸로 판정 (2026-07-15 2차)
+    # 포즈가 유일한 모델 — 손 모양(주먹/한 손가락)·궤적·잠금이 전부 이걸로 판정 (2026-07-23)
     try:
         import numpy as np
 
@@ -73,9 +73,9 @@ def main():
         pose = PoseEstimator(config)
         dummy = np.zeros((480, 640, 3), dtype=np.uint8)
         pose.infer(dummy)
-        check("더미 프레임 추론 (포즈 — 쓸기·끄덕임·잠금)", True)
+        check("더미 프레임 추론 (포즈 — 손 모양·궤적·잠금)", True)
     except Exception as error:  # 모델 누락·드라이버 문제 등 — 원인 그대로 보여준다
-        check("더미 프레임 추론 (포즈 — 쓸기·끄덕임·잠금)", False, repr(error))
+        check("더미 프레임 추론 (포즈 — 손 모양·궤적·잠금)", False, repr(error))
 
     print()
     if is_all_passed:

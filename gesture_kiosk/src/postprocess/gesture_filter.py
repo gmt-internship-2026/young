@@ -1,26 +1,25 @@
-"""postprocess 모듈 — 포즈 신호(손끝·손목 궤적)를 동작 이벤트로 확정한다.
+"""postprocess 모듈 — 손 신호(손 모양 + 손 중심 궤적)를 동작 이벤트로 확정한다.
 
-동작 체계(2026-07-16 확정 — 확인·선택 통합, 사용자 결정):
-- move_left / move_right : 팔을 좌/우로 쓸기 — 포커스 1칸 이동 (한 번에 한 팔만 인식, 즉시)
-- select                 : 위로 쓸기 1회 — 선택·확인 통합 (즉시 발화)
-- go_back                : 아래로 쓸기 1회 — 이전 화면
-- go_home                : 아래로 **2연속** 쓸기 — 처음으로 (화면 이탈 안전장치)
+동작 체계(2026-07-23 확정 — 「제스처 정의 보고서」 손 모양 기준 + 회사 합의 이벤트 명):
+- **한 손가락** + 좌/우/위/아래 쓸기 = left / right / top / bottom — 포커스 이동(탐색 계층)
+- **주먹** + 왼쪽 = back(이전) · 주먹 + 위 = home(처음으로) · 주먹 + 오른쪽 = ok(확인)
+- 주먹 + 아래 = 정의 없음 — 무시 (복귀 삼킴만 무장해 반동 오발을 막는다)
 
-아래 방향만 1회/2연속 분기가 있어 go_back은 double_within_sec 판정 창이 지나야
-확정된다 — 그만큼 늦는 트레이드오프 (config 주석 참고). 좌/우·위(선택)는 즉시.
-고개 꾸벅 선택은 2026-07-16 제거(쓸기 일원화) — 양팔이 없는 사용자의 선택 수단이
-사라지는 한계는 회사 협의 №1에 기록.
+손 모양이 계층을(탐색/명령), 이동 방향이 기능을 정한다 — 반복 횟수·화면 좌표는
+쓰지 않는다 (보고서 핵심 규칙). 방향은 이동량(경로 A)·플릭(경로 B)으로 확정하고,
+손 모양은 궤적과 나란히 쌓인 프레임별 판별(hand_shape.py)의 **다수결**로 확정
+시점에 정한다 — 빠른 동작 중 블러로 판별이 간헐적으로 끊겨도(None = 기권)
+이벤트가 유실되지 않는다.
 
-모든 판정이 포즈 키포인트 하나로 끝난다. 손이 없는 사용자는 팔꿈치 폴백으로
-동일하게 조작한다. 쓸기 임계는 어깨너비 배수(카메라 거리 무관), 이벤트 확정 직후
-cooldown_sec 동안 입력 무시. 복귀 스트로크(팔 되돌리기)의 반대 방향 오인은
-**반대 방향 1회 삼킴**(return_suppress_sec)이 막는다 — 구 정지 재장전은 멈춤 판정이
-실기에서 인식 불능을 유발해 제거(2026-07-16 사용자 결정). 수치는 config (기획서 4.7).
+구 스펙(위 1회=select · 아래 1회/2연속 분기)은 2026-07-23 제거 — 아래 방향
+보류·확정 지연이 함께 소멸했다. 쿨다운·반대 방향 복귀 삼킴·들어올리기 게이트
+(위 방향 = top/home 오발 방지)·소실 유예는 유지. 수치는 config (기획서 4.7).
 """
 import time
 from collections import deque
 from dataclasses import dataclass
 
+from src.postprocess.hand_shape import SHAPE_FINGER, SHAPE_FIST
 from src.postprocess.point_filter import PointFilter
 from src.utils.logger import get_logger
 
@@ -29,11 +28,13 @@ logger = get_logger("postprocess")
 OPPOSITE_DIRECTION = {"left": "right", "right": "left", "up": "down", "down": "up"}
 RAISE_TRIM_PROGRESS = 0.5   # 들어올리기 중 위 방향 진행이 이 비율을 넘으면 궤적을 비운다 —
                             # 상승 꼬리가 창에 남아 직후의 아래/좌/우 쓸기를 상쇄(지연)하는 것 방지
-IMMEDIATE_EVENT_BY_DIRECTION = {                       # 확정 즉시 발화하는 방향
-    "left": "move_left", "right": "move_right", "up": "select",
+
+# 손 모양 × 이동 방향 -> 이벤트 (2026-07-23 회사 합의 명칭).
+# 주먹+아래는 의도적으로 없다 — 정의되지 않은 조합 (모듈 주석)
+EVENT_BY_SHAPE = {
+    SHAPE_FINGER: {"left": "left", "right": "right", "up": "top", "down": "bottom"},
+    SHAPE_FIST: {"left": "back", "up": "home", "right": "ok"},
 }
-SINGLE_EVENT_BY_DIRECTION = {"down": "go_back"}        # 아래 1회 — 이전 화면
-DOUBLE_EVENT_BY_DIRECTION = {"down": "go_home"}        # 아래 2연속 — 처음으로 (안전장치)
 
 
 @dataclass
@@ -43,35 +44,43 @@ class GestureEvent:
     class_name: str
     conf: float
     ts_sec: float
-    hand_side: str = None   # 쓸기 계열만 값이 있다 ("left"/"right" — 궤적을 만든 손목)
+    hand_side: str = None   # 궤적을 만든 손 ("left"/"right" — 사용자 기준)
     data: dict = None       # 부가 정보 확장용 (현재 미사용)
 
 
 class _SwipeTracker:
-    """한 손목의 쓸기 궤적 — window_sec 안 이동량과 주축 우세로 방향을 확정한다.
+    """한 손의 쓸기 궤적 — window_sec 안 이동량과 주축 우세로 방향을 확정한다.
 
     복귀 스트로크(우로 쓸고 되돌리기)의 반대 방향 오인은 GestureFilter의
-    "반대 방향 1회 삼킴"이 담당한다 (2026-07-16 — 구 정지 재장전은 멈춤 판정이
+    "반대 방향 복귀 삼킴"이 담당한다 (2026-07-16 — 구 정지 재장전은 멈춤 판정이
     키포인트 떨림에 갇혀 인식 불능을 유발해 제거, 사용자 결정).
     """
 
     def __init__(self, window_sec, min_dist_x_shoulder, min_dist_y_shoulder,
-                 axis_dominance, min_track_frames):
+                 axis_dominance, min_track_frames,
+                 flick_window_sec=None, flick_min_dist_shoulder=0.0):
         self._window_sec = window_sec
         self._min_dist_x_shoulder = min_dist_x_shoulder   # 임계 단위: 어깨너비 배수
         self._min_dist_y_shoulder = min_dist_y_shoulder
         self._axis_dominance = axis_dominance
         self._min_track_frames = min_track_frames
+        # 플릭 경로(2026-07-22 — 사람마다 다른 동작 크기 흡수): 이동량이 임계에 못 미쳐도
+        # 최근 짧은 구간에서 flick_min_dist 이상 단호하게 움직였으면 인식한다. 손목만
+        # 까딱하는 작은 동작을 살리고, 느린 배회는 어느 짧은 구간에서도 미달이라 걸러진다.
+        # 키(flick_window_sec) 없으면 플릭 경로 없음 = 종전(이동량 단독) 동작
+        self._flick_window_sec = flick_window_sec          # 최근 이동을 재는 구간(초)
+        self._flick_min_dist = flick_min_dist_shoulder     # 그 구간의 최소 이동(어깨너비)
         self._track = deque()   # (ts_sec, x_ratio, y_ratio)
         # 계기판 노출용(2026-07-16 실기 튜닝) — 부호 있는 진행도: ±1.0 도달 시 확정
         self.progress_x = 0.0
         self.progress_y = 0.0
+        # 속도 실측(어깨너비/초) — 계기판 노출로 플릭 임계 튜닝 근거 (2026-07-22)
+        self.speed_x = 0.0
+        self.speed_y = 0.0
 
-    def update(self, x_ratio, y_ratio, now_sec, gain=1.0, body_scale=1.0):
+    def update(self, x_ratio, y_ratio, now_sec, body_scale=1.0):
         """관측 1건을 반영하고, 쓸기 확정이면 방향("left"/"right"/"up"/"down").
 
-        gain: 진행도 보정 배율 — 팔꿈치 추적(elbow_gain)처럼 같은 팔 휘두름에도
-        이동량이 작은 추적점을 손목과 같은 기준으로 판정하기 위한 값.
         body_scale: 어깨너비/프레임폭 — 임계값(어깨너비 배수)을 화면 비율로 환산하는
         자(尺). 카메라 거리·위치가 달라져도 같은 팔 동작이 같은 판정을 받는다.
         """
@@ -84,15 +93,45 @@ class _SwipeTracker:
         dx_ratio = x_ratio - self._track[0][1]
         dy_ratio = y_ratio - self._track[0][2]
         # 무단위 진행도(이동량/임계)로 축 비교 — 임계는 어깨너비 배수 × body_scale
-        self.progress_x = dx_ratio / (self._min_dist_x_shoulder * body_scale) * gain
-        self.progress_y = dy_ratio / (self._min_dist_y_shoulder * body_scale) * gain
+        self.progress_x = dx_ratio / (self._min_dist_x_shoulder * body_scale)
+        self.progress_y = dy_ratio / (self._min_dist_y_shoulder * body_scale)
         progress_x = abs(self.progress_x)
         progress_y = abs(self.progress_y)
+
+        # 경로 A(이동량): 임계 이상 + 주축 우세 — 느긋한 큰 쓸기
         if progress_x >= 1.0 and progress_x >= progress_y * self._axis_dominance:
             return "right" if dx_ratio > 0 else "left"
         if progress_y >= 1.0 and progress_y >= progress_x * self._axis_dominance:
             return "down" if dy_ratio > 0 else "up"   # 화면 y는 아래로 증가
-        return None   # 대각선(주축 불명) — 방향이 분명해질 때까지 보류
+
+        # 경로 B(플릭): 임계에 못 미쳐도 **최근 짧은 구간에서 단호하게** 움직였으면 확정 —
+        # 손목만 까딱하는 작은 동작 구제. 이동량을 전체 창이 아니라 최근 flick_window_sec로
+        # 재는 게 핵심: 전체 창은 앞의 정지 시간에 희석돼 정작 플릭을 놓치고, 느린 배회는
+        # 어느 짧은 구간에서도 flick_min_dist를 못 넘어 안 터진다(오발 억제).
+        if self._flick_window_sec is not None:
+            anchor = self._track[0]
+            for entry in self._track:   # 최근 창 안의 가장 오래된 점 = 최근 구간의 시작
+                if now_sec - entry[0] <= self._flick_window_sec:
+                    anchor = entry
+                    break
+            recent_dx = (x_ratio - anchor[1]) / body_scale if body_scale else 0.0
+            recent_dy = (y_ratio - anchor[2]) / body_scale if body_scale else 0.0
+            recent_elapsed = now_sec - anchor[0]
+            self.speed_x = recent_dx / recent_elapsed if recent_elapsed > 0 else 0.0
+            self.speed_y = recent_dy / recent_elapsed if recent_elapsed > 0 else 0.0
+            abs_rx, abs_ry = abs(recent_dx), abs(recent_dy)
+            if abs_rx >= self._flick_min_dist and abs_rx >= abs_ry * self._axis_dominance:
+                return "right" if recent_dx > 0 else "left"
+            if abs_ry >= self._flick_min_dist and abs_ry >= abs_rx * self._axis_dominance:
+                return "down" if recent_dy > 0 else "up"
+        return None   # 대각선(주축 불명)·느리고 작음 — 방향이 분명해질 때까지 보류
+
+    def start_point(self):
+        """현재 궤적의 시작점(가장 오래된 관측) (x, y) — 없으면 None.
+
+        쓸기가 어디서 출발했는지 = 복귀 판정의 기준점(직전 획의 출발지) 확보용.
+        """
+        return (self._track[0][1], self._track[0][2]) if self._track else None
 
     def has_point_near(self, point, radius):
         """궤적이 point 반경 안을 지나는가 — 복귀(직전 획 끝 경유) 판정에 쓴다.
@@ -106,10 +145,12 @@ class _SwipeTracker:
         )
 
     def reset(self):
-        """추적점 소실·손목↔팔꿈치 전환·이벤트 확정 — 궤적을 비운다."""
+        """추적점 소실·팔 교체·이벤트 확정 — 궤적을 비운다."""
         self._track.clear()
         self.progress_x = 0.0
         self.progress_y = 0.0
+        self.speed_x = 0.0
+        self.speed_y = 0.0
 
 
 
@@ -120,7 +161,6 @@ class GestureFilter:
         self._clock = clock
 
         swipe = gestures["swipe"]
-        self._elbow_gain = swipe["elbow_gain"]
         self._switch_margin_y_shoulder = swipe["switch_margin_y_shoulder"]
         body_scale = swipe["body_scale"]
         self._scale_fallback_ratio = body_scale["fallback_ratio"]
@@ -133,9 +173,17 @@ class GestureFilter:
         self._swipe_tracker = _SwipeTracker(
             swipe["window_sec"], swipe["min_dist_x_shoulder"], swipe["min_dist_y_shoulder"],
             swipe["axis_dominance"], swipe["min_track_frames"],
+            swipe.get("flick_window_sec"), swipe.get("flick_min_dist_shoulder", 0.0),
         )
         self._active_side = None     # 현재 인식 중인 팔 ("left"/"right")
-        self._active_source = None   # 그 팔의 추적점 출처 ("hand"/"wrist"/"elbow")
+        self._active_shape = None    # 이번 프레임의 원시 손 모양 판별 (계기판용)
+
+        # 손 모양 다수결(2026-07-23 새 스펙): 궤적과 나란히 프레임별 판별을 쌓아 두고
+        # 방향 확정 시점에 표가 많은 모양을 채택한다. 판별 None(블러·원거리)은 기권 —
+        # 주먹↔한 손가락 좌표는 연속이라 모양이 흔들려도 궤적은 리셋하지 않는다
+        # (구 스펙의 "출처 전환 리셋"이 빠른 쓸기를 잃던 문제가 구조적으로 소멸).
+        self._shape_votes = deque()          # (ts_sec, shape)
+        self._shape_window_sec = swipe["window_sec"]   # 투표 유효 기간 = 궤적 창과 동일
 
         # One Euro 필터(2026-07-20 정확도) — 추적점 떨림 저감. 궤적 단절 시 트래커와
         # 함께 리셋한다. 키 미설정 브랜치는 종전대로 무필터 (point_filter.py 주석 참고)
@@ -146,18 +194,18 @@ class GestureFilter:
             if point_filter.get("enabled") else None
         )
 
-        # 팔 들어올리기(예비 동작) 게이트(2026-07-20 실기): 아래 쓸기를 하려면 먼저
-        # 팔을 올려야 하는데 그 동작이 기하학적으로 위 쓸기와 같아 select로 오발됐다.
+        # 팔 들어올리기(예비 동작) 게이트(2026-07-20 실기): 위 방향 이벤트(top·home)를
+        # 하려면 먼저 팔을 올려야 하는데 그 동작 자체가 기하학적으로 위 쓸기와 같다.
         # 추적점이 **휴식 존**(어깨선 아래 어깨너비 raise_guard_below_shoulder배)에
-        # 최근(raise_guard_grace_sec 안) 있었다면 위 방향을 select로 치지 않는다 —
-        # 의도적 select는 팔을 가슴께 들고 하므로 휴식 존 이력이 없다.
+        # 최근(raise_guard_grace_sec 안) 있었다면 위 방향을 이벤트로 치지 않는다 —
+        # 의도적 top/home은 손을 가슴께 들고 하므로 휴식 존 이력이 없다.
         # 키 미설정이면 게이트 없음(구 config 하위 호환)
         self._raise_guard_below_shoulder = swipe.get("raise_guard_below_shoulder")
         self._raise_guard_grace_sec = swipe.get("raise_guard_grace_sec", 0.6)
         self._shoulder_line_y = None       # 어깨선 높이(등방 단위) — person_lock 공급
         # 근거리 보강(2026-07-21): 어깨선 기준 휴식 존이 화면 아래로 나가는 근거리에선
         # **화면 하단 띠**(바닥에서 어깨너비 0.3배)를 휴식 존으로 인정 — 내린 팔의
-        # 손목·팔꿈치가 화면 하단에 걸쳐 보이는 경우를 잡는다. y는 폭 정규화라
+        # 손이 화면 하단에 걸쳐 보이는 경우를 잡는다. y는 폭 정규화라
         # 화면 바닥 = height/width (720p = 0.5625)
         camera = config.get("camera") or {}
         self._frame_bottom_y = camera.get("height_px", 720) / camera.get("width_px", 1280)
@@ -166,47 +214,44 @@ class GestureFilter:
 
         # 소실 유예(2026-07-20 실증): 빠른 동작은 모션 블러로 키포인트가 순간(1~2프레임)
         # 끊기는데, 즉시 리셋하면 쓸기 전체가 유실된다 — 이 시간 안의 공백은 궤적을
-        # 유지한 채 기다린다. 키 미설정이면 종전(즉시 리셋). 팔 교체·출처 전환은
+        # 유지한 채 기다린다. 키 미설정이면 종전(즉시 리셋). 팔 교체는
         # 좌표계가 달라 유예 대상이 아니다(계속 리셋)
         self._dropout_grace_sec = swipe.get("dropout_grace_sec")
         self._last_point_sec = None        # 추적점이 마지막으로 존재한 시각
 
-        # 수직 쓸기 1회/2연속 분기 — 1회째는 보류했다가 판정 창이 지나면 단발로 확정
-        self._double_within_sec = swipe["double_within_sec"]
-        self._pending_direction = None   # "up"/"down" — 보류 중인 수직 쓸기
-        self._pending_side = None
-        self._pending_deadline_sec = None
-
-        # 반대 방향 1회 삼킴 — 동작 직후 같은 축의 반대 쓸기 1건을 복귀로 무시.
+        # 반대 방향 복귀 삼킴 — 동작 직후 같은 축의 반대 쓸기를 복귀로 무시.
         # 2026-07-16 실기 보완: 시간만 보면 의도적 반대 쓸기(예: 우 다음 좌)까지
         # 먹으므로, **시작점이 직전 획의 끝 근처일 때만** 복귀로 인정한다
         self._return_suppress_sec = swipe["return_suppress_sec"]
         self._return_origin_shoulder = swipe["return_origin_shoulder"]
+        # 복귀 삼킴을 시작점 기준으로 종료(2026-07-22 — 속도 경로 도입 대응): 복귀는
+        # 팔이 직전 획의 출발지로 되돌아와 멈추는 것이라 삼키고, 출발지를 이 거리 이상
+        # **지나쳐** 반대로 크게 쓸면 의도적 반대 동작이라 통과시킨다. 속도 경로가 복귀
+        # 꼬리를 잘게 재검출해도 시작점 안이면 계속 삼켜져 오발이 없다. 키 없으면 0
+        self._return_reach_shoulder = swipe.get("return_reach_shoulder", 0.0)
         self._swallow_direction = None
         self._swallow_deadline_sec = None
         self._swallow_origin_point = None   # 직전 획의 끝 좌표 — 복귀 시작점 대조용
+        self._swallow_start_point = None    # 직전 획의 출발지 — 복귀 종료(지나침) 판정 기준
         self._swallow_event_direction = None  # 직전 획의 방향 — 끝 좌표를 극값으로 추적
-        # 2연속 인정 전 복귀 확인(구 획 분리 유예 대체) — 같은 스윕의 꼬리가
-        # 2연속으로 오인되는 것을 시간이 아니라 "반대로 되돌아왔는가"로 막는다
-        # (시간 유예는 빠른 2연속을 차단하는 부작용이 실기에서 확인됨)
-        self._double_return_min_shoulder = swipe["double_return_min_shoulder"]
-        self._pending_return_seen = False
-        self._pending_extreme_y = None
+
+        self._shape_unknown_count = 0      # 계기판 — 모양 불명으로 버린 방향 확정 수
+        self._undefined_ignored_count = 0  # 계기판 — 정의 없는 조합(주먹+아래)으로 무시한 수
 
         self._last_event_ts_sec = None
-        self.debug = {}   # 실기 튜닝 계기판 — /data·화면 오버레이로 노출 (판정에 미사용)
+        self.debug = {}   # 실기 튜닝 계기판 — 디버그 창 오버레이로 노출 (판정에 미사용)
 
     def filter_signals(self, swipe_points, shoulder_width_ratio=None,
                        shoulder_line_y_ratio=None):
-        """포즈 신호 -> gesture_event | None (기획서 4.6 계약).
+        """손 신호 -> gesture_event | None (기획서 4.6 계약).
 
-        swipe_points: {"left": (출처, (x_ratio, y_ratio)) | None, ...} — 잠긴 사용자의
-        쓸기 추적점(person_lock.user_swipe_points — 손끝 → 손목 → 팔꿈치 폴백).
+        swipe_points: {"left": (손모양, (x_ratio, y_ratio)) | None, ...} — 잠긴 사용자의
+        손 신호(person_lock.user_swipe_points — 손모양 = fist/finger/None(불명)).
         사용자 기준 좌/우, **x·y 모두 프레임 폭으로 나눈** 비율 좌표(등방 단위 —
         어깨너비 정규화와 단위를 맞추기 위해, 2026-07-16).
         shoulder_width_ratio: 어깨너비/프레임폭(person_lock.user_shoulder_width_ratio)
         — 쓸기 임계를 몸 크기 기준으로 환산. 없으면 마지막 값, 최초부터 없으면 기본값.
-        좌/우·위(선택)는 즉시 확정, 아래는 1회/2연속 판정 창을 거친다 (모듈 주석 참고).
+        모든 이벤트는 방향 확정 즉시 발화한다 (구 아래 1회/2연속 분기·지연 제거).
         """
         now_sec = self._clock()
         body_scale = self._update_body_scale(shoulder_width_ratio)
@@ -223,24 +268,6 @@ class GestureFilter:
                 self._stamp_rest_zone(point_info[1], now_sec, body_scale)
             return None
 
-        # 보류 중인 수직 쓸기 — 판정 창이 지나도록 2회째가 없으면 1회 동작으로 확정
-        if self._pending_direction is not None and now_sec >= self._pending_deadline_sec:
-            direction = self._pending_direction
-            pending_side = self._pending_side
-            self._clear_pending()
-            if self._swallow_direction is not None:
-                # 삼킴이 미소진 = 복귀가 아직 안 왔다(팔이 획 끝에 남아 있다) — 확정 후
-                # 팔을 제자리로 되돌리는 동작이 반대 방향으로 오발되지 않게 삼킴 창을
-                # 확정 시점 기준으로 연장한다 (2026-07-16 3차: go_back 확정 뒤 쿨다운이
-                # 지나고 팔을 올리는 복귀가 select(확인)로 오발되던 실기 증상 수정.
-                # 복귀가 보류 중에 이미 왔다면 삼킴이 소진돼 이 연장은 일어나지 않는다)
-                self._swallow_deadline_sec = now_sec + self._return_suppress_sec
-            event = self._confirm(
-                SINGLE_EVENT_BY_DIRECTION[direction], 1.0, now_sec, hand_side=pending_side
-            )
-            self._update_debug(body_scale, shoulder_width_ratio)
-            return event
-
         event = None
         if side is None:
             if (self._dropout_grace_sec is not None
@@ -251,18 +278,18 @@ class GestureFilter:
                 # 재등장을 기다린다 (즉시 리셋하면 빠른 쓸기가 통째로 유실 — 실증)
                 self._update_debug(body_scale, shoulder_width_ratio)
                 return None
-            self._swipe_tracker.reset()   # 유예 초과 소실 — 끊긴 궤적을 이어 붙이지 않는다
+            self._reset_stroke()   # 유예 초과 소실 — 끊긴 궤적을 이어 붙이지 않는다
             self._active_side = None
-            self._active_source = None
+            self._active_shape = None
             if self._point_filter is not None:
                 self._point_filter.reset()
         else:
-            source, point = point_info
-            if side != self._active_side or source != self._active_source:
-                self._swipe_tracker.reset()   # 팔 교체·추적점 출처 전환(손끝↔손목 등) — 궤적 연결 금지
+            shape, point = point_info
+            if side != self._active_side:
+                self._reset_stroke()   # 팔 교체 — 궤적 연결 금지. 손 모양 전환은 리셋
+                #   대상이 아니다: 추적점(손 중심)은 주먹↔한 손가락에서 좌표가 연속이다
                 was_absent = self._active_side is None
                 self._active_side = side
-                self._active_source = source
                 if self._point_filter is not None:
                     self._point_filter.reset()   # 다른 점의 잔상으로 새 궤적 오염 금지
                 # 팔의 "등장"도 휴식 존 이력로 취급(2026-07-21 실기 정정): 근거리에선
@@ -273,16 +300,15 @@ class GestureFilter:
                         and (self._shoulder_line_y is None
                              or point[1] > self._shoulder_line_y)):
                     self._last_rest_zone_sec = now_sec
+            self._active_shape = shape
+            if shape is not None:
+                self._add_shape_vote(shape, now_sec)
             if self._point_filter is not None:
                 point = self._point_filter.filter(point, now_sec)   # 떨림 저감 (One Euro)
-            gain = self._elbow_gain if source == "elbow" else 1.0
             self._last_point_sec = now_sec   # 소실 유예의 기준 시각
             self._stamp_rest_zone(point, now_sec, body_scale)
             self._update_swallow_origin(point)
-            self._watch_pending_return(point, body_scale)
-            direction = self._swipe_tracker.update(
-                point[0], point[1], now_sec, gain, body_scale
-            )
+            direction = self._swipe_tracker.update(point[0], point[1], now_sec, body_scale)
             if (direction is None and self._is_arm_raise(now_sec)
                     and self._swipe_tracker.progress_y <= -RAISE_TRIM_PROGRESS
                     and abs(self._swipe_tracker.progress_y) >= abs(self._swipe_tracker.progress_x)):
@@ -290,7 +316,7 @@ class GestureFilter:
                 # 상승 꼬리가 창(0.8초)에 남으면 직후의 아래/좌/우 쓸기 이동량을
                 # 상쇄해 확정이 ~0.5초 지연되거나 짧은 쓸기가 묻힌다 (2026-07-20 실증).
                 # 수평 쓸기(허리 높이 포함)는 위 진행이 없어 영향받지 않는다
-                self._swipe_tracker.reset()
+                self._reset_stroke()
             if direction is not None:
                 event = self._judge_swipe(direction, side, now_sec, point, body_scale)
 
@@ -298,58 +324,94 @@ class GestureFilter:
         return event
 
     def _judge_swipe(self, direction, side, now_sec, point, body_scale):
-        """쓸기 방향 1건 -> 이벤트 | None.
+        """쓸기 방향 1건 + 손 모양 다수결 -> 이벤트 | None.
 
-        - 좌/우/위(선택): 즉시 확정 (보류 중인 아래 쓸기는 폐기 — 의도 변경)
-        - 아래 1회째: 보류 등록 (판정 창 경과 시 go_back으로 확정)
-        - 보류와 같은 방향(아래) 2회째: 복귀 확인(return_seen) 후에만 go_home —
-          같은 스윕의 꼬리 궤적이 2연속으로 오인되는 것 방지
-        - 직전 동작의 반대 방향: 시작점이 직전 획 끝 근처면 복귀로 삼킴 (1회용)
+        - 직전 동작의 반대 방향: 직전 획 끝을 지나온 복귀 스트로크면 삼킴
+        - 위 방향 + 휴식 존 직후: 들어올리기(예비 동작) — 무시
+        - 모양 다수결: finger -> left/right/top/bottom · fist -> back/home/ok.
+          불명(표 없음·동수)·정의 없는 조합(주먹+아래)은 무시하되 삼킴은 무장한다 —
+          실제로 움직인 팔은 되돌아오므로 반동 오발을 막아야 한다
         """
+        stroke_start = self._swipe_tracker.start_point()   # 이 획의 출발지 — 다음 복귀 판정 기준
         if (self._swallow_direction == direction
                 and self._swallow_deadline_sec is not None
                 and now_sec < self._swallow_deadline_sec
-                and self._is_return_from_origin(body_scale)):
-            # 직전 획의 끝을 지나온 반대 방향 — 복귀 스트로크로 보고 삼킨다 (1회용).
-            # 다른 위치에서 시작한 반대 쓸기는 의도적 동작이라 그대로 통과
-            self._swallow_direction = None
-            self._swipe_tracker.reset()
+                and self._is_return_from_origin(body_scale)
+                and not self._crossed_past_start(point, direction, body_scale)):
+            # 직전 획의 끝을 지나온 반대 방향 = 복귀 스트로크 — 삼킨다.
+            # 속도 경로(2026-07-22)가 한 번의 복귀를 잘게 여러 번 검출하므로, 삼킴을
+            # 소진하지 않고 **현재 점을 새 원점으로 재무장**해 남은 복귀 구간까지 계속
+            # 삼킨다(궤적은 리셋해 다른 판정을 오염시키지 않는다).
+            # 출발지(_swallow_start_point)는 고정이라, 복귀가 출발지를 크게 지나쳐
+            # 반대로 쓸면 위의 _crossed_past_start가 참이 돼 이 분기를 벗어나 발화한다.
+            # 다른 위치에서 시작한 반대 쓸기는 원점 경유 조건에서 걸러져 통과한다
+            self._reset_stroke()
+            if self._return_reach_shoulder > 0.0:
+                # 신 동작(속도 경로 대응): 소진하지 않고 재무장 — 출발지를 지나칠 때까지 삼킴
+                self._swallow_origin_point = point
+                self._swallow_deadline_sec = now_sec + self._return_suppress_sec
+            else:
+                self._swallow_direction = None   # 구 config 하위 호환 — 1회용 삼킴
             return None
 
         if direction == "up" and self._is_arm_raise(now_sec):
             # 팔 들어올리기(예비 동작) — 휴식 존(팔 처진 위치)에서 방금 올라온 위
-            # 방향은 select가 아니라 다음 동작 준비다 (2026-07-20 실기: 아래 쓸기
-            # 전 들어올리기가 select로 오발). 무시하고 궤적을 비워, 이어지는
+            # 방향은 top/home이 아니라 다음 동작 준비다 (2026-07-20 실기: 아래 쓸기
+            # 전 들어올리기가 확인으로 오발). 무시하고 궤적을 비워, 이어지는
             # 동작(아래 쓸기 등)이 올라간 위치 기준으로 새로 판정되게 한다
             self._raise_ignored_count += 1
-            self._swipe_tracker.reset()
+            self._reset_stroke()
             return None
 
-        if direction in IMMEDIATE_EVENT_BY_DIRECTION:
-            self._clear_pending()
-            event = self._confirm(
-                IMMEDIATE_EVENT_BY_DIRECTION[direction], 1.0, now_sec, hand_side=side
-            )
-            self._set_swallow(direction, now_sec, point)
-            return event
-        if self._pending_direction == direction:
-            if not self._pending_return_seen:
-                self._swipe_tracker.reset()   # 같은 스윕의 꼬리 — 새 획으로 치지 않는다
-                return None
-            self._clear_pending()
-            event = self._confirm(
-                DOUBLE_EVENT_BY_DIRECTION[direction], 1.0, now_sec, hand_side=side
-            )
-            self._set_swallow(direction, now_sec, point)
-            return event
-        self._pending_direction = direction
-        self._pending_side = side
-        self._pending_deadline_sec = now_sec + self._double_within_sec
-        self._pending_return_seen = False
-        self._pending_extreme_y = point[1]
-        self._set_swallow(direction, now_sec, point)   # 1회째 복귀의 위 오인 방지
-        self._swipe_tracker.reset()
+        shape = self._voted_shape(now_sec)
+        if shape is None:
+            # 모양 불명(표 없음·동수 — 블러·펼친 손 등) — 방향은 나왔지만 계층을
+            # 정할 수 없다: 오발보다 무시가 낫다. 실제로 움직인 팔의 반동이 반대
+            # 방향으로 오발되지 않게 삼킴은 무장해 둔다
+            self._shape_unknown_count += 1
+            self._reset_stroke()
+            self._set_swallow(direction, now_sec, point, stroke_start)
+            return None
+
+        event_name = EVENT_BY_SHAPE[shape].get(direction)
+        if event_name is None:
+            # 정의 없는 조합(주먹+아래) — 보고서 스펙에 없다: 무시 + 삼킴 무장
+            self._undefined_ignored_count += 1
+            self._reset_stroke()
+            self._set_swallow(direction, now_sec, point, stroke_start)
+            return None
+
+        event = self._confirm(event_name, 1.0, now_sec, hand_side=side)
+        self._set_swallow(direction, now_sec, point, stroke_start)
+        return event
+
+    # ----- 손 모양 다수결 (2026-07-23) -----
+
+    def _add_shape_vote(self, shape, now_sec):
+        self._shape_votes.append((now_sec, shape))
+        self._prune_shape_votes(now_sec)
+
+    def _prune_shape_votes(self, now_sec):
+        while self._shape_votes and now_sec - self._shape_votes[0][0] > self._shape_window_sec:
+            self._shape_votes.popleft()
+
+    def _voted_shape(self, now_sec):
+        """궤적 창 안 판별들의 다수결 — "fist" | "finger" | None(표 없음·동수)."""
+        self._prune_shape_votes(now_sec)
+        fist_count = sum(1 for _, shape in self._shape_votes if shape == SHAPE_FIST)
+        finger_count = len(self._shape_votes) - fist_count
+        if fist_count > finger_count:
+            return SHAPE_FIST
+        if finger_count > fist_count:
+            return SHAPE_FINGER
         return None
+
+    def _reset_stroke(self):
+        """궤적 단절(팔 교체·소실·확정·삼킴) — 트래커와 모양 투표를 함께 비운다."""
+        self._swipe_tracker.reset()
+        self._shape_votes.clear()
+
+    # ----- 휴식 존 · 들어올리기 게이트 -----
 
     def _stamp_rest_zone(self, point, now_sec, body_scale):
         """추적점이 휴식 존에 있으면 시각을 기록 — 들어올리기 판별 근거.
@@ -375,6 +437,8 @@ class GestureFilter:
             and now_sec - self._last_rest_zone_sec < self._raise_guard_grace_sec
         )
 
+    # ----- 복귀 삼킴 -----
+
     def _update_swallow_origin(self, point):
         """직전 획이 이벤트 방향으로 계속 뻗으면 끝 좌표(복귀 대조 기준)를 갱신한다."""
         if self._swallow_direction is None or self._swallow_origin_point is None:
@@ -391,19 +455,6 @@ class GestureFilter:
             oy = min(oy, point[1])
         self._swallow_origin_point = (ox, oy)
 
-    def _watch_pending_return(self, point, body_scale):
-        """보류 중 팔이 반대로 충분히 되돌아왔는지 감시 — 2연속 인정의 전제 조건."""
-        if self._pending_direction is None or self._pending_return_seen:
-            return
-        if self._pending_direction == "down":
-            self._pending_extreme_y = max(self._pending_extreme_y, point[1])
-            if point[1] <= self._pending_extreme_y - self._double_return_min_shoulder * body_scale:
-                self._pending_return_seen = True
-        else:   # "up" — 현재 배치에선 미사용이나 대칭 유지
-            self._pending_extreme_y = min(self._pending_extreme_y, point[1])
-            if point[1] >= self._pending_extreme_y + self._double_return_min_shoulder * body_scale:
-                self._pending_return_seen = True
-
     def _is_return_from_origin(self, body_scale):
         """반대 쓸기의 궤적이 직전 획의 끝 근처를 지나왔는가 — 복귀의 물리적 특징."""
         if self._swallow_origin_point is None:
@@ -412,32 +463,52 @@ class GestureFilter:
             self._swallow_origin_point, self._return_origin_shoulder * body_scale
         )
 
-
-    def _set_swallow(self, direction, now_sec, point):
-        """direction 동작 직후 — 그 반대 방향 1회를 복귀로 삼킬 준비 (끝 좌표 기록)."""
+    def _set_swallow(self, direction, now_sec, point, stroke_start=None):
+        """direction 동작 직후 — 그 반대 방향을 복귀로 삼킬 준비 (끝·출발 좌표 기록)."""
         self._swallow_direction = OPPOSITE_DIRECTION[direction]
         self._swallow_deadline_sec = now_sec + self._return_suppress_sec
         self._swallow_origin_point = point
+        self._swallow_start_point = stroke_start   # 이 획의 출발지 — 복귀 종료(지나침) 기준
         self._swallow_event_direction = direction
 
-    def _clear_pending(self):
-        self._pending_direction = None
-        self._pending_side = None
-        self._pending_deadline_sec = None
+    def _crossed_past_start(self, point, direction, body_scale):
+        """복귀가 직전 획의 출발지를 return_reach_shoulder 이상 지나쳤는가.
+
+        지나쳤다면 단순 복귀가 아니라 반대로 크게 쓰는 의도적 동작 — 삼키지 않는다.
+        출발지 기록이 없으면(구 config·판단 근거 없음) 항상 False (종전처럼 삼킴).
+        """
+        if self._swallow_start_point is None or self._return_reach_shoulder <= 0.0:
+            return False
+        reach = self._return_reach_shoulder * body_scale
+        start_x, start_y = self._swallow_start_point
+        if direction == "left":
+            return point[0] < start_x - reach
+        if direction == "right":
+            return point[0] > start_x + reach
+        if direction == "up":
+            return point[1] < start_y - reach
+        if direction == "down":
+            return point[1] > start_y + reach
+        return False
 
     def _update_debug(self, body_scale, shoulder_width_ratio):
         """판정 내부값 스냅샷 — 실기에서 임계가 왜 안/잘 넘는지 숫자로 보기 위한 계기판."""
         tracker = self._swipe_tracker
+        fist_count = sum(1 for _, shape in self._shape_votes if shape == SHAPE_FIST)
         self.debug = {
             "body_scale": round(body_scale, 3),               # 어깨너비/프레임폭 (평활 후)
             "shoulder_raw": None if shoulder_width_ratio is None else round(shoulder_width_ratio, 3),
             "active_side": self._active_side,
-            "active_source": self._active_source,
-            "swallow": self._swallow_direction,               # 이 방향 1회는 복귀로 무시 예정
+            "hand_shape": self._active_shape,                 # 이번 프레임 원시 판별 (fist/finger/None)
+            "votes_fist": fist_count,                         # 다수결 현황 — 확정 시점에 많은 쪽 채택
+            "votes_finger": len(self._shape_votes) - fist_count,
+            "swallow": self._swallow_direction,               # 이 방향은 복귀로 무시 예정
             "swipe_progress_x": round(tracker.progress_x, 2), # ±1.0 도달 시 좌/우 확정
             "swipe_progress_y": round(tracker.progress_y, 2), # ±1.0 도달 시 상/하 판정
-            "pending": self._pending_direction,               # 보류 중 수직 쓸기 (1회/2연속 분기 대기)
+            "swipe_speed_x": round(tracker.speed_x, 2),       # 어깨너비/초 — 플릭 임계 튜닝 근거
+            "swipe_speed_y": round(tracker.speed_y, 2),
             "raise_ignored": self._raise_ignored_count,       # 들어올리기로 무시된 위 쓸기 누계
+            "shape_unknown": self._shape_unknown_count,       # 모양 불명으로 버린 확정 누계
         }
 
     def _update_body_scale(self, shoulder_width_ratio):
@@ -459,7 +530,7 @@ class GestureFilter:
         return self._body_scale if self._body_scale is not None else self._scale_fallback_ratio
 
     def _select_active_arm(self, swipe_points, body_scale):
-        """이번 프레임의 활성 팔 1개를 고른다 -> (side, (출처, 좌표)) 또는 (None, None).
+        """이번 프레임의 활성 팔 1개를 고른다 -> (side, (손모양, 좌표)) 또는 (None, None).
 
         한 번에 한 팔만 인식한다 — 양팔이 다 보이면 **더 높이 든 팔**(화면 y가 작은 쪽)을
         택한다: 제스처하는 팔은 들려 있고 쉬는 팔은 내려가 있다. 높이 차가
@@ -491,7 +562,7 @@ class GestureFilter:
 
     def _confirm(self, class_name, conf, now_sec, hand_side=None, data=None):
         self._last_event_ts_sec = now_sec
-        self._swipe_tracker.reset()
+        self._reset_stroke()
 
         event = GestureEvent(
             class_name=class_name, conf=conf, ts_sec=now_sec, hand_side=hand_side, data=data

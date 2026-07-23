@@ -8,7 +8,7 @@ if not exist venv_win\Scripts\activate.bat (
 )
 call venv_win\Scripts\activate.bat
 
-echo [INFO] 제스처 민원발급기 데모 시작 — 브라우저: http://localhost:5000
-echo        종료: 이 창에서 Ctrl+C
-echo        UI 없이 이벤트만: run.bat --headless
+echo [INFO] 제스처 엔진 시작 — 이벤트가 이 콘솔(stdout)에 GESTURE^| 한 줄씩 찍힙니다
+echo        델파이 연동: 델파이가 run.bat 을 자식 프로세스로 실행 (docs\델파이7_연동가이드.md)
+echo        종료: 이 창에서 Ctrl+C · 디버그 창(카메라·계기판): run.bat --debug
 python scripts\run_demo.py %*

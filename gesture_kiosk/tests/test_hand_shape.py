@@ -19,10 +19,12 @@ MIN_CONF = 0.3
 EXTEND_RATIO = 1.35
 MIN_VALID_FINGERS = 3
 MIN_CENTER_POINTS = 5
+CURL_CONFIRM_RATIO = 0.9
 
 
 def classify(keypoints, side="left"):
-    return classify_hand_shape(keypoints, side, MIN_CONF, EXTEND_RATIO, MIN_VALID_FINGERS)
+    return classify_hand_shape(keypoints, side, MIN_CONF, EXTEND_RATIO,
+                               MIN_VALID_FINGERS, CURL_CONFIRM_RATIO)
 
 
 class ClassifyHandShapeTest(unittest.TestCase):
@@ -65,6 +67,24 @@ class ClassifyHandShapeTest(unittest.TestCase):
     def test_body17_keypoints_are_unknown(self):
         # body 17 엔진 — 손 키포인트 자체가 없어 판별 불가
         self.assertIsNone(classify(np.zeros((17, 3))))
+
+    def test_point_at_camera_is_not_fist(self):
+        # v2 핵심(실기 사진 실증): 검지가 카메라 쪽으로 누우면 투영이 짧아지는데
+        # (원근 단축), 방향 반전이 없으므로 굽힘이 아니라 "기권"이다 — 나머지
+        # 3지가 굽힘이어도 기권이 있으면 주먹으로 단정하지 않는다 (right→ok 오발 차단)
+        keypoints = place_hand(make_wholebody_keypoints(), "left", (500, 400), "point_camera")
+        self.assertIsNone(classify(keypoints))
+
+    def test_folded_finger_confirms_curl_by_direction(self):
+        # 되접힘(방향 반전)은 비율과 무관하게 굽힘 확인 — 픽스처의 굽힌 손가락은
+        # DIP(-62)→TIP(-40)이 아래 방향이라 MCP→PIP(위)와 반전된다. curl_confirm을
+        # 0으로 줘서 비율 경로를 꺼도 fist가 나오면 방향 반전 경로가 동작한 것
+        keypoints = place_hand(make_wholebody_keypoints(), "left", (500, 400), "fist")
+        self.assertEqual(
+            classify_hand_shape(keypoints, "left", MIN_CONF, EXTEND_RATIO,
+                                MIN_VALID_FINGERS, 0.0),
+            "fist",
+        )
 
 
 class HandCenterPointTest(unittest.TestCase):

@@ -129,6 +129,10 @@ class PersonLock:
         self._hand_extend_ratio = hand_cfg["extend_ratio"]
         self._hand_min_valid_fingers = hand_cfg["min_valid_fingers"]
         self._hand_min_center_points = hand_cfg["min_center_points"]
+        # v2(2026-07-23 2차): 굽힘 확인 비율 — 키 없으면 v1 동작(짧으면 전부 굽힘)과
+        # 같아지도록 extend_ratio를 그대로 쓴다 (구 config 하위 호환)
+        self._hand_curl_confirm_ratio = hand_cfg.get("curl_confirm_ratio",
+                                                     hand_cfg["extend_ratio"])
 
         self._frame_width_px = frame_width_px
         self._frame_height_px = frame_height_px
@@ -291,7 +295,8 @@ class PersonLock:
                 return None   # 몸 박스에 걸친 옆 사람 손 — 오귀속 차단 (2026-07-20 유지)
             shape = classify_hand_shape(keypoints, model_side, self._kpt_conf,
                                         self._hand_extend_ratio,
-                                        self._hand_min_valid_fingers)
+                                        self._hand_min_valid_fingers,
+                                        self._hand_curl_confirm_ratio)
             return (shape, center)
 
         return user_side_points(

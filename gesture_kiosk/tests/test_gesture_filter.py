@@ -41,6 +41,8 @@ def make_config():
                 "axis_dominance": 1.5,
                 "min_track_frames": 4,
                 "switch_margin_y_shoulder": 0.2,
+                "fist_vote_dominance": 1.5,
+                "shape_hold_sec": 2.5,
                 "body_scale": {"fallback_ratio": 0.25, "min_ratio": 0.08, "max_ratio": 0.4, "alpha": 0.1},
                 "return_suppress_sec": 1.6,
                 "return_origin_shoulder": 0.6,
@@ -167,8 +169,9 @@ class HandShapeVoteTest(GestureFilterTestBase):
         self.assertGreaterEqual(self.filter.debug["shape_unknown"], 1)
 
     def test_majority_fist_wins_over_sparse_finger(self):
-        # 9프레임 중 주먹 6 · 한손가락 3 — 다수결로 주먹: 우 이동이 ok가 된다
-        shapes = ["finger"] * 3 + ["fist"] * 6
+        # 주먹이 우세 조건(한손가락 표의 1.5배 초과)까지 충족하면 명령으로 확정 —
+        # 확정 시점(6번째 프레임)의 표는 한손가락 2 : 주먹 4 (4 > 2×1.5)
+        shapes = ["finger"] * 2 + ["fist"] * 7
         event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4), shapes=shapes)
         self.assertIsNotNone(event)
         self.assertEqual(event.class_name, "ok")
@@ -192,11 +195,29 @@ class HandShapeVoteTest(GestureFilterTestBase):
         self.assertIsNotNone(event)
         self.assertEqual(event.class_name, "ok")
 
-    def test_vote_tie_drops_event(self):
-        # 방향은 임계 도달 순간(6번째 프레임, 이동 0.25) 확정된다 — 그 시점까지
-        # 주먹 3 : 한손가락 3 동수가 되게 교차 공급: 단정하지 않고 버린다
-        shapes = ["finger", "fist", "finger", "fist", "finger", "fist", None, None, None]
-        event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4), shapes=shapes)
+    def test_noisy_fist_votes_do_not_hijack_finger_navigation(self):
+        # v2 우세 조건: 항법 중 주먹 오판별이 섞여 확정 시점에 주먹 4 : 한손가락 3이
+        # 돼도 — 단순 다수라면 ok(실행!)가 나가던 상황 — 주먹은 우세(1.5배) 미달이라
+        # 기각되고, 직전까지 분명했던 한 손가락 기억으로 right(안전한 탐색)가 나간다
+        shapes = ["finger"] * 3 + ["fist"] * 4 + ["finger"] * 2
+        event = self._feed_swipe("right", path(0.2, 0.55, 8, y_ratio=0.4), shapes=shapes)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "right")
+
+    def test_pointing_at_screen_keeps_navigation_via_memory(self):
+        # v2 모양 기억(실기 사진 실증): 손가락을 세워 보였다가(분명한 판별) 화면을
+        # 가리키며 쓸면(판별 전부 기권 — 표 없음) 최근 기억으로 한 손가락을 이어받아
+        # 항법이 유지된다
+        self._feed_swipe("right", [(0.3, 0.4)] * 6, shape="finger")   # 정지 — 모양만 각인
+        event = self._feed_swipe("right", path(0.3, 0.7, 8, y_ratio=0.4), shape=None)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "right")
+
+    def test_memory_cleared_when_hand_disappears(self):
+        # 손이 사라지면 기억도 버린다 — 다음 손(다른 사용자·반대 손)에 잇지 않는다
+        self._feed_swipe("right", [(0.3, 0.4)] * 6, shape="finger")
+        self._feed(swipe_points={"right": None, "left": None})        # 소실 (유예 없음 설정)
+        event = self._feed_swipe("right", path(0.3, 0.7, 8, y_ratio=0.4), shape=None)
         self.assertIsNone(event)
 
 

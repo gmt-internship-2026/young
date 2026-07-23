@@ -184,6 +184,15 @@ class GestureFilter:
         # (구 스펙의 "출처 전환 리셋"이 빠른 쓸기를 잃던 문제가 구조적으로 소멸).
         self._shape_votes = deque()          # (ts_sec, shape)
         self._shape_window_sec = swipe["window_sec"]   # 투표 유효 기간 = 궤적 창과 동일
+        # v2(2026-07-23 2차 — 원근 단축 실기 대응):
+        # ① 주먹 우세 조건 — 주먹(명령 계층)은 화면을 바꾸므로 표가 확실히 우세할
+        #   때만 인정한다(오발 비용 비대칭: 탐색 오발=한 칸, 명령 오발=화면 이탈).
+        #   1.0 = 종전(단순 다수). ② 모양 기억 — 화면을 가리키면(손가락이 카메라
+        #   쪽으로 누움) 판별이 기권돼 표가 비는데, 최근 확정 모양을 이 시간 안에서
+        #   이어받아 항법이 끊기지 않게 한다. 0 = 기억 없음(종전)
+        self._fist_vote_dominance = swipe.get("fist_vote_dominance", 1.0)
+        self._shape_hold_sec = swipe.get("shape_hold_sec", 0.0)
+        self._shape_memory = None            # (shape, 확정 시각) — 최근 다수결 결과
 
         # One Euro 필터(2026-07-20 정확도) — 추적점 떨림 저감. 궤적 단절 시 트래커와
         # 함께 리셋한다. 키 미설정 브랜치는 종전대로 무필터 (point_filter.py 주석 참고)
@@ -281,6 +290,7 @@ class GestureFilter:
             self._reset_stroke()   # 유예 초과 소실 — 끊긴 궤적을 이어 붙이지 않는다
             self._active_side = None
             self._active_shape = None
+            self._shape_memory = None   # 손이 사라졌다 — 다음 손에 기억을 잇지 않는다
             if self._point_filter is not None:
                 self._point_filter.reset()
         else:
@@ -288,6 +298,7 @@ class GestureFilter:
             if side != self._active_side:
                 self._reset_stroke()   # 팔 교체 — 궤적 연결 금지. 손 모양 전환은 리셋
                 #   대상이 아니다: 추적점(손 중심)은 주먹↔한 손가락에서 좌표가 연속이다
+                self._shape_memory = None   # 다른 손의 기억을 물려주지 않는다
                 was_absent = self._active_side is None
                 self._active_side = side
                 if self._point_filter is not None:
@@ -303,6 +314,11 @@ class GestureFilter:
             self._active_shape = shape
             if shape is not None:
                 self._add_shape_vote(shape, now_sec)
+                decided = self._decide_votes(now_sec)
+                if decided is not None:
+                    # 표가 우세한 동안 매 프레임 기억을 갱신 — "마지막으로 모양이
+                    # 분명했던 시각"이 기억의 기준점이 된다 (기권 구간에서 이어받음)
+                    self._shape_memory = (decided, now_sec)
             if self._point_filter is not None:
                 point = self._point_filter.filter(point, now_sec)   # 떨림 저감 (One Euro)
             self._last_point_sec = now_sec   # 소실 유예의 기준 시각
@@ -396,11 +412,27 @@ class GestureFilter:
             self._shape_votes.popleft()
 
     def _voted_shape(self, now_sec):
-        """궤적 창 안 판별들의 다수결 — "fist" | "finger" | None(표 없음·동수)."""
+        """궤적 창 안 판별들의 다수결 -> "fist" | "finger" | None.
+
+        주먹은 fist_vote_dominance배 우세일 때만(명령 오발 억제), 한 손가락은 단순
+        다수. 결정 불가(표 없음·우세 미달)면 shape_hold_sec 안의 최근 확정 모양을
+        이어받는다 — 화면을 가리켜 판별이 기권되는 구간(원근 단축)의 항법 유지.
+        """
+        shape = self._decide_votes(now_sec)
+        if shape is not None:
+            self._shape_memory = (shape, now_sec)
+            return shape
+        if (self._shape_memory is not None and self._shape_hold_sec > 0.0
+                and now_sec - self._shape_memory[1] <= self._shape_hold_sec):
+            return self._shape_memory[0]   # 기억 사용 — 시각은 갱신하지 않는다(무한 지속 방지)
+        return None
+
+    def _decide_votes(self, now_sec):
+        """현재 창의 표만으로 결정 — 우세 미달·표 없음이면 None (기억 미참조)."""
         self._prune_shape_votes(now_sec)
         fist_count = sum(1 for _, shape in self._shape_votes if shape == SHAPE_FIST)
         finger_count = len(self._shape_votes) - fist_count
-        if fist_count > finger_count:
+        if fist_count > finger_count * self._fist_vote_dominance:
             return SHAPE_FIST
         if finger_count > fist_count:
             return SHAPE_FINGER
@@ -502,6 +534,7 @@ class GestureFilter:
             "hand_shape": self._active_shape,                 # 이번 프레임 원시 판별 (fist/finger/None)
             "votes_fist": fist_count,                         # 다수결 현황 — 확정 시점에 많은 쪽 채택
             "votes_finger": len(self._shape_votes) - fist_count,
+            "shape_memory": None if self._shape_memory is None else self._shape_memory[0],
             "swallow": self._swallow_direction,               # 이 방향은 복귀로 무시 예정
             "swipe_progress_x": round(tracker.progress_x, 2), # ±1.0 도달 시 좌/우 확정
             "swipe_progress_y": round(tracker.progress_y, 2), # ±1.0 도달 시 상/하 판정

@@ -294,6 +294,26 @@ class SwipeScenarioTest(unittest.TestCase):
             sim.move_by(0, AMP_Y, 0.3)           # 의도한 아래 쓸기
         self._run(scenario, ["bottom"])
 
+    def test_22_pointing_at_screen_navigates_via_memory(self):
+        # v2 모양 기억(실기 사진 실증): 손가락을 세워 보인 뒤 화면을 가리키며
+        # (검지가 카메라 쪽으로 누움 — 판별 기권) 쓸어도 항법이 유지된다
+        def scenario(sim):
+            sim.hold(0.5)                    # 한 손가락 각인 (분명한 판별 구간)
+            sim.shape = None                 # 화면을 가리킴 — 이후 판별 전부 기권
+            sim.hold(1.0)                    # 표가 만료돼 창이 비는 구간까지 재현
+            sim.move_by(AMP_X, 0, 0.3)       # 가리킨 채 우로 쓸기
+            sim.hold(0.2)
+        self._run(scenario, ["right"])
+
+    def test_23_pointing_without_prior_shape_is_safe(self):
+        # 처음부터 끝까지 판별 불가(기억 없음) — 오발(ok) 대신 무시가 정답
+        def scenario(sim):
+            sim.shape = None
+            sim.hold(0.5)
+            sim.move_by(AMP_X, 0, 0.3)
+            sim.hold(0.3)
+        self._run(scenario, [])
+
     def test_21_fist_raise_is_not_home(self):
         # 주먹 쥔 채 들어올리기 — home(처음으로)으로 오발되면 안 된다:
         # 화면 이탈 사고는 사용자 신뢰를 즉시 깎는 최악의 오발이다

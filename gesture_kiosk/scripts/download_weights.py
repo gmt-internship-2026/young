@@ -22,11 +22,23 @@ DEFAULT_CONFIG_PATH = os.path.join(ROOT_DIR, "configs", "config.yaml")
 def main():
     config = load_config(DEFAULT_CONFIG_PATH)
 
-    pose_mode = config["model"]["pose_mode"]
-    print(f"[INFO] 포즈 모델(rtmlib {pose_mode}) 캐시 준비 — 없으면 지금 내려받습니다 (수십 MB)")
-    from rtmlib import Body
+    model = config["model"]
+    engine = model.get("pose_engine", "body")
+    pose_mode = model["pose_mode"]
+    # pose_mode: auto(통합판)는 실행 PC의 GPU 유무에 따라 balanced/lightweight로
+    # 갈린다 — 번들이 어느 기기로 갈지 모르므로 두 모드 캐시를 모두 받아 둔다.
+    # ('auto'를 rtmlib에 그대로 넘기면 KeyError — 2026-07-24 실기)
+    modes = ["lightweight", "balanced"] if pose_mode == "auto" else [pose_mode]
+    # 엔진도 config를 따른다 — 새 스펙(2026-07-23)은 wholebody 필수라
+    # Body 캐시만 받으면 현장 첫 구동이 오프라인 다운로드 시도로 실패한다
+    if engine == "wholebody":
+        from rtmlib import Wholebody as solution
+    else:
+        from rtmlib import Body as solution
 
-    Body(mode=pose_mode, backend="onnxruntime", device="cpu")  # 다운로드만 목적 — CPU로 가볍게
+    for mode in modes:
+        print(f"[INFO] 포즈 모델(rtmlib {engine} {mode}) 캐시 준비 — 없으면 지금 내려받습니다 (수십~수백 MB)")
+        solution(mode=mode, backend="onnxruntime", device="cpu")  # 다운로드만 목적 — CPU로 가볍게
     print("[DONE] 포즈 모델 캐시 완료 (~/.cache/rtmlib)")
 
 

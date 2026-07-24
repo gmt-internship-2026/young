@@ -49,8 +49,16 @@ echo [INFO] 가상환경 생성 중...
 
 :venv_ready
 call venv_win\Scripts\activate.bat
+REM 내부망(wheelhouse) 모드에서는 pip 자체 업그레이드도 오프라인으로만 시도한다 —
+REM 온라인 재시도 낭비 제거 (2026-07-24 실기: 오프라인 PC에서 수십 초 getaddrinfo 재시도)
+if exist wheelhouse goto :pip_up_offline
 python -m pip install --upgrade pip >nul
+goto :packages
 
+:pip_up_offline
+python -m pip install --no-index --find-links wheelhouse --upgrade pip >nul 2>&1
+
+:packages
 REM ---- 4) 패키지 설치 (오프라인 wheelhouse 우선) --------------
 if exist wheelhouse goto :install_offline
 

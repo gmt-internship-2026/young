@@ -24,7 +24,7 @@ run.bat --debug    :: + 로컬 디버그 창 (카메라·판정 계기판)
 ```
 
 > 상세 절차·내부망(오프라인) 반입·문제 해결: **[설치가이드.md](설치가이드.md)**
-> 델파이 UI 연동·데모: **[delphi_ui/빌드_실행_안내.md](delphi_ui/빌드_실행_안내.md)**
+> 델파이7 UI 연동(수신부 완성 코드 포함): **[docs/델파이7_연동가이드.md](docs/델파이7_연동가이드.md)**
 
 ## 인식 동작 (2026-07-23 확정 스펙)
 
@@ -72,7 +72,6 @@ gesture_kiosk/
 │   └─ pipeline/event_sender.py      # ★ 회사 프로그램 연동 접점 (stdio/console)
 ├─ scripts/                 # run_demo · pipe_listen · download_weights · benchmark · smoke_test
 ├─ tests/                   # 단위 테스트 121건 (카메라·모델 없이 실행 가능)
-├─ delphi_ui/               # ★ 델파이7 데모 UI — 파이프 수신 + 포커스 이동 (우리가 작성)
 └─ docs/TODO.md             # 작업 분해 및 회사 확인 필요 항목
 ```
 

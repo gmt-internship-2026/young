@@ -22,6 +22,7 @@ if defined PY_CMD goto :python_found
 echo [FAIL] Python 3.11을 찾지 못했습니다.
 echo        https://www.python.org/downloads/release/python-3115/ 에서
 echo        3.11.5 설치 시 "Add python.exe to PATH"를 체크하세요.
+pause
 exit /b 1
 
 :python_found
@@ -45,7 +46,7 @@ if "%GPU_MODE%"=="cpu" echo [INFO] NVIDIA GPU 미감지 — CPU 스택 설치 (G
 REM ---- 3) 가상환경 -------------------------------------------
 if exist venv_win goto :venv_ready
 echo [INFO] 가상환경 생성 중...
-%PY_CMD% -m venv venv_win || exit /b 1
+%PY_CMD% -m venv venv_win || goto :venv_fail
 
 :venv_ready
 call venv_win\Scripts\activate.bat
@@ -112,9 +113,16 @@ if "%GPU_MODE%"=="gpu" echo [가속] 30 FPS 미달 시: configs\config.yaml 에�
 if "%GPU_MODE%"=="cpu" echo [성능] 30 FPS 미달 시: configs\config.yaml 에서 input_size_px 640→480 (pose_mode: auto가 CPU에선 lightweight 선택)
 exit /b 0
 
+REM 실패 시 pause — 더블클릭 실행이라도 창이 닫히지 않고 원인 메시지가 남게 (2026-07-24 실기)
+:venv_fail
+echo [FAIL] 가상환경(venv_win) 생성 실패 — Python 설치 상태를 확인하세요
+pause
+exit /b 1
 :pip_fail
 echo [FAIL] 패키지 설치 실패 — 인터넷 연결 또는 wheelhouse\ 내용을 확인하세요 (설치가이드.md)
+pause
 exit /b 1
 :model_fail
 echo [FAIL] 모델 다운로드 실패 — 내부망이면 bundle_models\ 를 준비하세요 (설치가이드.md B절)
+pause
 exit /b 1

@@ -18,33 +18,41 @@ if defined PY_CMD goto :python_found
 python --version 2>nul | findstr /C:"3.11" >nul && set PY_CMD=python
 if defined PY_CMD goto :python_found
 echo [FAIL] Python 3.11이 필요합니다 — 대상 PC와 같은 버전으로 준비하세요
+pause
 exit /b 1
 
 :python_found
 
 REM ---- 1) 파이썬 휠 수집 --------------------------------------
-if not exist venv_bundle ( %PY_CMD% -m venv venv_bundle || exit /b 1 )
+if not exist venv_bundle ( %PY_CMD% -m venv venv_bundle || goto :fail )
 call venv_bundle\Scripts\activate.bat
 python -m pip install --upgrade pip >nul
 
 if /i "%~1"=="cpu" goto :skip_gpu_wheels
 echo [INFO] GPU 스택 휠 다운로드 (torch cu128 + onnxruntime-gpu — 용량 수 GB)...
 pip download torch==2.11.0+cu128 torchvision==0.26.0+cu128 ^
-    --index-url https://download.pytorch.org/whl/cu128 -d wheelhouse || exit /b 1
-pip download onnxruntime-gpu==1.23.2 --no-deps -d wheelhouse || exit /b 1
+    --index-url https://download.pytorch.org/whl/cu128 -d wheelhouse || goto :fail
+pip download onnxruntime-gpu==1.23.2 --no-deps -d wheelhouse || goto :fail
 
 :skip_gpu_wheels
 echo [INFO] requirements 휠 다운로드 (onnxruntime·rtmlib 포함)...
-pip download -r requirements.txt -d wheelhouse || exit /b 1
+pip download -r requirements.txt -d wheelhouse || goto :fail
 echo [INFO] pip 자체도 담는다 (구버전 pip 대비)
 pip download pip -d wheelhouse
 
 REM ---- 2) 포즈(rtmlib) 모델 캐시 수집 --------------------------
 pip install --no-index --find-links wheelhouse -r requirements.txt >nul 2>&1 || pip install -r requirements.txt >nul
-python scripts\download_weights.py || exit /b 1
+python scripts\download_weights.py || goto :fail
 xcopy /y /q /e "%USERPROFILE%\.cache\rtmlib" bundle_models\rtmlib\ >nul
 
 
 echo.
 echo [DONE] 번들 완성 — 이 프로젝트 폴더 전체를 zip으로 묶어 대상 PC로 옮긴 뒤
 echo        대상 PC에서 install.bat 만 실행하면 됩니다 (인터넷 불필요 — GPU 유무 자동 감지)
+exit /b 0
+
+REM 실패 시 pause — 더블클릭 실행이라도 창이 닫히지 않고 원인 메시지가 남게 (2026-07-24 실기)
+:fail
+echo [FAIL] 번들 제작 실패 — 인터넷 연결과 바로 위 오류 메시지를 확인하세요
+pause
+exit /b 1

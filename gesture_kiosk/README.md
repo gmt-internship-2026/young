@@ -4,8 +4,9 @@
 키오스크 프로그램으로 이벤트를 전달한다. **기획서(기획서.docx)의
 2.3 디렉터리 구조와 4장 코딩 컨벤션을 따른다.**
 
-- 실행 환경: **윈도우 CPU(GPU 불필요) + Python 3.11.5** — CPU 추론판 (정부 민원발급기)
-- GPU 있는 PC용 고성능판: **feat/think_win_gpu 브랜치** (같은 코드 — 설치 스택·성능 기준만 다름)
+- 실행 환경: **윈도우 + Python 3.11.5 — GPU 자동 감지 통합판** (정부 민원발급기):
+  NVIDIA GPU가 있으면 CUDA로, 없으면 CPU로 실행 (config `device/pose_mode: auto`).
+  2026-07-24 구 feat/think_win_cpu·feat/think_win_gpu 브랜치를 이 브랜치(feat/think_win)로 통합
 - 동작 체계(2026-07-23 — 「제스처 정의 보고서」 손 모양 기준, 회사 확정):
   **손 모양이 계층을, 이동 방향이 기능을 정한다** — 한 손가락=탐색, 주먹=명령
 - 모델: **RTMPose wholebody 포즈(Apache-2.0) 단일** — 손 모양·궤적·사용자 잠금이
@@ -14,10 +15,10 @@
   수신 (2026-07-23 회사 확정 — 네트워크(UDP·웹소켓) 전면 철회)
 - 학습(파인튜닝)은 별도 `training/` 폴더 담당 (feat/study 브랜치) — 이 폴더는 추론 전용
 
-## 빠른 시작 (윈도우 — CPU)
+## 빠른 시작 (윈도우)
 
 ```bat
-install.bat        :: 설치 (인터넷) — 내부망은 설치가이드.md B절
+install.bat        :: 설치 (인터넷) — GPU 유무 자동 감지, 내부망은 설치가이드.md B절
 run.bat            :: 실행 — 이벤트가 콘솔(stdout)에 GESTURE| 한 줄씩
 run.bat --debug    :: + 로컬 디버그 창 (카메라·판정 계기판)
 ```
@@ -70,7 +71,7 @@ gesture_kiosk/
 │   ├─ pipeline/realtime_loop.py     # 실시간 루프 조립 (멀티스레딩)
 │   └─ pipeline/event_sender.py      # ★ 회사 프로그램 연동 접점 (stdio/console)
 ├─ scripts/                 # run_demo · pipe_listen · download_weights · benchmark · smoke_test
-├─ tests/                   # 단위 테스트 114건 (카메라·모델 없이 실행 가능)
+├─ tests/                   # 단위 테스트 121건 (카메라·모델 없이 실행 가능)
 ├─ delphi_ui/               # ★ 델파이7 데모 UI — 파이프 수신 + 포커스 이동 (우리가 작성)
 └─ docs/TODO.md             # 작업 분해 및 회사 확인 필요 항목
 ```
@@ -96,7 +97,7 @@ gesture_kiosk/
 
 ## 개인정보·라이선스 주의
 
-- 엔진은 프레임·인식값을 저장하지 않고 로그는 마스킹한다 (feat/think_win_gpu 설치가이드.md F절)
+- 엔진은 프레임·인식값을 저장하지 않고 로그는 마스킹한다 (설치가이드.md F절)
 - **라이선스 (2026-07-23 기준)**: 스택 전체가 상업 사용 가능 + 코드 공개(카피레프트) 의무 없음 —
   rtmlib/RTMPose(Apache-2.0) · ONNX Runtime(MIT). 손 모양 판별은 자체 기하 규칙이라
   추가 의존성 0 (새 스펙 전환에도 검토 대상 불변).

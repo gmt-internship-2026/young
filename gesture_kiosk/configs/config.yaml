@@ -1,6 +1,8 @@
 # gesture_kiosk 설정 — 모든 튜닝값의 단일 출처 (기획서 4.7 : 코드에 숫자 하드코딩 금지)
 #
-# 2026-07-10 전면 개편 — 타깃: 윈도우 CPU(GPU 불필요) + Python 3.11.5 (정부 민원발급기 — CPU 추론판)
+# 2026-07-10 전면 개편 — 타깃: 윈도우 + Python 3.11.5 (정부 민원발급기)
+# 2026-07-24 win 통합판(feat/think_win): 구 win_cpu/win_gpu 브랜치 통합 —
+#   NVIDIA GPU가 있으면 CUDA로, 없으면 CPU로 자동 실행 (device/pose_mode: auto)
 # 2026-07-23 동작 체계 (「제스처 정의 보고서」 손 모양 기준 — 회사 확정 이벤트 명):
 #   한 손가락 + 좌/우/위/아래 = left/right/top/bottom (포커스 이동 — 탐색 계층)
 #   주먹 + 왼쪽/위/오른쪽 = back(이전) / home(처음으로) / ok(확인) — 명령 계층
@@ -28,11 +30,12 @@ model:
   pose_engine: wholebody  # wholebody(전신 133) **필수** — 새 스펙(2026-07-23)은 손 모양
                           #   (주먹/한 손가락) 판별에 손 21점이 필요하다. body(몸 17)는
                           #   손 키포인트가 없어 제스처가 동작하지 않는다.
-                          #   ★CPU판: 30 FPS 미달 시 body 하향 금지(제스처 불가) —
+                          #   ★CPU 실행 시 30 FPS 미달이어도 body 하향 금지(제스처 불가) —
                           #   input_size_px 480으로 대응
-  device: cpu             # CPU 추론판 고정 — GPU 가속판은 feat/think_win_gpu 브랜치
-  use_tensorrt: false     # CPU판 — TensorRT 사용 불가 (GPU 가속은 feat/think_win_gpu)
-  pose_mode: lightweight  # CPU 기본(30 FPS 확보용) — GPU판 기본은 balanced
+  device: auto            # auto(CUDA 있으면 cuda, 없으면 cpu — 시작 로그에서 확인) | cuda | cpu
+  use_tensorrt: false     # true면 TensorRT 가속(NVIDIA GPU 전용) — 첫 실행 때 이 PC 전용 엔진 캐시 생성
+  pose_mode: auto         # auto(2026-07-24 통합판): 위 device 판별이 cuda면 balanced(정확),
+                          #   cpu면 lightweight(30 FPS 확보). 수동 고정: lightweight | balanced | performance
   input_size_px: 640
   max_infer_fps: 60       # 추론 루프 FPS 상한 — 초과분은 대기 (GPU 낭비 방지).
                           #   2026-07-16 30→60 상향(사용자 결정 — 제한 완화). ★주의: 2026-07-10
@@ -171,10 +174,10 @@ logging:
 runtime:                  # 배포 기준 명세 — 설치가이드.md와 일치해야 한다
   python_version: "3.11.5"
   target_os: windows
-  target_gpu: none        # CPU 추론판
+  target_gpu: auto        # 통합판 — NVIDIA GPU 있으면 사용, 없으면 CPU (시작 로그의 실측값과 대조)
   hardware:               # 타깃 하드웨어 명세 기록(2026-07-16 신설) — №12 기기 확정 시 채울 것.
                           #   시작 로그에 실제 감지값(OS·CPU·RAM·가속기)과 나란히 남아 대조된다
     device_model: 미확정   # 기기 모델명 (예: 미니PC 제조사·모델)
     cpu: 미확정
     ram: 미확정
-    accelerator: 없음 (CPU 전용판)
+    accelerator: 자동 감지 (NVIDIA GPU 있으면 CUDA, 없으면 CPU)

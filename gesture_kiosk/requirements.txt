@@ -1,12 +1,22 @@
-# 추론(윈도우 CPU — GPU 불필요, Python 3.11.5) 고정 버전 — 타 PC 재현성 보장 (설치가이드.md 참고)
-# ⚠ CPU 추론판(feat/think_win_cpu) — GPU 있는 PC용 고성능판은 feat/think_win_gpu 브랜치.
+# 추론(윈도우 통합판 — GPU 자동 감지, Python 3.11.5) 고정 버전 — 타 PC 재현성 보장 (설치가이드.md 참고)
+# 통합판(feat/think_win, 2026-07-24 — 구 win_cpu/win_gpu 브랜치 통합):
+#   install.bat이 NVIDIA GPU(nvidia-smi)를 감지해 스택을 고른다 —
+#   GPU 없음 = 이 파일 그대로(CPU onnxruntime) / GPU 있음 = 아래 추가 작업.
+#   런타임도 config model.device: auto가 CUDA 유무로 자동 선택 — 코드는 한 벌.
 #
 # 2026-07-11 라이선스 B안: ultralytics(AGPL-3.0) 제거 —
 #   실행기 = ONNX Runtime(MIT), 포즈 = rtmlib/RTMPose(Apache-2.0)
 # 2026-07-16: EasyOCR(주민등록증 OCR) 제거 — 제스처 집중, 관련 의존성 삭제
 #
-# (GPU판과 달리 별도 인덱스 설치·onnxruntime GPU판 복구 절차가 필요 없다)
-onnxruntime==1.23.2                # CPU 실행 — 전 플랫폼 공통
+# GPU PC에서 install.bat이 하는 추가 작업 (수동 설치 시에도 동일하게 필요):
+#   ① torch==2.11.0+cu128 torchvision==0.26.0+cu128 설치
+#      (--index-url https://download.pytorch.org/whl/cu128) —
+#      onnxruntime-gpu가 쓰는 CUDA 12.8 DLL 등록용 (RTX 50시리즈 포함 지원)
+#   ② 아래 onnxruntime 제거 후 onnxruntime-gpu==1.23.2 를 --no-deps 로 재설치 —
+#      rtmlib이 CPU용 onnxruntime을 의존성으로 끌고 와 GPU판 파일을 덮어쓰기 때문.
+#      onnxruntime-gpu는 CUDA 12 빌드여야 한다 (1.27.0은 CUDA 13 빌드라
+#      cublasLt64_13.dll을 찾지 못해 조용히 CPU 폴백 — 2026-07-10 확인)
+onnxruntime==1.23.2                # CPU 실행 기본 — GPU PC는 install.bat이 onnxruntime-gpu로 교체
 rtmlib==0.0.15                     # RTMPose 포즈 추정 (Apache-2.0) — 사용자 잠금·손 모양 판별용
 opencv-python==5.0.0.93
 numpy==2.2.6

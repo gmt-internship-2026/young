@@ -16,8 +16,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.pipeline.realtime_loop import PipelineState, resolve_loop_interval_sec
 
 
-def _make_config(det_interval_frames=None, pose_engine="body"):
-    model = {"device": "cpu", "pose_engine": pose_engine, "pose_mode": "lightweight"}
+def _make_config(det_interval_frames=None, pose_engine="body", pose_mode="lightweight", device="cpu"):
+    model = {"device": device, "pose_engine": pose_engine, "pose_mode": pose_mode}
     if det_interval_frames is not None:
         model["det_interval_frames"] = det_interval_frames
     return {"model": model, "person_lock": {"kpt_conf_threshold": 0.3}}
@@ -140,6 +140,41 @@ class PoseEstimatorMiniTrackerTest(unittest.TestCase):
         for _ in range(3):
             estimator.infer(self.frame)
         self.assertEqual(det.call_count, 3)
+
+
+class PoseModeAutoTest(unittest.TestCase):
+    """pose_mode: auto (2026-07-24 win 통합판) — 장치 판별 결과로 모델 크기 자동 선택."""
+
+    def setUp(self):
+        _FakeSolution.instances = []
+        fake_rtmlib = types.ModuleType("rtmlib")
+        fake_rtmlib.Body = _FakeSolution
+        fake_rtmlib.Wholebody = _FakeSolution
+        self._saved_rtmlib = sys.modules.get("rtmlib")
+        sys.modules["rtmlib"] = fake_rtmlib
+        from src.inference.pose_estimator import PoseEstimator
+
+        self.PoseEstimator = PoseEstimator
+
+    def tearDown(self):
+        if self._saved_rtmlib is None:
+            sys.modules.pop("rtmlib", None)
+        else:
+            sys.modules["rtmlib"] = self._saved_rtmlib
+
+    def test_auto_on_cpu_picks_lightweight(self):
+        self.PoseEstimator(_make_config(pose_mode="auto", device="cpu"))
+        self.assertEqual(_FakeSolution.instances[-1].kwargs["mode"], "lightweight")
+
+    def test_auto_on_cuda_picks_balanced(self):
+        self.PoseEstimator(_make_config(pose_mode="auto", device="cuda"))
+        self.assertEqual(_FakeSolution.instances[-1].kwargs["mode"], "balanced")
+        self.assertEqual(_FakeSolution.instances[-1].kwargs["device"], "cuda")
+
+    def test_explicit_mode_is_untouched(self):
+        # 수동 고정(performance 등)은 auto 해석을 타지 않고 그대로 전달된다
+        self.PoseEstimator(_make_config(pose_mode="performance", device="cpu"))
+        self.assertEqual(_FakeSolution.instances[-1].kwargs["mode"], "performance")
 
 
 class ResolveLoopIntervalTest(unittest.TestCase):

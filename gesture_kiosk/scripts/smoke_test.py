@@ -3,7 +3,7 @@
 install.bat 마지막 단계에서 자동 실행된다. 확인 항목:
 1. 파이썬 버전 (배포 기준 3.11.5 — 시험 장비의 다른 버전은 경고만)
 2. 핵심 패키지 임포트 (onnxruntime·rtmlib·cv2)
-3. GPU 가속 확인 (onnxruntime CUDA — 맥 시험 장비는 CPU 안내)
+3. 실행 장치 확인 (통합판 — GPU 스택이면 CUDA 인식, CPU 스택이면 CPU 정상)
 4. 더미 프레임 추론 (포즈 — 유일한 모델: 손 모양·궤적·잠금 전부 이걸로 판정)
 
 사용법 (프로젝트 루트에서):
@@ -55,11 +55,23 @@ def main():
     try:
         import onnxruntime as ort
 
-        providers = ort.get_available_providers()
-        if "CUDAExecutionProvider" in providers:
-            check("실행 장치", True, "CUDA 가용 PC — 이 CPU판은 CPU로만 실행 (GPU판: feat/think_win_gpu)")
+        # 통합판(2026-07-24): install.bat이 GPU 감지 시 torch(cu128)+onnxruntime-gpu를
+        # 설치한다 — torch가 CUDA를 보는데 ORT에 CUDA가 없으면 rtmlib이 끌고 온
+        # CPU판 onnxruntime이 GPU판을 덮어쓴 상태(복구 필요)라 FAIL로 잡는다
+        try:
+            import torch
+            gpu_stack_installed = torch.cuda.is_available()
+        except ImportError:
+            gpu_stack_installed = False
+
+        if "CUDAExecutionProvider" in ort.get_available_providers():
+            check("실행 장치 — GPU 가속 (onnxruntime CUDA)", True)
+        elif gpu_stack_installed:
+            check("실행 장치", False,
+                  "torch는 CUDA 사용 가능인데 onnxruntime이 CPU — GPU판 복구 필요 (install.bat 재실행 또는 설치가이드 G절)")
         else:
-            check("실행 장치 (CPU)", True, "CPU 추론판 — 정상")
+            check("실행 장치 — CPU", True,
+                  "GPU 미감지 — CPU 추론(정상). NVIDIA GPU가 있는 PC라면 install.bat gpu 재실행")
     except ImportError:
         pass  # 위 임포트 검사에서 이미 FAIL 처리됨
 

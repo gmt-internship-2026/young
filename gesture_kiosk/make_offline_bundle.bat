@@ -3,9 +3,11 @@ chcp 65001 >nul
 cd /d %~dp0
 
 echo ============================================================
-echo  내부망(오프라인) 설치 번들 제작
+echo  내부망(오프라인) 설치 번들 제작 (통합판 — GPU/CPU 겸용)
 echo  ※ 반드시 "인터넷 되는 윈도우 + Python 3.11" PC에서 실행할 것
 echo     (pip가 이 PC 기준으로 윈도우용 휠을 내려받는다)
+echo  기본: GPU+CPU 겸용 번들 (torch cu128 포함 — 용량 수 GB)
+echo  대상 PC에 GPU가 없는 게 확실하면: make_offline_bundle.bat cpu
 echo  결과물: wheelhouse\ + bundle_models\  → 폴더째 zip으로 반출
 echo ============================================================
 
@@ -25,7 +27,14 @@ if not exist venv_bundle ( %PY_CMD% -m venv venv_bundle || exit /b 1 )
 call venv_bundle\Scripts\activate.bat
 python -m pip install --upgrade pip >nul
 
-echo [INFO] requirements 휠 다운로드 (torch CPU·onnxruntime·rtmlib 포함)...
+if /i "%~1"=="cpu" goto :skip_gpu_wheels
+echo [INFO] GPU 스택 휠 다운로드 (torch cu128 + onnxruntime-gpu — 용량 수 GB)...
+pip download torch==2.11.0+cu128 torchvision==0.26.0+cu128 ^
+    --index-url https://download.pytorch.org/whl/cu128 -d wheelhouse || exit /b 1
+pip download onnxruntime-gpu==1.23.2 --no-deps -d wheelhouse || exit /b 1
+
+:skip_gpu_wheels
+echo [INFO] requirements 휠 다운로드 (onnxruntime·rtmlib 포함)...
 pip download -r requirements.txt -d wheelhouse || exit /b 1
 echo [INFO] pip 자체도 담는다 (구버전 pip 대비)
 pip download pip -d wheelhouse
@@ -38,4 +47,4 @@ xcopy /y /q /e "%USERPROFILE%\.cache\rtmlib" bundle_models\rtmlib\ >nul
 
 echo.
 echo [DONE] 번들 완성 — 이 프로젝트 폴더 전체를 zip으로 묶어 대상 PC로 옮긴 뒤
-echo        대상 PC에서 install.bat 만 실행하면 됩니다 (인터넷 불필요)
+echo        대상 PC에서 install.bat 만 실행하면 됩니다 (인터넷 불필요 — GPU 유무 자동 감지)

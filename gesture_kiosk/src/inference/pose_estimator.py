@@ -83,6 +83,13 @@ def _resolve_device(device):
     return "cuda" if "CUDAExecutionProvider" in ort.get_available_providers() else "cpu"
 
 
+def _resolve_pose_mode(pose_mode, device):
+    """auto -> GPU(cuda)면 balanced(정확), CPU면 lightweight(30 FPS 확보)."""
+    if pose_mode != "auto":
+        return pose_mode
+    return "balanced" if device == "cuda" else "lightweight"
+
+
 def _bbox_from_keypoints(keypoints, kpt_conf, frame_shape):
     """신뢰도 통과 키포인트를 감싸는 박스. 통과점이 없으면 None."""
     valid = keypoints[keypoints[:, 2] >= kpt_conf]
@@ -104,9 +111,10 @@ class PoseEstimator:
     def __init__(self, config):
         model = config["model"]
         device = _resolve_device(model["device"])
+        pose_mode = _resolve_pose_mode(model["pose_mode"], device)
         self._kpt_conf_threshold = config["person_lock"]["kpt_conf_threshold"]
         engine = model.get("pose_engine", "body")
-        # mode: lightweight(빠름) | balanced(기본) | performance(정확) — 첫 실행 시 자동 다운로드.
+        # mode: auto(장치 따라 자동) | lightweight(빠름) | balanced(기본) | performance(정확) — 첫 실행 시 자동 다운로드.
         # rtmlib은 무거운 의존이라 사용 시점에 임포트한다 (단위 테스트가 가벼워지게)
         if engine == "wholebody":
             # 전신 133 — 손 모양 판별(2026-07-23 스펙) 필수. body(17)는 손 키포인트가 없어 제스처 불가
@@ -124,11 +132,11 @@ class PoseEstimator:
         self._det_interval_frames = int(model.get("det_interval_frames", 1))
         self._cached_bboxes = []      # 신뢰도 통과 사람 박스 — 검출 건너뛰는 프레임의 포즈 입력
         self._frames_since_det = 0
-        self._pose = solution(mode=model["pose_mode"], backend="onnxruntime", device=device)
+        self._pose = solution(mode=pose_mode, backend="onnxruntime", device=device)
         logger.info(
             "포즈 모델 로딩 완료: rtmlib %s(mode=%s, device=%s, det_interval=%d프레임, 허수 포즈 생략)",
             "Wholebody" if engine == "wholebody" else "Body",
-            model["pose_mode"], device, self._det_interval_frames,
+            pose_mode, device, self._det_interval_frames,
         )
 
     def infer(self, frame):

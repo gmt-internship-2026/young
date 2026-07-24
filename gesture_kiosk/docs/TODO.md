@@ -110,9 +110,12 @@
 
 ## 🟡 윈도우 실기기 검증 (설치 PC 확보 시 — 맥 개발기에서 불가한 항목)
 
-- [ ] install.bat / run.bat / make_offline_bundle.bat 실기 동작 확인 (작성만 됨 — 미검증)
-- [ ] onnxruntime 1.23.2 설치 확인 (smoke_test — EasyOCR 제거로 torch 불필요)
-- [ ] CPU 추론 benchmark — 30 FPS 충족 확인 (미달 시 input_size_px 480, 그래도 미달이면 GPU판 검토)
+- [ ] install.bat / run.bat / make_offline_bundle.bat 실기 동작 확인 (작성만 됨 — 미검증):
+      GPU PC·CPU PC 각 1회 — GPU 자동 감지(nvidia-smi)·강제 지정(install.bat gpu|cpu) 포함
+- [ ] 실행 스택 확인 (smoke_test): GPU PC = torch 2.11.0+cu128 + onnxruntime-gpu 1.23.2
+      (CUDA 12 빌드 — 1.27.0은 CUDA 13이라 금지) CUDA EP 인식 / CPU PC = onnxruntime 1.23.2
+- [ ] benchmark 30 FPS: GPU PC는 TensorRT 가속(use_tensorrt: true — 첫 실행 캐시 생성) 기록 /
+      CPU PC는 미달 시 input_size_px 640→480 (pose_mode: auto가 CPU에선 lightweight)
 - [ ] 오토포커스 카메라로 person_lock 튜닝 (sharpness_weight·reach_limit_shoulder)
 - [ ] 두 사람 동시 프레임 진입 시 잠금 유지 확인 (다른 사람 손 차단)
 

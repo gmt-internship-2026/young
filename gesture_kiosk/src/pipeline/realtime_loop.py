@@ -129,7 +129,6 @@ def run_pipeline(config):
     first_frame = camera.capture_frame()
     frame_height_px, frame_width_px = first_frame.shape[:2]
     person_lock = PersonLock(config, frame_width_px, frame_height_px)
-    gesture_filter = GestureFilter(config)
     event_sender = create_event_sender(config)
     announcer = Announcer(config)
     state.announcer = announcer
@@ -153,6 +152,20 @@ def run_pipeline(config):
             os.path.join(config["root_dir"], classifier_weights_path)
         )
         logger.info("손 모양 학습 분류기 로딩 완료: %s", classifier_weights_path)
+
+    # 학습된 방향 분류기(2026-07-24) — 설정돼 있으면 min_dist_*_ratio/axis_dominance
+    # 임계값 비교 대신 이걸로 좌/우/상/하를 판정한다. scripts/train_direction_classifier.py 참고
+    direction_classifier = None
+    direction_weights_path = config["gestures"]["hand_move"].get("classifier_weights_path")
+    if direction_weights_path:
+        from src.postprocess.direction_classifier import DirectionClassifier
+
+        direction_classifier = DirectionClassifier(
+            os.path.join(config["root_dir"], direction_weights_path)
+        )
+        logger.info("방향 학습 분류기 로딩 완료: %s", direction_weights_path)
+
+    gesture_filter = GestureFilter(config, direction_classifier=direction_classifier)
 
     state.is_running = True
 

@@ -83,8 +83,8 @@
     <h2>실시간 인식 화면 (CAM)</h2>
     <img id="cam" src="/video_feed" alt="camera stream">
     <div class="guide">
-      <span>☝ 가리키고 좌/우/상/하 이동</span>포커스 이동 &nbsp; <span>✊ 주먹 내밀고 우측 이동</span>선택·확인<br>
-      <span>✊ 주먹 내밀고 좌측 이동</span>이전 화면 &nbsp; <span>✊ 주먹 내밀고 상단 이동</span>처음으로
+      <span>☝ 가리키고 좌/우 이동</span>같은 줄 포커스 이동 &nbsp; <span>☝ 가리키고 상/하 이동</span>줄 단위 포커스 이동<br>
+      <span>✊ 주먹 내밀고 우측 이동</span>선택·확인 &nbsp; <span>✊ 주먹 내밀고 좌측 이동</span>이전 화면 &nbsp; <span>✊ 주먹 내밀고 상단 이동</span>처음으로
     </div>
     <div class="guide" id="dbg" style="margin-top:6px;"></div>
     <div style="margin-top:12px;">
@@ -131,6 +131,14 @@ function focusLabels() {
   if (s === "pay") return PAY_BUTTONS;
   if (s === "printing") return [];       // 발급 중 — 입력 무시
   return ["처음으로"];                    // done
+}
+
+// 화면별 그리드 열 수 — up/down을 "한 줄 위/아래로 이동"으로 구현하기 위한 보폭.
+// 홈 화면만 3열 그리드(.menu, CSS 참고)이고 나머지는 한 줄이라 열 수 = 항목 수.
+function focusCols() {
+  const s = screen();
+  if (s === "home") return 3;
+  return focusLabels().length || 1;
 }
 
 async function announce(text) {  // 화면 맥락 안내는 UI가 요청한다 (연동 계약 시연)
@@ -190,14 +198,16 @@ function onEnterScreen(s) {
 
 function applyEvent(e) {
   // 2026-07-23 회사 확정 이벤트명(left/right/up/down/back/home/ok) 반영 —
-  // 이 데모의 메뉴는 1줄짜리 목록이라 up/down은 아직 연결하지 않는다(실제
-  // 회사 UI가 여러 줄 레이아웃에서 처리할 몫 — README "상하 포커스 이동" 참고)
+  // 상하 이동은 엔진이 판정만 하고 줄 단위 이동은 UI 책임(README "상하 포커스
+  // 이동" 참고)이라 focusCols() 보폭만큼 이동시킨다(홈 3열 그리드, 나머지는 1줄)
   const s = screen();
   if (s === "printing") return;           // 발급 중엔 모든 입력 무시
   if (e.class_name === "home") { goHome(); return; }
   if (e.class_name === "back") { goBack(); return; }
   if (e.class_name === "left")  setFocus(focusIdx() - 1);
   if (e.class_name === "right") setFocus(focusIdx() + 1);
+  if (e.class_name === "up")    setFocus(focusIdx() - focusCols());
+  if (e.class_name === "down")  setFocus(focusIdx() + focusCols());
   if (e.class_name === "ok") {
     const idx = focusIdx();
     if (s === "home") { chosenCert = CERTS[idx]; goForward("copies"); }

@@ -47,7 +47,15 @@ run.bat            :: 실행 — 브라우저 http://localhost:5000
 - **2026-07-16부로 무손·무지 사용자 접근성 요건은 계획에서 빠졌다(회사 확인 필요,
   docs/TODO.md №1)** — 이번 개편도 이 전제 위에서 진행했다(손이 있어야 손 모양을
   만들 수 있으므로 옛 팔꿈치 폴백 같은 무손 대체 경로는 없다)
-- 상하 포커스 이동 없음 — **줄 끝에서 다음 줄 첫 칸 랩(토크백식 선형 순회)은 UI 책임**
+- 엔진은 방향 판정만 하고, 그리드 열 수 기준 줄 단위 이동 및 줄 끝→다음 줄 첫 칸 랩
+  (토크백식 선형 순회)은 **UI 책임** — `demo_ui/index.html`의 `focusCols()`가 화면별
+  열 수(홈 3열 그리드, 그 외 1줄)만큼 up/down 시 포커스를 이동시킨다
+- 방향(left/right/up/down) 판정은 기본이 임계값(min_dist_*_ratio/axis_dominance) 비교다.
+  실기에서 임계값 재튜닝으로도 오판정이 계속되면(예: 오른쪽 이동이 아래로 오인) 학습된
+  분류기로 대체할 수 있다 — `collect_direction.bat`으로 궤적 데이터를 모으고
+  `train_direction.bat`으로 학습한 뒤 `configs/config.yaml`의
+  `gestures.hand_move.classifier_weights_path` 주석을 해제하면 적용된다(2026-07-24 도입,
+  hand_shape의 `classifier_weights_path`와 같은 패턴 — `src/postprocess/direction_classifier.py`)
 - 잠긴 사용자(초점 맞은 얼굴 기준)의 bbox로 크롭한 손만 인식 — **다른 사람 손 무시**
 - 구 동작(주먹→펴기·OK핀치·양손바닥 10초·손등 보이기·고개 꾸벅, 팔 쓸기+손가락 정지
   유지)과 레거시 토글은 2026-07-15~2026-07-23에 순차 제거 — 직원 호출(help_call)은
@@ -80,10 +88,17 @@ gesture_kiosk/
 │   ├─ pipeline/realtime_loop.py     # 실시간 루프 조립 (멀티스레딩)
 │   ├─ pipeline/event_sender.py      # ★ 회사 프로그램 연동 접점 (console/udp/stdio — 실연동은 stdio)
 │   └─ pipeline/demo_server.py       # ★ 예시 UI 서버 + /announce 계약
-├─ scripts/                 # run_demo · download_weights · benchmark · smoke_test
-├─ tests/                   # 단위 테스트 78건 (카메라·모델 없이 실행 가능)
+├─ scripts/                 # run_demo · download_weights · benchmark · smoke_test ·
+│                           #   collect_hand_shape_data · train_hand_shape_classifier ·
+│                           #   collect_direction_data · train_direction_classifier
+├─ collect_hand_shape.bat / train_hand_shape.bat  # 손 모양 학습 분류기 수집·학습
+├─ collect_direction.bat / train_direction.bat    # 방향(좌/우/상/하) 학습 분류기 수집·학습
+│                                                 # (2026-07-24 도입 — 기본은 꺼짐, 아래 참고)
+├─ delphi_ui/               # 델파이7 수신 데모(참고용) — GMtech_project에서 이식
+├─ tests/                   # 단위 테스트 106건 (카메라·모델 없이 실행 가능)
 ├─ demo_ui/index.html       # ★ 예시 민원발급기 화면 (회사 UI 수령 시 교체)
-└─ docs/TODO.md             # 작업 분해 및 회사 확인 필요 항목
+├─ docs/TODO.md             # 작업 분해 및 회사 확인 필요 항목 (자세한 기술 기록)
+└─ docs/작업일지.md          # 날짜별 작업 요약 (사람이 훑어보기 좋은 버전)
 ```
 
 ★ 표시는 **회사 키오스크 프로그램을 받으면 교체/제거되는 부분** (기획서 1.2, 9장 №7·№8).
@@ -95,7 +110,7 @@ gesture_kiosk/
 | `run.bat` / `python scripts/run_demo.py` | 파이프라인 + 예시 UI (시연용) |
 | `run.bat --headless` | 파이프라인만 — 이벤트는 `event_output` 설정대로 전송 |
 | `python scripts/benchmark.py` | 추론 단독 FPS 측정 (기획서 6.1 — KPI 30 FPS) |
-| `python -m unittest discover tests -v` | 판정·잠금·이벤트 전송 단위 테스트 (78건) |
+| `python -m unittest discover tests -v` | 판정·잠금·이벤트 전송 단위 테스트 (92건) |
 
 ## 회사 프로그램(델파이7) 연동 계약
 

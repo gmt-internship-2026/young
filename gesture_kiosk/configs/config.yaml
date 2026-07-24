@@ -124,9 +124,12 @@ gestures:
                               #   잠정치 — 손만으로 좌/우를 판정하는 건 이번이 처음이라
                               #   실기 재튜닝 전 가정값. 계기판 POINT/FIST x 진행도로 확인할 것
     min_dist_y_ratio: 0.05    # min_dist_up/down_ratio 둘 다 있으면 미사용 — 안전망으로만 유지
-    min_dist_up_ratio: 0.09   # 위(go_home) 전용 — 옛 hand_swipe 3차 실측값 이어받음
-    min_dist_down_ratio: 0.05 # 아래 전용 — 옛 hand_swipe 2차 실측값 이어받음 (현재 fist+down은
-                              #   미사용이라 이 값은 point+아래(move_down)에만 적용된다)
+    min_dist_up_ratio: 0.15   # 위(go_home) 전용 — 2026-07-24 재튜닝: 옛 hand_swipe 실측값(0.09)이
+                              #   해상도 720p 기준 65px에 불과해 min_dist_x_ratio(0.18=1280px 기준
+                              #   230px)와 3배 이상 격차가 남 — 좌/우 이동 중 팔이 살짝만 처져도
+                              #   위/아래가 먼저 확정되는 오판정 원인으로 지목돼 격차를 줄임
+    min_dist_down_ratio: 0.12 # 아래 전용 — 위와 같은 이유로 0.05(720p 기준 36px)에서 상향
+                              #   (현재 fist+down은 미사용이라 이 값은 point+아래(move_down)에만 적용된다)
     axis_dominance: 1.5       # 주축 진행도가 부축의 N배 이상일 때만 확정 — 대각선 오인 보류
     min_track_frames: 3       # 최소 궤적 프레임 — 키포인트 튐 1~2프레임 오발 방지
     return_suppress_sec: 0.0  # 복귀 스트로크 삼킴 — 기본 꺼짐. 옛 hand_swipe가 "손 이동엔
@@ -137,6 +140,14 @@ gestures:
                               #   동작이 반대 방향으로 또 잡힘" 리포트가 나오면 옛 swipe처럼
                               #   1.6초로 켜볼 것 (return_origin_ratio와 함께)
     return_origin_ratio: 0.15 # return_suppress_sec이 0이라 현재 미사용 — 나중에 켤 경우 대비
+    # classifier_weights_path: models/weights/direction_classifier.npz
+                              # 2026-07-24 도입 — 학습된 방향 분류기(scripts/
+                              #   train_direction_classifier.py로 생성). 주석 해제하고
+                              #   경로를 지정하면 min_dist_*_ratio/axis_dominance 임계값
+                              #   비교 대신 이 분류기로 좌/우/상/하를 판정한다(progress_x/
+                              #   progress_y 계기판은 그대로 유지). 실기에서 임계값
+                              #   재튜닝으로도 오판정이 계속될 때 대안 — 기본은 꺼짐
+                              #   (파일이 없으면 실행 자체가 안 되므로, 학습 전엔 주석 유지)
     point_filter:              # 추적점 One Euro 필터(2026-07-23, GMtech_project 이식) — 정지
                               #   시에도 손 키포인트가 프레임마다 떨려 궤적에 섞이면 진행도가
                               #   출렁여, 가만히 있어도 방향이 번갈아 확정되는 오탐이 났다

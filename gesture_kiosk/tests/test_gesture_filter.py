@@ -331,6 +331,98 @@ class CooldownTest(GestureFilterTestBase):
         self.assertIsNone(event)   # 쿨다운 내 — 모양이 달라도 무시
 
 
+class StubDirectionClassifier:
+    """테스트용 — 항상 고정된 라벨을 돌려주는 가짜 분류기(2026-07-24 direction_classifier
+    배선 검증용). 호출 횟수도 기록해 min_track_frames 게이팅이 유지되는지 확인한다."""
+
+    def __init__(self, label):
+        self.label = label
+        self.call_count = 0
+
+    def classify(self, track):
+        self.call_count += 1
+        return self.label
+
+
+class DirectionClassifierWiringTest(unittest.TestCase):
+    """direction_classifier(2026-07-24) 배선 — 모델 품질과 무관하게 배선 자체의 정합성만
+    검증한다(실제 학습된 가중치·특징 추출은 tests/test_direction_classifier.py·
+    test_direction_features.py가 담당)."""
+
+    def setUp(self):
+        self.clock = FakeClock()
+
+    def _make_filter(self, classifier):
+        return GestureFilter(make_config(), clock=self.clock, direction_classifier=classifier)
+
+    def _feed(self, gesture_filter, finger_count, points):
+        event = None
+        for point in points:
+            event = gesture_filter.filter_signals(finger_count, point)
+            self.clock.tick(FRAME_DT_SEC)
+            if event is not None:
+                return event
+        return event
+
+    def test_none_label_suppresses_event(self):
+        # 임계값 기준으로는 확정될 만큼 뚜렷하게 움직여도, 분류기가 "none"이라면 억제한다
+        classifier = StubDirectionClassifier("none")
+        gesture_filter = self._make_filter(classifier)
+        event = self._feed(gesture_filter, ONE_FINGER, path(0.2, 0.6, 8, y_ratio=0.4))
+        self.assertIsNone(event)
+
+    def test_direction_label_fires_through_existing_event_path(self):
+        # 분류기가 방향을 확정하면 기존 event_by_direction/cooldown/reset 경로를 그대로
+        # 탄다 — 임계값(진행도 1.0) 기준으로는 미달하지만 잡음 바닥(0.15)은 넘는 이동
+        classifier = StubDirectionClassifier("right")
+        gesture_filter = self._make_filter(classifier)
+        event = self._feed(gesture_filter, ONE_FINGER, path(0.20, 0.40, 8, y_ratio=0.4))
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "right")
+        self.assertEqual(event.shape, "point")
+        # 쿨다운도 그대로 적용돼야 한다
+        event = self._feed(gesture_filter, ONE_FINGER, path(0.40, 0.60, 8, y_ratio=0.4))
+        self.assertIsNone(event)
+
+    def test_min_track_frames_still_gates_classifier_call(self):
+        # 분류기가 항상 "right"를 돌려줘도, min_track_frames(3) 미만 궤적에선 아예
+        # 호출되지 않아야 한다(불필요한 추론 낭비 방지 + 튐 오발 방지 그대로 유지)
+        classifier = StubDirectionClassifier("right")
+        gesture_filter = self._make_filter(classifier)
+        event = gesture_filter.filter_signals(ONE_FINGER, (0.2, 0.4))
+        self.assertIsNone(event)
+        self.assertEqual(classifier.call_count, 0)
+
+    def test_debug_progress_still_populated_when_classifier_active(self):
+        # 계기판(point_x/point_y)은 분류기 사용 여부와 무관하게 계속 채워져야 한다
+        classifier = StubDirectionClassifier("none")
+        gesture_filter = self._make_filter(classifier)
+        self._feed(gesture_filter, ONE_FINGER, path(0.2, 0.6, 8, y_ratio=0.4))
+        self.assertIn("point_x", gesture_filter.debug)
+        self.assertNotEqual(gesture_filter.debug["point_x"], 0.0)
+
+    def test_noise_floor_skips_classifier_call_on_tiny_movement(self):
+        # 2026-07-24 실기 리포트("가만히 있는데 계속 확정됨") — 잡음 수준 진행도(15%
+        # 미만)에서는 분류기가 항상 "right"를 돌려주는 상황이어도 아예 호출되지 않고
+        # None이어야 한다(dir_cos/dir_sin이 미세한 잡음도 뚜렷한 방향처럼 표현해버리는
+        # 문제의 안전장치)
+        classifier = StubDirectionClassifier("right")
+        gesture_filter = self._make_filter(classifier)
+        # min_dist_x_ratio=0.25 기준 진행도 4% 수준의 미세한 흔들림
+        event = self._feed(gesture_filter, ONE_FINGER, path(0.500, 0.510, 8, y_ratio=0.4))
+        self.assertIsNone(event)
+        self.assertEqual(classifier.call_count, 0)
+
+    def test_fist_tracker_shares_same_classifier(self):
+        # point/fist 트래커가 같은 분류기 인스턴스를 공유한다(손 모양과 무관한 순수
+        # 궤적 기하학이라 분리할 이유가 없다는 설계 결정 검증)
+        classifier = StubDirectionClassifier("right")
+        gesture_filter = self._make_filter(classifier)
+        event = self._feed(gesture_filter, ZERO_FINGERS, path(0.20, 0.40, 8, y_ratio=0.4))
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "ok")   # fist+right = ok
+
+
 class MetricsTest(unittest.TestCase):
     def test_measure_fps(self):
         from src.utils.metrics import measure_fps

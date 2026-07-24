@@ -31,6 +31,14 @@ logger = get_logger("postprocess")
 
 OPPOSITE_DIRECTION = {"left": "right", "right": "left", "up": "down", "down": "up"}
 
+# 분류기(direction_classifier) 사용 시 최소 이 정도(진행도 기준)는 움직여야 분류기를
+# 부른다 — 2026-07-24 실기 리포트("가만히 있는데 계속 확정됨")로 도입. dir_cos/dir_sin
+# 등 방향 특징은 "각도"라 아주 미세한 카메라 잡음도 마치 뚜렷한 방향인 것처럼 표현해버려,
+# 학습 데이터의 none이 이 정도로 미세한 잡음까지 충분히 커버하지 못하면 잡음에도 방향이
+# 확정될 수 있다. 임계값 방식의 min_dist_*_ratio(진짜 스와이프 최소 거리)보다는 훨씬
+# 낮게 잡아(15%) 진짜 애매한 구간(작은 스와이프·망설임 등)의 판단은 여전히 분류기에 맡긴다
+_CLASSIFIER_NOISE_FLOOR_RATIO = 0.15
+
 # point(검지 1개, "가리키기") + 이동 = 포커스 이동 4방향 (회사 확정 이벤트명 — 임의 변경 금지)
 POINT_EVENT_BY_DIRECTION = {
     "left": "left",
@@ -82,10 +90,15 @@ class _SwipeTracker:
     def __init__(self, window_sec, min_dist_x_ratio, min_dist_y_ratio,
                  axis_dominance, min_track_frames,
                  return_suppress_sec=0.0, return_origin_ratio=0.0,
-                 min_dist_up_ratio=None, min_dist_down_ratio=None):
+                 min_dist_up_ratio=None, min_dist_down_ratio=None,
+                 classifier=None):
         """min_dist_up_ratio/min_dist_down_ratio: 위/아래를 다른 민감도로 두고 싶을 때만
         지정한다(2026-07-23, 사용자 실기 리포트 — "홈(위)만 너무 민감함"). 미지정 시
-        둘 다 min_dist_y_ratio를 그대로 쓴다."""
+        둘 다 min_dist_y_ratio를 그대로 쓴다.
+
+        classifier: 학습된 방향 분류기(DirectionClassifier, 2026-07-24 도입) — 지정되면
+        임계값/axis_dominance 비교 대신 이걸로 방향을 판정한다(progress_x/progress_y는
+        계기판 표시용으로 계속 계산한다). None(기본)이면 종전과 동일한 임계값 판정."""
         self._window_sec = window_sec
         self._min_dist_x_ratio = min_dist_x_ratio
         self._min_dist_y_ratio = min_dist_y_ratio
@@ -97,6 +110,7 @@ class _SwipeTracker:
         self._min_track_frames = min_track_frames
         self._return_suppress_sec = return_suppress_sec
         self._return_origin_ratio = return_origin_ratio
+        self._classifier = classifier
         self._track = deque()   # (ts_sec, x_ratio, y_ratio)
         # 계기판 노출용(2026-07-22, GMtech_project와 같은 패턴) — 부호 있는 진행도:
         # ±1.0 도달 시 확정. 프레임이 부족해 update()가 못 채운 동안은 마지막 값 유지
@@ -131,13 +145,24 @@ class _SwipeTracker:
         self.progress_x = progress_x if dx_ratio >= 0 else -progress_x
         self.progress_y = progress_y if dy_ratio >= 0 else -progress_y
 
-        direction = None
-        if progress_x >= 1.0 and progress_x >= progress_y * self._axis_dominance:
+        # 학습된 분류기가 있으면 임계값/axis_dominance 비교 대신 이걸로 방향을 정한다
+        # (2026-07-24 도입 — progress_x/progress_y는 위에서 이미 계기판용으로 계산됨,
+        # 분류기 사용 여부와 무관하게 항상 채워져 있어야 하므로 그대로 둔다)
+        if self._classifier is not None:
+            if (progress_x < _CLASSIFIER_NOISE_FLOOR_RATIO
+                    and progress_y < _CLASSIFIER_NOISE_FLOOR_RATIO):
+                direction = None   # 잡음 수준 — 분류기를 부르지도 않고 바로 none 취급
+            else:
+                label = self._classifier.classify(list(self._track))
+                direction = None if label == "none" else label
+        elif progress_x >= 1.0 and progress_x >= progress_y * self._axis_dominance:
             direction = "right" if dx_ratio > 0 else "left"
         elif progress_y >= 1.0 and progress_y >= progress_x * self._axis_dominance:
             direction = "down" if dy_ratio > 0 else "up"   # 화면 y는 아래로 증가
         else:
-            return None   # 대각선(주축 불명) — 방향이 분명해질 때까지 보류
+            direction = None
+        if direction is None:
+            return None   # 대각선(주축 불명) 또는 분류기의 "none" — 방향이 분명해질 때까지 보류
 
         if self._is_swallowed(direction, (x_ratio, y_ratio), now_sec):
             self._swallow_direction = None   # 1회용 — 삼켰으니 예약 해제
@@ -194,7 +219,7 @@ def _build_point_filter(gesture_cfg):
 
 
 class GestureFilter:
-    def __init__(self, config, clock=time.monotonic):
+    def __init__(self, config, clock=time.monotonic, direction_classifier=None):
         gestures = config["gestures"]
         self._cooldown_sec = gestures["cooldown_sec"]
         self._clock = clock
@@ -202,17 +227,21 @@ class GestureFilter:
         hand_move = gestures["hand_move"]
         # 손 모양별로 독립된 궤적을 둔다 — 주먹으로 다가온 이동량이 손가락을 편
         # 순간의 이동에 섞이면 안 되므로(모양이 바뀌면 둘 다 리셋, filter_signals 참고)
+        # direction_classifier(2026-07-24)는 손 모양과 무관한 순수 궤적 기하학으로
+        # 판정하므로 두 트래커가 같은 인스턴스를 공유한다(학습 데이터도 공유)
         self._point_tracker = _SwipeTracker(
             hand_move["window_sec"], hand_move["min_dist_x_ratio"], hand_move["min_dist_y_ratio"],
             hand_move["axis_dominance"], hand_move["min_track_frames"],
             hand_move.get("return_suppress_sec", 0.0), hand_move.get("return_origin_ratio", 0.0),
             hand_move.get("min_dist_up_ratio"), hand_move.get("min_dist_down_ratio"),
+            classifier=direction_classifier,
         )
         self._fist_tracker = _SwipeTracker(
             hand_move["window_sec"], hand_move["min_dist_x_ratio"], hand_move["min_dist_y_ratio"],
             hand_move["axis_dominance"], hand_move["min_track_frames"],
             hand_move.get("return_suppress_sec", 0.0), hand_move.get("return_origin_ratio", 0.0),
             hand_move.get("min_dist_up_ratio"), hand_move.get("min_dist_down_ratio"),
+            classifier=direction_classifier,
         )
         self._hand_point_filter = _build_point_filter(hand_move)
 

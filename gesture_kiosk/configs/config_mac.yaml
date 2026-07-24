@@ -47,12 +47,13 @@ gestures:
     window_sec: 1.0
     min_dist_x_ratio: 0.18  # 잠정치 — config.yaml 주석 참고 (실기 재튜닝 전)
     min_dist_y_ratio: 0.05
-    min_dist_up_ratio: 0.09    # 위(go_home) 전용 — config.yaml 주석 참고
-    min_dist_down_ratio: 0.05  # 아래 전용(현재 point+move_down에만 적용) — config.yaml 주석 참고
+    min_dist_up_ratio: 0.15    # 위(go_home) 전용 — 2026-07-24 재튜닝, config.yaml 주석 참고
+    min_dist_down_ratio: 0.12  # 아래 전용(현재 point+move_down에만 적용) — 2026-07-24 재튜닝, config.yaml 주석 참고
     axis_dominance: 1.5
     min_track_frames: 3
     return_suppress_sec: 0.0  # 기본 꺼짐 — config.yaml 주석 참고(옛 hand_swipe 문제 승계)
     return_origin_ratio: 0.15
+    # classifier_weights_path: models/weights/direction_classifier.npz  # 2026-07-24 도입, config.yaml 주석 참고
     point_filter:            # One Euro 필터 — config.yaml 주석 참고 (정지 시 떨림 오탐 방지)
       enabled: true
       min_cutoff_hz: 1.5

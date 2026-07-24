@@ -83,25 +83,6 @@ def _resolve_device(device):
     return "cuda" if "CUDAExecutionProvider" in ort.get_available_providers() else "cpu"
 
 
-def _swap_session_to_quantized(tool, quantized_dir, label):
-    """INT8 양자화 모델이 있으면 세션만 갈아 끼운다 (2026-07-22 — 저사양 CPU 가속).
-
-    scripts/quantize_models.py가 만든 models/quantized/<원본>.int8.onnx를 찾는다.
-    전처리·입출력 규격이 fp32와 동일해 세션 교체만으로 충분하다 (NPU 교체와 같은 패턴).
-    파일이 없으면 fp32 유지 — config를 켜 둔 채 모델만 지워도 안전하다.
-    """
-    int8_path = os.path.join(
-        quantized_dir, os.path.basename(tool.onnx_model).replace(".onnx", ".int8.onnx"))
-    if not os.path.exists(int8_path):
-        logger.warning("%s INT8 모델 없음(%s) — fp32 유지. scripts/quantize_models.py로 생성",
-                       label, int8_path)
-        return
-    import onnxruntime as ort
-
-    tool.session = ort.InferenceSession(int8_path, providers=["CPUExecutionProvider"])
-    logger.info("%s 세션 INT8 교체 완료: %s", label, os.path.basename(int8_path))
-
-
 def _bbox_from_keypoints(keypoints, kpt_conf, frame_shape):
     """신뢰도 통과 키포인트를 감싸는 박스. 통과점이 없으면 None."""
     valid = keypoints[keypoints[:, 2] >= kpt_conf]
@@ -144,21 +125,6 @@ class PoseEstimator:
         self._cached_bboxes = []      # 신뢰도 통과 사람 박스 — 검출 건너뛰는 프레임의 포즈 입력
         self._frames_since_det = 0
         self._pose = solution(mode=model["pose_mode"], backend="onnxruntime", device=device)
-        quantized = model.get("quantized")
-        if quantized:
-            # INT8 양자화(2026-07-22) — 저사양 CPU(파이 5 등) 가속. 미니 트래커가
-            # 호출하는 det_model/pose_model의 세션을 int8 모델로 교체한다.
-            # 값: true(둘 다) | "det"(검출만 — 포즈 잡음 없이 부분 가속) | "pose"(포즈만)
-            quantized_dir = os.path.join(config.get("root_dir", "."), "models", "quantized")
-            targets = {"det_model": "사람검출(YOLOX)", "pose_model": "포즈(RTMPose)"}
-            if quantized == "det":
-                targets.pop("pose_model")
-            elif quantized == "pose":
-                targets.pop("det_model")
-            for name, label in targets.items():
-                tool = getattr(self._pose, name, None)
-                if tool is not None and getattr(tool, "onnx_model", None):
-                    _swap_session_to_quantized(tool, quantized_dir, label)
         logger.info(
             "포즈 모델 로딩 완료: rtmlib %s(mode=%s, device=%s, det_interval=%d프레임, 허수 포즈 생략)",
             "Wholebody" if engine == "wholebody" else "Body",

@@ -29,7 +29,7 @@ model:
                           #   (주먹/한 손가락) 판별에 손 21점이 필요하다. body(몸 17)는
                           #   손 키포인트가 없어 제스처가 동작하지 않는다.
                           #   ★CPU판: 30 FPS 미달 시 body 하향 금지(제스처 불가) —
-                          #   INT8 양자화(quantized)·input_size 480으로 대응
+                          #   input_size_px 480으로 대응
   device: cpu             # CPU 추론판 고정 — GPU 가속판은 feat/think_win_gpu 브랜치
   use_tensorrt: false     # CPU판 — TensorRT 사용 불가 (GPU 가속은 feat/think_win_gpu)
   pose_mode: lightweight  # CPU 기본(30 FPS 확보용) — GPU판 기본은 balanced
@@ -40,12 +40,6 @@ model:
                           #   빼앗아 캡처 FPS 반토막 → CPU 기기에서 인식 저하 시 30으로 되돌릴 것
   idle_infer_fps: 10      # 유휴(사람 없음·잠금 없음) 시 추론 FPS — 키오스크 대기 시간의
                           #   CPU·전력 절감 (2026-07-20). 사람이 감지되면 즉시 max로 복귀
-  quantized: false        # INT8 양자화(2026-07-22 — 저사양 CPU 가속): 배포 기기에서
-                          #   scripts/quantize_models.py --source camera 로 생성 후 설정.
-                          #   값: false(fp32) | true(검출+포즈) | det(검출만 — 포즈 좌표
-                          #   잡음 없이 부분 가속: 관절 흔들림 시 1차 선택지) | pose(포즈만).
-                          #   v2(07-22): 백분위 보정 + 포즈 출력층 fp32 유지 — 잡음 개선.
-                          #   파일 없으면 fp32 유지(경고만), 이상 시 false 즉시 복귀
   det_interval_frames: 10 # 사람 검출(YOLOX) 실행 간격 — 추적 중엔 N프레임에 1회만 돌리고
                           #   사이엔 신뢰도 통과 사람의 박스만 재사용(자체 미니 트래커,
                           #   2026-07-20 2차 — 검출 0명이면 포즈 생략: 허수 포즈·CPU 낭비 차단).

@@ -137,9 +137,7 @@ def main():
                     hand_crop = _crop_bbox(input_tensor, bbox)
                     hands = hand_estimator.infer(hand_crop)
                     if hands:
-                        raw_ratio = _hand_point_ratio(
-                            bbox, hands[0][0], frame_width_px, frame_height_px
-                        )
+                        raw_ratio = _hand_point_ratio(bbox, hands[0][0], frame_width_px)
                         last_hand_point_ratio = (
                             point_filter.filter(raw_ratio, now_sec)
                             if point_filter is not None else raw_ratio

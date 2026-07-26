@@ -168,8 +168,8 @@ begin
   // 이벤트 7종 (연동가이드 §3) - 사용자 기준 방향 그대로 포커스를 옮긴다
   if EventName = 'left' then MoveFocus(-1, 0)
   else if EventName = 'right' then MoveFocus(1, 0)
-  else if EventName = 'up' then MoveFocus(0, -1)
-  else if EventName = 'down' then MoveFocus(0, 1)
+  else if EventName = 'top' then MoveFocus(0, -1)
+  else if EventName = 'bottom' then MoveFocus(0, 1)
   else if EventName = 'ok' then ActivateFocused
   else if EventName = 'back' then GoBack
   else if EventName = 'home' then GoHome
@@ -182,8 +182,8 @@ begin
   case Key of
     VK_LEFT:   HandleEvent('left');
     VK_RIGHT:  HandleEvent('right');
-    VK_UP:     HandleEvent('up');
-    VK_DOWN:   HandleEvent('down');
+    VK_UP:     HandleEvent('top');
+    VK_DOWN:   HandleEvent('bottom');
     VK_RETURN: HandleEvent('ok');
     VK_BACK:   HandleEvent('back');
     VK_HOME:   HandleEvent('home');

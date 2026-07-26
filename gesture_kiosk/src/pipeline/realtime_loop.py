@@ -6,7 +6,7 @@
   → 잠긴 사용자 bbox 크롭 → 손 랜드마크(MediaPipe HandLandmarker — 역시 매 프레임이
   아니라 should_refresh 주기로만 재인식, 그 사이는 마지막 결과 재사용)
   → 동작 판정(gesture_filter: 손 모양(point/fist) + 손 위치 이동 방향을 함께 봐서
-  left/right/up/down·ok·back·home 확정 — gesture_filter.py 모듈 docstring 참고)
+  left/right/top/bottom·ok·back·home 확정 — gesture_filter.py 모듈 docstring 참고)
   → 이벤트 전송 + 음성 안내
 
 2026-07-20 유휴 적응 FPS(GMtech feat/think_win_cpu 이식, resolve_loop_interval_sec 참고):
@@ -46,15 +46,19 @@ def _crop_bbox(frame, bbox):
     return frame[y1:y2, x1:x2]
 
 
-def _hand_point_ratio(bbox, point, frame_width_px, frame_height_px):
-    """손 랜드마크(bbox 크롭-로컬 픽셀 좌표) -> 전체 프레임 비율 좌표 (gestures.hand_move용).
+def _hand_point_ratio(bbox, point, frame_width_px):
+    """손 랜드마크(bbox 크롭-로컬 픽셀 좌표) -> 전체 프레임 등방 비율 좌표 (gestures.hand_move용).
 
     hand_estimator.infer()는 _crop_bbox()로 잘라낸 영역 기준 좌표를 돌려주므로,
     원점 오프셋을 _crop_bbox와 똑같이 클램프해서 더해야 프레임 전체 기준으로 맞는다.
+
+    2026-07-24 이식 — x·y 모두 frame_width_px로 정규화한다(예전엔 y를 frame_height_px로
+    나눠, 1280x720 카메라 기준 y가 x보다 ~1.78배 민감했다 — person_lock의 어깨너비
+    비율과 단위를 맞추는 등방 정규화, gesture_filter 모듈 docstring 참고).
     """
     x1, y1, _, _ = bbox
     x1, y1 = max(0, int(x1)), max(0, int(y1))
-    return ((x1 + point[0]) / frame_width_px, (y1 + point[1]) / frame_height_px)
+    return ((x1 + point[0]) / frame_width_px, (y1 + point[1]) / frame_width_px)
 
 
 def should_refresh(is_active, frames_since_refresh, interval_frames):
@@ -197,6 +201,10 @@ def run_pipeline(config):
                 frames_since_redetect += 1
 
             person_lock.update(input_tensor, persons)
+            # 어깨너비/어깨선 비율(2026-07-24 이식) — gesture_filter의 방향 판정 임계
+            # 정규화(body_scale)·들어올리기 게이트에 쓴다. 미검출 시 None(마지막 값 유지)
+            shoulder_width_ratio = person_lock.user_shoulder_width_ratio()
+            shoulder_line_y_ratio = person_lock.user_shoulder_line_y_ratio()
             state.is_user_locked = (
                 person_lock.enabled and person_lock.locked_person is not None
             )
@@ -241,8 +249,7 @@ def run_pipeline(config):
                             last_finger_count = count_extended_fingers(hands[0], finger_extended_ratio)
                         # 랜드마크 0번(손목) — hand_move가 이동 추적에 쓰는 대표점
                         last_hand_point_ratio = _hand_point_ratio(
-                            person_lock.locked_person.bbox, hands[0][0],
-                            frame_width_px, frame_height_px,
+                            person_lock.locked_person.bbox, hands[0][0], frame_width_px,
                         )
                     else:
                         last_finger_count = None
@@ -253,7 +260,9 @@ def run_pipeline(config):
                 finger_count = last_finger_count
                 hand_point_ratio = last_hand_point_ratio
 
-            gesture_event = gesture_filter.filter_signals(finger_count, hand_point_ratio)
+            gesture_event = gesture_filter.filter_signals(
+                finger_count, hand_point_ratio, shoulder_width_ratio, shoulder_line_y_ratio,
+            )
             state.debug = gesture_filter.debug
 
             if gesture_event is not None:

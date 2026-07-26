@@ -32,7 +32,7 @@ run.bat            :: 실행 — 브라우저 http://localhost:5000
 
 | action | 동작 | 판정 방식 | 키오스크 명령 |
 |---|---|---|---|
-| left / right / up / down | **검지 1개만 편 채(point)** 손을 좌/우/상/하로 이동 | MediaPipe 손 랜드마크(손목) 궤적 (window 내 이동량·주축 우세) | 포커스 이동 4방향 |
+| left / right / top / bottom | **검지 1개만 편 채(point)** 손을 좌/우/상/하로 이동 | MediaPipe 손 랜드마크(손목) 궤적 (window 내 이동량·주축 우세) | 포커스 이동 4방향 |
 | ok | **주먹(fist)을 낸 채** 손을 우측으로 이동 | 〃 | 선택·확인 |
 | back | **주먹을 낸 채** 손을 좌측으로 이동 | 〃 | 이전 화면 |
 | home | **주먹을 낸 채** 손을 상단으로 이동 | 〃 | 처음 화면으로 |
@@ -49,13 +49,21 @@ run.bat            :: 실행 — 브라우저 http://localhost:5000
   만들 수 있으므로 옛 팔꿈치 폴백 같은 무손 대체 경로는 없다)
 - 엔진은 방향 판정만 하고, 그리드 열 수 기준 줄 단위 이동 및 줄 끝→다음 줄 첫 칸 랩
   (토크백식 선형 순회)은 **UI 책임** — `demo_ui/index.html`의 `focusCols()`가 화면별
-  열 수(홈 3열 그리드, 그 외 1줄)만큼 up/down 시 포커스를 이동시킨다
-- 방향(left/right/up/down) 판정은 기본이 임계값(min_dist_*_ratio/axis_dominance) 비교다.
-  실기에서 임계값 재튜닝으로도 오판정이 계속되면(예: 오른쪽 이동이 아래로 오인) 학습된
-  분류기로 대체할 수 있다 — `collect_direction.bat`으로 궤적 데이터를 모으고
-  `train_direction.bat`으로 학습한 뒤 `configs/config.yaml`의
-  `gestures.hand_move.classifier_weights_path` 주석을 해제하면 적용된다(2026-07-24 도입,
-  hand_shape의 `classifier_weights_path`와 같은 패턴 — `src/postprocess/direction_classifier.py`)
+  열 수(홈 3열 그리드, 그 외 1줄)만큼 top/bottom 시 포커스를 이동시킨다
+- 방향(left/right/top/bottom) 판정은 기본이 임계값(min_dist_*_shoulder/axis_dominance)
+  비교다 — 2026-07-24 GMtech_project(feat/think_win_cpu) 이식: 임계값 단위를 화면 비율에서
+  **어깨너비 배수**로 교체해 카메라 거리와 무관하게 같은 동작이 같은 결과를 내고,
+  전체 창 이동량이 부족해도 최근 짧은 구간의 단호한 움직임(플릭)이면 확정하는 경로 B,
+  들어올리기 예비 동작 오발 방지(들어올리기 게이트), 짧은 신호 소실을 견디는 유예도
+  함께 들어왔다(자세한 설계는 `src/postprocess/gesture_filter.py` 모듈 docstring 참고).
+  같은 팀원이 델파이7 실기로 재확인한 결과 point 모양의 상/하 이벤트명도 up/down이
+  아니라 top/bottom이 맞아 함께 교체했다(주먹 쪽 up→home 매핑은 원래 다른 이름이라 무관).
+  이 임계값 방식으로도 오판정이 계속되면 학습된 분류기로 대체할 수 있다 —
+  `collect_direction.bat`으로 궤적 데이터를 모으고 `train_direction.bat`으로 학습한 뒤
+  `configs/config.yaml`의 `gestures.hand_move.classifier_weights_path` 주석을 해제하면
+  적용된다(hand_shape의 `classifier_weights_path`와 같은 패턴 —
+  `src/postprocess/direction_classifier.py`. 2026-07-24 시점 실기 정확도는 아직 임계값
+  방식보다 낫다고 확인되지 않았다 — 데이터를 더 모아 재검증 필요)
 - 잠긴 사용자(초점 맞은 얼굴 기준)의 bbox로 크롭한 손만 인식 — **다른 사람 손 무시**
 - 구 동작(주먹→펴기·OK핀치·양손바닥 10초·손등 보이기·고개 꾸벅, 팔 쓸기+손가락 정지
   유지)과 레거시 토글은 2026-07-15~2026-07-23에 순차 제거 — 직원 호출(help_call)은
@@ -119,7 +127,9 @@ gesture_kiosk/
    찍는 텍스트 한 줄을 익명 파이프로 읽는다(`event_output.mode: stdio`,
    `event_sender.py`의 `StdioEventSender`). 네트워크(UDP·웹소켓)는 전면 철회됐다.
 2. 전송 규격: `GESTURE|이벤트|손|신뢰도|시각\r\n` 한 줄(ASCII). 이벤트명은 7개 고정
-   — `left`/`right`/`up`/`down`/`back`/`home`/`ok`. "손" 필드는 이 엔진이 손 좌/우
+   — `left`/`right`/`top`/`bottom`/`back`/`home`/`ok`(2026-07-24 up/down→top/bottom
+   교체 — GMtech_project 팀원이 델파이7 실기로 재확인한 실제 프로토콜). "손" 필드는
+   이 엔진이 손 좌/우
    정체성을 구분하지 않아 항상 빈 문자열이다(현재 델파이 파싱도 이 필드는 안 씀).
    델파이 쪽 수신 예제(CreateProcess + ReadFile, Delphi 소스 포함)는 자매 코드베이스
    `GMtech_project/gesture_kiosk`의 `delphi_ui/`·`docs/델파이7_연동가이드.md` 참고.

@@ -23,12 +23,14 @@ import time
 
 import cv2
 
+from src.inference.pose_estimator import KPT_LEFT_SHOULDER, KPT_RIGHT_SHOULDER
 from src.utils.logger import get_logger
 
 logger = get_logger("postprocess")
 
 FACE_BOX_PAD_RATIO = 0.6      # 머리 키포인트 묶음 -> 얼굴 박스로 넓히는 패딩 비율
 SHARPNESS_SQUASH = 300.0      # 라플라시안 분산 정규화 상수 (v/(v+K) — 0~1로 압축)
+MIN_SHOULDER_WIDTH_PX = 20.0  # 이보다 좁으면(측면·오검출) 어깨너비를 신뢰하지 않는다
 
 
 def _center(bbox):
@@ -68,6 +70,7 @@ class PersonLock:
                  clock=time.monotonic, sharpness_fn=None):
         lock_cfg = config["person_lock"]
         self.enabled = lock_cfg["enabled"]
+        self._kpt_conf = lock_cfg["kpt_conf_threshold"]
         self._lock_frame_count = lock_cfg["lock_frame_count"]
         self._follow_radius_px = lock_cfg["follow_radius_ratio"] * frame_width_px
         self._release_sec = lock_cfg["release_sec"]
@@ -161,3 +164,35 @@ class PersonLock:
             self._candidate_center = None
             self._candidate_count = 0
         return self.locked_person
+
+    # ----- 어깨너비 · 어깨선 (2026-07-24 이식 — GMtech_project 방향 인식 정규화 자(尺)) -----
+
+    def _shoulder_width_px(self):
+        """잠긴 사용자의 어깨너비(px) — 방향 판정 임계의 몸 크기 정규화 자. 측정 불가면 None."""
+        if self.locked_person is None:
+            return None
+        left = self.locked_person.keypoint(KPT_LEFT_SHOULDER, self._kpt_conf)
+        right = self.locked_person.keypoint(KPT_RIGHT_SHOULDER, self._kpt_conf)
+        if left is None or right is None:
+            return None
+        width_px = math.dist(left, right)
+        return width_px if width_px >= MIN_SHOULDER_WIDTH_PX else None
+
+    def user_shoulder_width_ratio(self):
+        """잠긴 사용자의 어깨너비 / 프레임 폭 — 카메라 거리 무관 판정의 자(尺). 불가 시 None."""
+        shoulder_width_px = self._shoulder_width_px()
+        return None if shoulder_width_px is None else shoulder_width_px / self._frame_width_px
+
+    def user_shoulder_line_y_ratio(self):
+        """잠긴 사용자의 어깨선 높이(양어깨 y 평균) / 프레임 폭 — 등방 단위.
+
+        높이(frame_height_px)가 아니라 폭으로 나누는 이유: 어깨너비 비율과 같은 단위로
+        맞춰야 들어올리기 게이트(gesture_filter._stamp_rest_zone)가 어깨너비 배수로
+        휴식 존 높이를 표현할 수 있다."""
+        if self.locked_person is None:
+            return None
+        left = self.locked_person.keypoint(KPT_LEFT_SHOULDER, self._kpt_conf)
+        right = self.locked_person.keypoint(KPT_RIGHT_SHOULDER, self._kpt_conf)
+        if left is None or right is None:
+            return None
+        return ((left[1] + right[1]) / 2.0) / self._frame_width_px

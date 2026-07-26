@@ -36,7 +36,7 @@ class BuildGestureLineTest(unittest.TestCase):
 
     def test_all_seven_classes_produce_valid_lines(self):
         # 「제스처 정의 보고서」(2026-07-23 회사 확정) 7개 고정 이벤트명
-        for class_name in ("left", "right", "up", "down", "back", "home", "ok"):
+        for class_name in ("left", "right", "top", "bottom", "back", "home", "ok"):
             line = build_gesture_line(make_event(class_name=class_name))
             self.assertTrue(line.startswith(f"GESTURE|{class_name}|"), line)
 
@@ -56,7 +56,7 @@ class StdioEventSenderTest(unittest.TestCase):
         self.assertEqual(output, "GESTURE|left||1.00|1.000\n")
 
     def test_each_class_name_appears_verbatim(self):
-        for class_name in ("left", "right", "up", "down", "back", "home", "ok"):
+        for class_name in ("left", "right", "top", "bottom", "back", "home", "ok"):
             output = self._capture_stdout(make_event(class_name=class_name))
             self.assertIn(f"GESTURE|{class_name}|", output)
 

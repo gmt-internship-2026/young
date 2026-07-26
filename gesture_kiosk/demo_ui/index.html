@@ -197,7 +197,8 @@ function onEnterScreen(s) {
 }
 
 function applyEvent(e) {
-  // 2026-07-23 회사 확정 이벤트명(left/right/up/down/back/home/ok) 반영 —
+  // 2026-07-24 회사 확정 이벤트명(left/right/top/bottom/back/home/ok) 반영 —
+  // GMtech_project 팀원이 델파이7 실기로 재확인한 실제 프로토콜(up/down 아님).
   // 상하 이동은 엔진이 판정만 하고 줄 단위 이동은 UI 책임(README "상하 포커스
   // 이동" 참고)이라 focusCols() 보폭만큼 이동시킨다(홈 3열 그리드, 나머지는 1줄)
   const s = screen();
@@ -206,8 +207,8 @@ function applyEvent(e) {
   if (e.class_name === "back") { goBack(); return; }
   if (e.class_name === "left")  setFocus(focusIdx() - 1);
   if (e.class_name === "right") setFocus(focusIdx() + 1);
-  if (e.class_name === "up")    setFocus(focusIdx() - focusCols());
-  if (e.class_name === "down")  setFocus(focusIdx() + focusCols());
+  if (e.class_name === "top")    setFocus(focusIdx() - focusCols());
+  if (e.class_name === "bottom") setFocus(focusIdx() + focusCols());
   if (e.class_name === "ok") {
     const idx = focusIdx();
     if (s === "home") { chosenCert = CERTS[idx]; goForward("copies"); }

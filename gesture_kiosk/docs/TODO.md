@@ -103,9 +103,15 @@
       ok`(회사 확정 7개 고정 명칭, 사용자가 직접 재확인). gesture_filter.py의
       `POINT_EVENT_BY_DIRECTION`/`FIST_EVENT_BY_DIRECTION`, config.yaml/config_mac.yaml의
       `classes`·`announce.event_templates`, 모든 테스트·데모UI 반영
-      - ⚠ GMtech_project의 같은 날 커밋은 위/아래를 `top`/`bottom`으로 썼다 — 이
-        저장소는 사용자가 직접 재확인한 `up`/`down`을 채택했다. **델파이 실측 전
-        델파이 담당자와 문자열 재확인 필요**(정확히 일치하지 않으면 인식 안 됨)
+      - [x] ✅ **2026-07-24 해결** — GMtech_project 팀원(광명테크)이 델파이7 실기로
+        재확인한 결과 실제 프로토콜은 `top`/`bottom`이 맞았다(`up`/`down` 아님).
+        point(검지) 모양의 상/하 이벤트만 `top`/`bottom`으로 교체(주먹 쪽 `up`→`home`
+        매핑은 원래부터 다른 이름이라 무관) — `POINT_EVENT_BY_DIRECTION`,
+        config.yaml/config_mac.yaml의 `classes`·`announce.event_templates`,
+        `demo_ui/index.html`, `delphi_ui/MainForm.pas`, 관련 테스트 전부 반영.
+        같은 팀원 브랜치(`feat/think_win_cpu`)의 어깨너비 정규화 방향 판정
+        알고리즘(임계값 어깨너비 배수화·플릭 경로·들어올리기 게이트·소실 유예)도
+        함께 이식 — 자세한 내용은 `src/postprocess/gesture_filter.py` 모듈 docstring 참고
 - [x] `src/pipeline/event_sender.py`의 `PipeEventSender`(네임드 파이프)를
       `StdioEventSender`로 교체 — `print(GESTURE|이벤트|손|신뢰도|시각, flush=True)`
       한 줄. "손" 필드는 이 저장소가 손 좌/우 정체성을 안 가려서 항상 빈 문자열

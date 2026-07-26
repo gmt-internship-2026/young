@@ -35,6 +35,11 @@
 #   up/down을 채택했다. 델파이 실측 전 델파이 담당자와 문자열 재확인 필요(★TODO).
 #   손 모양+방향 매핑 로직 자체(위 문단)는 이미 일치해 바뀐 것 없음 — 이벤트
 #   문자열과 전송 방식(아래 event_output)만 교체.
+# 2026-07-24 ★TODO 해결 — GMtech_project 팀원(광명테크)이 델파이7 실기로 재확인한 결과
+#   실제 프로토콜은 top/bottom이 맞다(up/down 아님). point(검지) 모양의 상/하 이벤트만
+#   up→top, down→bottom으로 교체(주먹 쪽 up→home 매핑은 원래부터 다른 이름이라 무관).
+#   같은 팀원 브랜치(feat/think_win_cpu)의 어깨너비 정규화 방향 판정 알고리즘도 이번에
+#   함께 이식 — hand_move 블록의 min_dist_*_ratio가 min_dist_*_shoulder로 교체됐다.
 
 camera:
   device_id: 0            # USB 웹캠 장치 번호
@@ -118,32 +123,54 @@ gestures:
                               #   infer_interval_frames 주기로만 갱신되는 값이라도 window_sec
                               #   안에 min_track_frames만큼은 쌓이도록 값을 맞췄다.
     window_sec: 1.0           # 이 시간 안의 이동량으로 판정 (cooldown_sec보다 짧게)
-    min_dist_x_ratio: 0.18    # 좌/우 이동 확정 최소 이동 (프레임 폭 비율) — 옛 hand_swipe가
-                              #   실측한 손 흔들림 잡음 상한(~0.12)보다는 크게, 옛 팔 쓸기
-                              #   임계(0.25, 이제 못 쓸 전체 팔 스케일)보다는 작게 잡은
-                              #   잠정치 — 손만으로 좌/우를 판정하는 건 이번이 처음이라
-                              #   실기 재튜닝 전 가정값. 계기판 POINT/FIST x 진행도로 확인할 것
-    min_dist_y_ratio: 0.05    # min_dist_up/down_ratio 둘 다 있으면 미사용 — 안전망으로만 유지
-    min_dist_up_ratio: 0.15   # 위(go_home) 전용 — 2026-07-24 재튜닝: 옛 hand_swipe 실측값(0.09)이
-                              #   해상도 720p 기준 65px에 불과해 min_dist_x_ratio(0.18=1280px 기준
-                              #   230px)와 3배 이상 격차가 남 — 좌/우 이동 중 팔이 살짝만 처져도
-                              #   위/아래가 먼저 확정되는 오판정 원인으로 지목돼 격차를 줄임
-    min_dist_down_ratio: 0.12 # 아래 전용 — 위와 같은 이유로 0.05(720p 기준 36px)에서 상향
-                              #   (현재 fist+down은 미사용이라 이 값은 point+아래(move_down)에만 적용된다)
-    axis_dominance: 1.5       # 주축 진행도가 부축의 N배 이상일 때만 확정 — 대각선 오인 보류
-    min_track_frames: 3       # 최소 궤적 프레임 — 키포인트 튐 1~2프레임 오발 방지
-    return_suppress_sec: 0.0  # 복귀 스트로크 삼킴 — 기본 꺼짐. 옛 hand_swipe가 "손 이동엔
+    # 2026-07-24 GMtech_project(feat/think_win_cpu) 이식 — 임계값 단위를 화면 비율에서
+    # **어깨너비 배수**로 교체. 카메라와의 거리·설치 위치가 달라져도 "자기 어깨너비의
+    # 몇 배를 움직였나"로 판정돼 같은 동작이 같은 결과를 낸다(body_scale, 아래 참고).
+    # x·y 모두 프레임 폭 기준 등방 단위로 맞춘다(_hand_point_ratio도 y를 frame_height_px가
+    # 아닌 frame_width_px로 정규화하도록 함께 수정 — 예전엔 y가 x보다 ~1.78배(1280/720)
+    # 민감해서 "오른쪽인데 아래로 오판"하는 원인이었다)
+    min_dist_x_shoulder: 0.55   # 좌/우 확정 최소 이동(어깨너비 배수) — GMtech 튜닝값 그대로
+    min_dist_y_shoulder: 0.35   # 위/아래 확정 최소 이동(어깨너비 배수)
+    min_dist_up_shoulder:       # 비워둠(미지정) — min_dist_y_shoulder를 그대로 씀. 옛
+                                #   화면비율 비대칭값(위 0.15/아래 0.12)은 단위가 달라 그대로
+                                #   못 옮긴다 — 오버라이드 메커니즘만 유지, 실기 재튜닝은 추후
+    min_dist_down_shoulder:     # 위와 동일 — 비워둠
+    axis_dominance: 1.5         # 주축 진행도가 부축의 N배 이상일 때만 확정 — 대각선 오인 보류
+    min_track_frames: 4         # 최소 궤적 프레임 — GMtech 튜닝값 채택(기존 3)
+    # 플릭 경로(2026-07-24 이식) — 이동량이 위 임계에 못 미쳐도 **최근 짧은 구간
+    # (flick_window_sec)**에서 flick_min_dist_shoulder 이상 단호하게 움직였으면 확정한다.
+    # 손목만 까딱하는 빠른 동작을 구제 — 전체 창이 아니라 최근 구간만 보는 게 핵심(전체
+    # 창은 앞선 정지 시간에 희석돼 놓친다). 키(flick_window_sec) 없으면 이 경로 자체가 꺼짐
+    flick_window_sec: 0.2
+    flick_min_dist_shoulder: 0.28
+    return_suppress_sec: 0.0   # 복귀 스트로크 삼킴 — 기본 꺼짐. 옛 hand_swipe가 "손 이동엔
                               #   팔처럼 뚜렷한 중앙 쉬는 자세가 없어 켜면 정당한 반대 방향
                               #   시도까지 삼켜버렸다"(2026-07-23 2차 리포트)는 이유로 껐던
-                              #   것을 그대로 승계 — 이번에 좌/우도 손 위치 기반으로 바뀌어
-                              #   같은 문제가 재현될 가능성이 있다. 실기에서 "쓸기 후 되돌리는
-                              #   동작이 반대 방향으로 또 잡힘" 리포트가 나오면 옛 swipe처럼
-                              #   1.6초로 켜볼 것 (return_origin_ratio와 함께)
-    return_origin_ratio: 0.15 # return_suppress_sec이 0이라 현재 미사용 — 나중에 켤 경우 대비
+                              #   것을 그대로 승계 — 실기에서 "쓸기 후 되돌리는 동작이 반대
+                              #   방향으로 또 잡힘" 리포트가 나오면 GMtech처럼 1.6초로 켜볼 것
+                              #   (return_origin_shoulder·return_reach_shoulder와 함께)
+    return_origin_shoulder: 0.6  # return_suppress_sec이 0이라 현재 미사용 — 나중에 켤 경우 대비
+    return_reach_shoulder: 0.4   # 복귀 종료(지나침) 기준(2026-07-24 이식) — 복귀 스트로크가
+                                 #   직전 획 출발지를 이 거리(어깨너비 배수) 이상 지나치면
+                                 #   의도적 반대 동작으로 보고 삼키지 않는다. return_suppress_sec
+                                 #   이 0이면 역시 미사용
+    dropout_grace_sec: 0.15   # 소실 유예(2026-07-24 이식) — 빠른 동작의 모션 블러로 손 신호가
+                              #   순간(1~2프레임) 끊겨도 이 시간 안이면 궤적을 유지한다.
+                              #   미설정(0 또는 생략)이면 종전처럼 즉시 리셋
+    raise_guard_below_shoulder: 1.2  # 팔 들어올리기 게이트(2026-07-24 이식) — 추적점이
+                              #   어깨선 아래 어깨너비 1.2배(휴식 존)에 최근 머물렀다면 위
+                              #   방향을 이벤트(top·home)로 치지 않는다 — 동작 전 들어올리기가
+                              #   오발되던 것 차단. 키 삭제 시 게이트 없음
+    raise_guard_grace_sec: 0.6  # 휴식 존 이탈 후 이 시간 안의 위 쓸기만 들어올리기로 간주
+    body_scale:                 # 어깨너비 자(尺)의 안정화(2026-07-24 이식, GMtech와 동일)
+      fallback_ratio: 0.22      # 어깨 미검출 시 가정값(어깨너비/프레임폭)
+      min_ratio: 0.05           # 하한 클램프 — 측면 자세 등으로 어깨가 좁아져도 임계 과민 방지
+      max_ratio: 0.32           # 상한 클램프 — 카메라 근접 시 요구 이동량이 과도해지지 않게
+      alpha: 0.1                # EMA 평활 계수 — 프레임 단위 출렁임 흡수
     # classifier_weights_path: models/weights/direction_classifier.npz
                               # 2026-07-24 도입 — 학습된 방향 분류기(scripts/
                               #   train_direction_classifier.py로 생성). 주석 해제하고
-                              #   경로를 지정하면 min_dist_*_ratio/axis_dominance 임계값
+                              #   경로를 지정하면 min_dist_*_shoulder/axis_dominance 임계값
                               #   비교 대신 이 분류기로 좌/우/상/하를 판정한다(progress_x/
                               #   progress_y 계기판은 그대로 유지). 실기에서 임계값
                               #   재튜닝으로도 오판정이 계속될 때 대안 — 기본은 꺼짐
@@ -161,7 +188,7 @@ gestures:
   shapes:                     # 손 모양 판정 — hand_estimator.count_extended_fingers(엄지
                               #   제외) 결과로 point/fist를 구분한다 (2026-07-23 신설).
     point_finger_count: 1     # 검지 1개만 폄 = "가리키기" → hand_move 결과가 left/right/
-                              #   up/down으로 확정된다
+                              #   top/bottom으로 확정된다
     fist_finger_count: 0      # 전부 접음 = "주먹" → hand_move 결과가 ok(우)/back(좌)/
                               #   home(상)으로 확정된다. 아래는 매핑 없음(미사용, 사용자 확정)
     extended_ratio: 1.3       # 2026-07-22 도입 — TIP-손목 거리가 PIP-손목 거리의 이 배수
@@ -204,8 +231,8 @@ announce:                   # 토크백(보이스오버) — 현재 위치·기�
                              #   gesture_filter.py 상단 주석 참고)
     left: "왼쪽으로 이동"
     right: "오른쪽으로 이동"
-    up: "위로 이동"
-    down: "아래로 이동"
+    top: "위로 이동"
+    bottom: "아래로 이동"
     ok: "선택했습니다"
     back: "이전 화면으로 이동합니다"
     home: "처음 화면으로 돌아갑니다"
@@ -220,7 +247,7 @@ announce:                   # 토크백(보이스오버) — 현재 위치·기�
 classes:                    # 표준 동작 목록 — 「제스처 정의 보고서」(2026-07-23 회사 확정)
                               #   7개 고정 명칭. UI/델파이7 파싱 코드와 문자열이 정확히
                               #   일치해야 한다 — 임의 변경 금지
-  [left, right, up, down, back, home, ok]
+  [left, right, top, bottom, back, home, ok]
 
 event_output:
   # 2026-07-23 회사 확정(GMtech_project 팀원 커밋으로 확인): 델파이7 실연동은

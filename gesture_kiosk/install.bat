@@ -35,7 +35,16 @@ echo [INFO] 가상환경 생성 중...
 
 :venv_ready
 call venv_win\Scripts\activate.bat
+
+REM pip 자체 업그레이드도 wheelhouse가 있으면 오프라인으로 — make_offline_bundle.bat이
+REM pip 휠도 wheelhouse에 받아두는데(2026-07-24 실기 리포트 — 내부망에서 여기가 무조건
+REM 온라인으로 시도해 getaddrinfo failed로 막혔었다), 이 줄이 그 조건을 안 봤던 버그
+if exist wheelhouse goto :pip_upgrade_offline
 python -m pip install --upgrade pip >nul
+goto :pip_upgrade_done
+:pip_upgrade_offline
+python -m pip install --no-index --find-links wheelhouse --upgrade pip >nul
+:pip_upgrade_done
 
 REM ---- 3) 패키지 설치 (오프라인 wheelhouse 우선) --------------
 if exist wheelhouse goto :install_offline

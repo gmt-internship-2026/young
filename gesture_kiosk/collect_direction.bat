@@ -9,7 +9,8 @@ if not exist venv_win\Scripts\activate.bat (
 call venv_win\Scripts\activate.bat
 
 echo [INFO] 방향 학습 데이터 수집 — 카메라 창에서:
-echo        [w]/[a]/[s]/[d] = 상/좌/하/우 스와이프 원샷(동작을 마친 직후 누르세요)
-echo        [n] = none(가만히/대각선/떨림/왕복) 자동 저장 시작/정지
+echo        [w]/[a]/[s]/[d] = 상/좌/하/우 무장 토글 — 무장 후엔 안 눌러도 스와이프마다 자동 저장
+echo        [n] = none(가만히/대각선/떨림/왕복) 무장 토글 — 무장 중 0.3초 간격 자동 저장
+echo        같은 키 다시 누르면 무장 해제. 다른 키 누르면 그 라벨로 전환
 echo        [q] = 종료
 python scripts\collect_direction_data.py %*

@@ -112,7 +112,7 @@ person_lock:              # 오토포커스 카메라 — 초점 맞은 사용�
                               #   기존 0.10(하드코딩)에서 0.4로 상향 — 실기 재확인 필요
 
 gestures:
-  cooldown_sec: 1.2           # 이벤트 확정 직후 입력 무시 시간 — 연타 방지.
+  cooldown_sec: 1.5           # 이벤트 확정 직후 입력 무시 시간 — 연타 방지.
                               #   hand_move.window_sec보다 길게 유지할 것 —
                               #   쿨다운이 지나면 궤적의 잔여 점이 전부 만료되게
   hand_move:                  # 손 위치 이동 판정 — 4방향 공용(2026-07-23 개편: 옛
@@ -167,7 +167,7 @@ gestures:
       min_ratio: 0.05           # 하한 클램프 — 측면 자세 등으로 어깨가 좁아져도 임계 과민 방지
       max_ratio: 0.32           # 상한 클램프 — 카메라 근접 시 요구 이동량이 과도해지지 않게
       alpha: 0.1                # EMA 평활 계수 — 프레임 단위 출렁임 흡수
-    # classifier_weights_path: models/weights/direction_classifier.npz
+    classifier_weights_path: models/weights/direction_classifier.npz
                               # 2026-07-24 도입 — 학습된 방향 분류기(scripts/
                               #   train_direction_classifier.py로 생성). 주석 해제하고
                               #   경로를 지정하면 min_dist_*_shoulder/axis_dominance 임계값

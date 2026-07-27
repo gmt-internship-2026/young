@@ -41,7 +41,7 @@ person_lock:
   keypoint_bbox_pad_ratio: 0.4  # 2026-07-23 신설 — config.yaml 주석 참고 (손 크롭 범위 여유)
 
 gestures:
-  cooldown_sec: 1.2       # hand_move.window_sec보다 길게 (config.yaml 주석 참고)
+  cooldown_sec: 1.5       # hand_move.window_sec보다 길게 (config.yaml 주석 참고)
   hand_move:               # 손 위치 이동 판정 4방향 공용 (2026-07-23 개편, swipe·hand_swipe
                            # 통합 — config.yaml 주석 참고). 어느 이벤트인지는 shapes로 결정
     window_sec: 1.0

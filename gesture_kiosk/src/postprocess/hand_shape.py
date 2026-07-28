@@ -4,131 +4,99 @@
 - **한 손가락** + 상·하·좌·우 이동 = 포커스 이동 (탐색 계층 — 화면 안 바뀜)
 - **주먹** + 위/왼쪽/오른쪽 = 처음으로/이전/확인 (명령 계층 — 화면 바뀜)
 
-wholebody 133 키포인트의 손 21점 **기하 규칙만** 쓴다 — 별도 손 모양 CNN 없음
-(새 모델·새 의존성 0 = 상업 사용·코드 공개·저작권 공개 의무 없음,
-rtmlib Apache-2.0 기존 검토 그대로).
+판별 규칙 v3 (2026-07-28 — 입력을 wholebody 손 21점 → MediaPipe HandLandmarker
+21점으로 교체, hand_tracker.py 참고):
+- 좌표가 (x, y, z) 3차원이다 — v2가 2D 투영으로 구분 못 하던 원근 단축(카메라를
+  가리키는 손가락)이 z 거리로 풀린다: 화면상 짧아도 3D로는 길다 → 폄.
+- MediaPipe는 보이는 손만 보고하고 21점을 항상 채워 주므로 v2의 점별 신뢰도
+  필터·"미관측" 처리가 필요 없다 (손 존재 신뢰도는 hand_tracker 옵션이 거른다).
+- 3단계 판정(폄 / 굽힘 확인 / 기권)과 손 판정 규칙은 v2 그대로 유지 —
+  실기에서 검증된 보수적 구조(기권이 있으면 주먹을 단정하지 않는다)를 계승.
 
-판별 규칙 v2 (2026-07-23 2차 — 원근 단축 오판 대응, 실기 사진 2장 실증):
-손가락(검지~새끼)을 3단계로 판정한다 —
-- **폄**: 손끝-손목뿌리 거리가 둘째 관절(PIP)-뿌리 거리의 extend_ratio배 이상
-- **굽힘(확인된 것만)**: ①관절 진행 방향이 반전(뿌리→PIP 방향 vs DIP→손끝 방향이
-  반대 — 되접힌 손가락의 고유 기하: 펴진 손가락은 어느 각도로 찍어도 직선 투영) 또는
-  ②손끝이 PIP보다 안쪽(curl_confirm_ratio 이하)
-- **판단 불가(기권)**: 짧지만 접힘이 확인 안 됨 — 손가락이 카메라 쪽으로 누워
-  투영이 짧아진 것(원근 단축)일 수 있다. v1은 이걸 굽힘으로 세어 **화면을 가리키는
-  한 손가락이 주먹으로 오판**됐다(실기: right가 ok로 둔갑 — 가장 비싼 오발)
+손가락(검지~새끼) 3단계:
+- **폄**: 손끝-손목뿌리 3D 거리가 둘째 관절(PIP)-뿌리 3D 거리의 extend_ratio배 이상
+- **굽힘(확인된 것만)**: ①관절 진행 방향 반전(뿌리→PIP vs DIP→손끝 3D 내적 음수 —
+  되접힌 손가락의 고유 기하) 또는 ②손끝이 PIP보다 안쪽(curl_confirm_ratio 이하)
+- **판단 불가(기권)**: 짧지만 접힘이 확인 안 됨 — 단정하지 않는다
 
-손 판정: 한 손가락 = 폄 1개 + 굽힘 확인 2개 이상 · 주먹 = 폄 0 + **기권 0** +
-굽힘 확인 min_valid_fingers개 이상(기권이 하나라도 있으면 주먹을 단정하지 않는다)
-· 그 외 = None(모양 불명 — 이동 추적은 하되, 확정은 다수결·모양 기억이 담당).
+손 판정: 한 손가락 = 폄 1개 + 굽힘 확인 min_valid_fingers-1개 이상 ·
+주먹 = 폄 0 + **기권 0** + 굽힘 확인 min_valid_fingers개 이상 · 그 외 = None
+(모양 불명 — 이동 추적은 하되, 확정은 다수결·모양 기억이 담당).
 엄지는 세지 않는다 — 주먹을 쥐어도 엄지는 밖으로 삐져나와 오판이 잦고,
 보고서의 "손가락 종류 무관"과도 합치한다 (검지~새끼 중 아무거나 1개).
 """
 import math
 
-# COCO-WholeBody 133 규격의 손 키포인트 (몸 0~16은 COCO 17과 동일).
-# 손 21점 = 손목뿌리 1 + 손가락 4점(MCP·PIP·DIP·TIP)×5. 모델 좌표계(화면 기준)
-# 좌/우이며, 거울 보정은 person_lock.user_side_points가 담당한다.
-HAND_LAYOUT = {
-    "left": {
-        "root": 91,
-        # 검지·중지·약지·새끼 — (MCP, PIP, DIP, TIP). 엄지(92~95)는 제외 (모듈 주석)
-        "fingers": ((96, 97, 98, 99), (100, 101, 102, 103),
-                    (104, 105, 106, 107), (108, 109, 110, 111)),
-        "all": range(91, 112),
-    },
-    "right": {
-        "root": 112,
-        "fingers": ((117, 118, 119, 120), (121, 122, 123, 124),
-                    (125, 126, 127, 128), (129, 130, 131, 132)),
-        "all": range(112, 133),
-    },
-}
-WHOLEBODY_KPT_COUNT = 133
+# MediaPipe 21점 규격 (hand_tracker.HandDetection.landmarks 순서)
+HAND_ROOT_IDX = 0
+# 검지·중지·약지·새끼 — (MCP, PIP, DIP, TIP). 엄지(1~4)는 제외 (모듈 주석)
+HAND_FINGERS = ((5, 6, 7, 8), (9, 10, 11, 12), (13, 14, 15, 16), (17, 18, 19, 20))
+HAND_KPT_COUNT = 21
 
 SHAPE_FIST = "fist"       # 주먹 — 명령 계층
 SHAPE_FINGER = "finger"   # 한 손가락 — 탐색 계층
 
 
-def _confident_point(keypoints, index, min_conf):
-    x, y, conf = keypoints[index]
-    if conf < min_conf:
-        return None
-    return float(x), float(y)
+def _dist3d(point_a, point_b):
+    return math.dist(
+        (float(point_a[0]), float(point_a[1]), float(point_a[2])),
+        (float(point_b[0]), float(point_b[1]), float(point_b[2])),
+    )
 
 
-def classify_hand_shape(keypoints, model_side, min_conf, extend_ratio,
-                        min_valid_fingers, curl_confirm_ratio):
-    """손 모양 판별 v2 -> "fist" | "finger" | None (모양 불명).
+def classify_hand_shape(landmarks, extend_ratio, min_valid_fingers, curl_confirm_ratio):
+    """손 모양 판별 v3 -> "fist" | "finger" | None (모양 불명).
 
-    keypoints: PersonPose.keypoints (wholebody 133 필요 — body 17이면 None).
-    model_side: 모델 좌표계 기준 "left"/"right".
-    손가락별 3단계(폄/굽힘 확인/기권 — 모듈 주석)로 세고,
-    주먹은 기권이 하나라도 있으면 단정하지 않는다(원근 단축 오판 차단).
+    landmarks: HandDetection.**world_landmarks** — shape (21, 3), 미터 단위 월드
+    좌표를 권장한다 (2026-07-28 실기 정정: 화면 좌표의 z는 노이즈가 커서 가리키기
+    자세의 방향 반전 판정이 튀어 주먹 오판 재발 — 시점 불변 월드 기하로 판별).
+    판별은 비율·방향만 쓰므로 스케일 무관 — 화면 좌표를 넣어도 동작은 한다.
+    손가락별 3단계(폄/굽힘 확인/기권 — 모듈 주석)를 3D 거리로 세고,
+    주먹은 기권이 하나라도 있으면 단정하지 않는다 (v2 보수 구조 유지).
     """
-    if len(keypoints) < WHOLEBODY_KPT_COUNT:
+    if landmarks is None or len(landmarks) < HAND_KPT_COUNT:
         return None
-    layout = HAND_LAYOUT[model_side]
-    root = _confident_point(keypoints, layout["root"], min_conf)
-    if root is None:
-        return None
+    root = landmarks[HAND_ROOT_IDX]
 
     extended_count = 0
     curled_count = 0
     uncertain_count = 0
-    for mcp, pip, dip, tip in layout["fingers"]:
-        pip_point = _confident_point(keypoints, pip, min_conf)
-        tip_point = _confident_point(keypoints, tip, min_conf)
-        if pip_point is None or tip_point is None:
-            continue   # 미관측 — 판정에 넣지 않는다 (기권과 구분: 짧다는 증거도 없음)
-        pip_dist = math.dist(pip_point, root)
+    for mcp, pip, dip, tip in HAND_FINGERS:
+        pip_dist = _dist3d(landmarks[pip], root)
         if pip_dist <= 0.0:
             continue
-        ratio = math.dist(tip_point, root) / pip_dist
+        ratio = _dist3d(landmarks[tip], root) / pip_dist
         if ratio >= extend_ratio:
             extended_count += 1
             continue
-        # 짧다 — 진짜 굽힘인지 확인: 되접힘(방향 반전)이 굽힘의 고유 기하다.
-        # 펴진 채 카메라 쪽으로 누운 손가락은 짧아도 방향이 바깥으로 유지된다
-        mcp_point = _confident_point(keypoints, mcp, min_conf)
-        dip_point = _confident_point(keypoints, dip, min_conf)
-        is_folded = False
-        if mcp_point is not None and dip_point is not None:
-            base_dx = pip_point[0] - mcp_point[0]
-            base_dy = pip_point[1] - mcp_point[1]
-            tip_dx = tip_point[0] - dip_point[0]
-            tip_dy = tip_point[1] - dip_point[1]
-            is_folded = (base_dx * tip_dx + base_dy * tip_dy) < 0.0
+        # 짧다 — 진짜 굽힘인지 확인: 되접힘(방향 반전)이 굽힘의 고유 기하다
+        base = landmarks[pip] - landmarks[mcp]
+        tip_dir = landmarks[tip] - landmarks[dip]
+        is_folded = float(
+            base[0] * tip_dir[0] + base[1] * tip_dir[1] + base[2] * tip_dir[2]
+        ) < 0.0
         if is_folded or ratio <= curl_confirm_ratio:
             curled_count += 1
         else:
-            uncertain_count += 1   # 원근 단축 의심 — 기권
+            uncertain_count += 1   # 접힘 증거 없음 — 기권
 
     if extended_count == 1 and curled_count >= min_valid_fingers - 1:
         return SHAPE_FINGER
     if extended_count == 0 and uncertain_count == 0 and curled_count >= min_valid_fingers:
         return SHAPE_FIST
-    return None   # 기권 포함·2개 이상 폄·관측 부족 — 단정하지 않는다
+    return None   # 기권 포함·2개 이상 폄 — 단정하지 않는다
 
 
-def hand_center_point(keypoints, model_side, min_conf, min_points):
-    """손 중심 추적점 — 신뢰도 통과 손 키포인트들의 평균 (x_px, y_px) | None.
+def hand_center_point(landmarks):
+    """손 중심 추적점 — 21점 화면 좌표의 평균 (x_px, y_px) | None.
 
     단일 점(손끝·손목) 대신 평균인 이유: 주먹↔한 손가락 어느 모양에서도 좌표가
-    연속이고, 개별 점 오검출이 평균에 희석돼 궤적이 튀지 않는다. min_points
-    미만이면 손이 사실상 안 보이는 것 — 추적하지 않는다 (폴백 없음, 2026-07-23
-    스펙: 손목·팔꿈치 폴백 제거).
+    연속이고, 개별 점 흔들림이 평균에 희석돼 궤적이 튀지 않는다 (v2와 동일).
+    z는 궤적(화면 이동) 판정에 쓰지 않으므로 제외한다.
     """
-    if len(keypoints) < WHOLEBODY_KPT_COUNT:
-        return None
-    points = []
-    for index in HAND_LAYOUT[model_side]["all"]:
-        point = _confident_point(keypoints, index, min_conf)
-        if point is not None:
-            points.append(point)
-    if len(points) < min_points:
+    if landmarks is None or len(landmarks) < HAND_KPT_COUNT:
         return None
     return (
-        sum(x for x, _ in points) / len(points),
-        sum(y for _, y in points) / len(points),
+        float(sum(point[0] for point in landmarks) / len(landmarks)),
+        float(sum(point[1] for point in landmarks) / len(landmarks)),
     )

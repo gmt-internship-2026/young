@@ -15,6 +15,7 @@
 보류·확정 지연이 함께 소멸했다. 쿨다운·반대 방향 복귀 삼킴·들어올리기 게이트
 (위 방향 = top/home 오발 방지)·소실 유예는 유지. 수치는 config (기획서 4.7).
 """
+import math
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -133,6 +134,10 @@ class _SwipeTracker:
         """
         return (self._track[0][1], self._track[0][2]) if self._track else None
 
+    def last_point(self):
+        """현재 궤적의 최신 관측 (x, y) — 없으면 None (라벨 플랩의 연속성 대조용)."""
+        return (self._track[-1][1], self._track[-1][2]) if self._track else None
+
     def has_point_near(self, point, radius):
         """궤적이 point 반경 안을 지나는가 — 복귀(직전 획 끝 경유) 판정에 쓴다.
 
@@ -177,6 +182,11 @@ class GestureFilter:
         )
         self._active_side = None     # 현재 인식 중인 팔 ("left"/"right")
         self._active_shape = None    # 이번 프레임의 원시 손 모양 판별 (계기판용)
+        # 좌/우 라벨 플랩 보정(2026-07-28 실기): MediaPipe handedness는 주먹에서
+        # 불안정해 같은 물리적 손이 프레임 사이 좌↔우로 재라벨된다 — 라벨 교체를
+        # 팔 교체로 오인해 리셋하면 진행 중 획이 유실되고, 손을 되돌리는 반동만
+        # 온전히 확정돼 반대 방향 오발이 난다 (back이 ok로 둔갑). 키 없으면 종전 동작
+        self._side_flap_jump_shoulder = swipe.get("side_flap_jump_shoulder")
 
         # 손 모양 다수결(2026-07-23 새 스펙): 궤적과 나란히 프레임별 판별을 쌓아 두고
         # 방향 확정 시점에 표가 많은 모양을 채택한다. 판별 None(블러·원거리)은 기권 —
@@ -296,21 +306,26 @@ class GestureFilter:
         else:
             shape, point = point_info
             if side != self._active_side:
-                self._reset_stroke()   # 팔 교체 — 궤적 연결 금지. 손 모양 전환은 리셋
-                #   대상이 아니다: 추적점(손 중심)은 주먹↔한 손가락에서 좌표가 연속이다
-                self._shape_memory = None   # 다른 손의 기억을 물려주지 않는다
-                was_absent = self._active_side is None
-                self._active_side = side
-                if self._point_filter is not None:
-                    self._point_filter.reset()   # 다른 점의 잔상으로 새 궤적 오염 금지
-                # 팔의 "등장"도 휴식 존 이력로 취급(2026-07-21 실기 정정): 근거리에선
-                # 내린 팔이 화면 밖이라 휴식 존(어깨선+N배)이 프레임 아래로 나가 존
-                # 스탬프가 불가능하다 — 어깨선 아래에서 새로 나타난 팔은 들어올리기
-                # 도중일 가능성이 높으므로 등장 시각을 스탬프한다 (위 방향만 유예)
-                if (was_absent and self._raise_guard_below_shoulder is not None
-                        and (self._shoulder_line_y is None
-                             or point[1] > self._shoulder_line_y)):
-                    self._last_rest_zone_sec = now_sec
+                if self._is_side_flap(swipe_points, point, body_scale):
+                    # 같은 물리적 손의 라벨 플랩 — 팔 교체가 아니다: 궤적·투표·기억을
+                    # 유지한 채 라벨만 승계한다 (2026-07-28 실기 — 주먹 handedness 불안정)
+                    self._active_side = side
+                else:
+                    self._reset_stroke()   # 팔 교체 — 궤적 연결 금지. 손 모양 전환은 리셋
+                    #   대상이 아니다: 추적점(손 중심)은 주먹↔한 손가락에서 좌표가 연속이다
+                    self._shape_memory = None   # 다른 손의 기억을 물려주지 않는다
+                    was_absent = self._active_side is None
+                    self._active_side = side
+                    if self._point_filter is not None:
+                        self._point_filter.reset()   # 다른 점의 잔상으로 새 궤적 오염 금지
+                    # 팔의 "등장"도 휴식 존 이력로 취급(2026-07-21 실기 정정): 근거리에선
+                    # 내린 팔이 화면 밖이라 휴식 존(어깨선+N배)이 프레임 아래로 나가 존
+                    # 스탬프가 불가능하다 — 어깨선 아래에서 새로 나타난 팔은 들어올리기
+                    # 도중일 가능성이 높으므로 등장 시각을 스탬프한다 (위 방향만 유예)
+                    if (was_absent and self._raise_guard_below_shoulder is not None
+                            and (self._shoulder_line_y is None
+                                 or point[1] > self._shoulder_line_y)):
+                        self._last_rest_zone_sec = now_sec
             self._active_shape = shape
             if shape is not None:
                 self._add_shape_vote(shape, now_sec)
@@ -400,6 +415,23 @@ class GestureFilter:
         event = self._confirm(event_name, 1.0, now_sec, hand_side=side)
         self._set_swallow(direction, now_sec, point, stroke_start)
         return event
+
+    def _is_side_flap(self, swipe_points, new_point, body_scale):
+        """활성 팔의 라벨 교체가 실은 같은 손의 재라벨(플랩)인가 (2026-07-28).
+
+        조건: ①보정 켜짐 ②활성 팔이 있었고 이번 프레임 그 라벨이 사라짐(두 손이
+        다 보이면 진짜 교체일 수 있어 종전 동작) ③새 라벨의 좌표가 직전 추적점과
+        연속(어깨너비 N배 안 — 프레임 사이 손 이동보다 넉넉하고 반대쪽 실제 손보다
+        좁은 반경). 셋 다 참이면 라벨이 아니라 좌표를 믿는다.
+        """
+        if self._side_flap_jump_shoulder is None or self._active_side is None:
+            return False
+        if swipe_points.get(self._active_side) is not None:
+            return False
+        last = self._swipe_tracker.last_point()
+        if last is None:
+            return False
+        return math.dist(new_point, last) <= self._side_flap_jump_shoulder * body_scale
 
     # ----- 손 모양 다수결 (2026-07-23) -----
 

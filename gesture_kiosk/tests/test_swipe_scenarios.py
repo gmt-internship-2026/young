@@ -50,6 +50,7 @@ class _Sim:
         self._filter = GestureFilter(config, clock=lambda: self._now_sec)
         self.position = REST
         self.shape = "finger"
+        self.side = "left"      # 손 라벨 — 플랩 시나리오에서 중간에 바꾼다
         self.events = []
 
     def _step(self, swipe_points):
@@ -60,7 +61,8 @@ class _Sim:
 
     def feed(self, x, y):
         self.position = (x, y)
-        self._step({"left": (self.shape, (x, y)), "right": None})
+        other = "right" if self.side == "left" else "left"
+        self._step({self.side: (self.shape, (x, y)), other: None})
 
     def hold(self, duration_sec):
         for _ in range(round(duration_sec * FPS)):
@@ -313,6 +315,20 @@ class SwipeScenarioTest(unittest.TestCase):
             sim.move_by(AMP_X, 0, 0.3)
             sim.hold(0.3)
         self._run(scenario, [])
+
+    def test_24_handedness_flap_mid_stroke_keeps_back(self):
+        # 좌/우 라벨 플랩(2026-07-28 실기 — MediaPipe handedness가 주먹에서 불안정):
+        # 왼쪽으로 쓸던 중 라벨이 좌→우로 튀어도 좌표가 연속이면 같은 손 — 궤적을
+        # 이어 back이 정상 발화해야 한다. 보정 전에는 리셋으로 획이 유실되고
+        # 손을 되돌리는 반동(오른쪽)만 확정돼 ok로 오발됐다
+        def scenario(sim):
+            sim.shape = "fist"
+            sim.hold(0.5)
+            sim.move_by(-AMP_X / 2, 0, 0.15)
+            sim.side = "right"              # 라벨 플랩 — 좌표는 그대로 이어진다
+            sim.move_by(-AMP_X / 2, 0, 0.15)
+            sim.hold(0.3)
+        self._run(scenario, ["back"])
 
     def test_21_fist_raise_is_not_home(self):
         # 주먹 쥔 채 들어올리기 — home(처음으로)으로 오발되면 안 된다:

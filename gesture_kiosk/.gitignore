@@ -6,6 +6,8 @@ data/labeled/*
 models/weights/*.pt
 models/engines/*.engine
 models/**/*.onnx
+models/weights/*.task
+
 logs/*.log
 runs/
 __pycache__/

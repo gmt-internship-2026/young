@@ -1,7 +1,8 @@
 """pipeline 모듈 — 캡처·추론·판정·전송을 연결해 실시간 루프를 구동한다 (기획서 2.2, 3.2).
 
-프레임 흐름 (2026-07-23 새 스펙 — 손 모양 기준):
-  카메라(스레드) → 거울 반전 → 사람 포즈(RTMPose wholebody) → 사용자 잠금(person_lock)
+프레임 흐름 (2026-07-28 손 모델 교체 — hand_tracker.py 참고):
+  카메라(스레드) → 거울 반전 → 사람 포즈(RTMPose body — 잠금·어깨 자)
+  + 손 랜드마크(MediaPipe — 손 모양·손 중심) → 사용자 잠금(person_lock: 손 귀속)
   → 동작 판정(gesture_filter: 손 모양 다수결 + 손 중심 궤적 4방향)
   → 이벤트 전송(stdio — stdout 한 줄, 델파이가 파이프로 수신)
 
@@ -15,6 +16,7 @@ import time
 
 from src.capture.camera_stream import CameraStream
 from src.utils.env_report import log_environment
+from src.inference.hand_tracker import HandTracker
 from src.inference.pose_estimator import PoseEstimator
 from src.inference.preprocessor import Preprocessor
 from src.pipeline.event_sender import create_event_sender
@@ -89,7 +91,8 @@ def run_pipeline(config):
     log_environment(config)   # 어느 하드웨어에서 돈 기록인지 로그 첫머리에 남긴다 (2026-07-16)
     camera = CameraStream(config).start()
     preprocessor = Preprocessor(config)
-    pose_estimator = PoseEstimator(config)   # 유일한 추론 모델 — 모든 판정의 입력
+    pose_estimator = PoseEstimator(config)   # 사람 검출·잠금·어깨 자(尺)의 입력
+    hand_tracker = HandTracker(config)       # 손 모양·손 중심의 입력 (2026-07-28 교체)
 
     first_frame = camera.capture_frame()
     frame_height_px, frame_width_px = first_frame.shape[:2]
@@ -110,7 +113,11 @@ def run_pipeline(config):
             input_tensor = preprocessor.preprocess_frame(frame)
 
             persons = pose_estimator.infer(input_tensor)
-            person_lock.update(input_tensor, persons)
+            # 손 추적은 판정 대상이 있을 때만 — 유휴(사람 없음·잠금 없음) 프레임의
+            # CPU 낭비 차단 (idle_infer_fps 절감 설계와 같은 취지, 2026-07-28)
+            has_subject = bool(persons) or person_lock.locked_person is not None
+            hands = hand_tracker.infer(input_tensor) if has_subject else []
+            person_lock.update(input_tensor, persons, hands)
             state.is_user_locked = (
                 person_lock.enabled and person_lock.locked_person is not None
             )

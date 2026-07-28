@@ -1,8 +1,10 @@
-"""person_lock 단위 테스트 — 카메라·포즈 모델 없이 잠금·신호 로직만 검증한다.
+"""person_lock 단위 테스트 — 카메라·포즈·손 모델 없이 잠금·신호 로직만 검증한다.
 
 포즈 결과는 PersonPose와 같은 필드를 가진 대역(FakePerson)으로 만들고,
 초점 선명도는 sharpness_fn 주입으로 고정해 결정적으로 테스트한다.
-2026-07-23 새 스펙: 손 신호 = (손모양, 손 중심) — 손목·팔꿈치 폴백 없음.
+2026-07-28 손 모델 교체 반영: 손 신호는 keypoints가 아니라 update()에 넘기는
+HandDetection 목록(hand_fixtures.make_hand — 사용자 기준 좌/우 라벨)에서 온다.
+좌/우 스왑은 손에는 없고, 손과 짝지을 어깨(포즈 — 모델 좌표계)에만 남았다.
 """
 import os
 import sys
@@ -15,34 +17,26 @@ import numpy as np
 from src.postprocess.person_lock import (
     KPT_LEFT_SHOULDER, KPT_RIGHT_SHOULDER, PersonLock,
 )
-from tests.hand_fixtures import hand_center_of, make_wholebody_keypoints, place_hand
+from tests.hand_fixtures import hand_center_of, make_hand
 
 FRAME_WIDTH_PX = 1280
 FRAME_HEIGHT_PX = 720
+BODY_KPT_COUNT = 17     # 포즈 엔진 body — 손은 별도 모델이라 17이면 충분 (2026-07-28)
 
 
 class FakePerson:
-    """PersonPose와 같은 필드·메서드를 가진 테스트 대역 (rtmlib 임포트 회피).
-
-    left_hand/right_hand: (모양, 손목뿌리 좌표) — 모양은 hand_fixtures 규격
-    ("fist"/"finger"/"middle_finger"/"open"). 모델 좌표계 기준 좌/우다.
-    """
+    """PersonPose와 같은 필드·메서드를 가진 테스트 대역 (rtmlib 임포트 회피)."""
 
     def __init__(self, center_x, center_y, size_px=200.0,
-                 left_hand=None, right_hand=None,
                  left_shoulder=None, right_shoulder=None, head_points=None):
         half = size_px / 2.0
         self.bbox = (center_x - half, center_y - half, center_x + half, center_y + half)
         self.conf = 0.9
-        self.keypoints = make_wholebody_keypoints()
+        self.keypoints = np.zeros((BODY_KPT_COUNT, 3))
         if left_shoulder is not None:
             self.keypoints[KPT_LEFT_SHOULDER] = (*left_shoulder, 0.9)
         if right_shoulder is not None:
             self.keypoints[KPT_RIGHT_SHOULDER] = (*right_shoulder, 0.9)
-        if left_hand is not None:
-            place_hand(self.keypoints, "left", left_hand[1], left_hand[0])
-        if right_hand is not None:
-            place_hand(self.keypoints, "right", right_hand[1], right_hand[0])
         self.head_points = head_points if head_points is not None else [
             (center_x - 20, center_y - half + 30), (center_x + 20, center_y - half + 30)
         ]
@@ -78,7 +72,7 @@ def make_config(enabled=True, mirror=True):
             "hand_shape": {
                 "extend_ratio": 1.35,
                 "min_valid_fingers": 3,
-                "min_center_points": 5,
+                "curl_confirm_ratio": 0.9,
             },
         },
     }
@@ -107,10 +101,10 @@ def make_lock(config=None, sharpness_by_x=None):
 FRAME = np.zeros((FRAME_HEIGHT_PX, FRAME_WIDTH_PX, 3), dtype=np.uint8)
 
 
-def lock_person(lock, clock, person):
+def lock_person(lock, clock, person, hands=None):
     """lock_frame_count(3) 프레임 연속 공급해 person에게 잠근다."""
     for _ in range(3):
-        lock.update(FRAME, [person])
+        lock.update(FRAME, [person], hands)
         clock.tick(1 / 30)
 
 
@@ -149,10 +143,10 @@ class LockSelectionTest(unittest.TestCase):
     def test_disabled_lock_tracks_best_person_for_signals(self):
         # 잠금 비활성 — 손 신호용으로 최고 신뢰도 사람을 추적한다
         lock, _ = make_lock(make_config(enabled=False))
-        person = FakePerson(640, 360, left_hand=("finger", (500, 400)))
-        lock.update(FRAME, [person])
+        person = FakePerson(640, 360)
+        lock.update(FRAME, [person], [make_hand("right", "finger", (500, 400))])
         self.assertIsNotNone(lock.locked_person)
-        self.assertIsNotNone(lock.user_swipe_points()["right"])   # mirror=true — 모델 왼손
+        self.assertIsNotNone(lock.user_swipe_points()["right"])
 
 
 class FollowMatchTest(unittest.TestCase):
@@ -198,86 +192,95 @@ class FollowMatchTest(unittest.TestCase):
 
 
 class HandSignalTest(unittest.TestCase):
-    """손 신호 — (손모양, 손 중심) + 거울 좌/우 보정 (2026-07-23 새 스펙)."""
+    """손 신호 — (손모양, 손 중심). 좌/우는 hand_tracker가 이미 사용자 기준 (2026-07-28)."""
 
-    def _locked(self, mirror=True, **person_kwargs):
+    def _locked(self, hands, mirror=True, **person_kwargs):
         lock, clock = make_lock(make_config(mirror=mirror))
         person = FakePerson(640, 360, **person_kwargs)
-        lock_person(lock, clock, person)
-        return lock, person
+        lock_person(lock, clock, person, hands)
+        return lock
 
-    def test_mirror_swaps_model_labels_to_user_side(self):
-        lock, person = self._locked(
-            mirror=True, left_hand=("finger", (500, 400)), right_hand=("fist", (800, 400)))
-        points = lock.user_swipe_points()
-        self.assertEqual(points["right"][0], "finger")   # 모델 '왼손' = 사용자 오른손
-        self.assertEqual(points["left"][0], "fist")
-        expected = hand_center_of(person.keypoints, "left")
-        self.assertAlmostEqual(points["right"][1][0], expected[0])
-        self.assertAlmostEqual(points["right"][1][1], expected[1])
-
-    def test_no_mirror_keeps_model_labels(self):
-        lock, _ = self._locked(
-            mirror=False, left_hand=("finger", (500, 400)), right_hand=("fist", (800, 400)))
-        points = lock.user_swipe_points()
-        self.assertEqual(points["left"][0], "finger")
-        self.assertEqual(points["right"][0], "fist")
+    def test_user_side_labels_pass_through(self):
+        # 손 라벨은 스왑 없이 그대로 사용자 기준이다 — 거울 여부와 무관
+        for mirror in (True, False):
+            hands = [make_hand("right", "finger", (500, 400)),
+                     make_hand("left", "fist", (800, 400))]
+            lock = self._locked(hands, mirror=mirror)
+            points = lock.user_swipe_points()
+            self.assertEqual(points["right"][0], "finger", f"mirror={mirror}")
+            self.assertEqual(points["left"][0], "fist", f"mirror={mirror}")
+            expected = hand_center_of(hands[0].landmarks)
+            self.assertAlmostEqual(points["right"][1][0], expected[0], places=3)
+            self.assertAlmostEqual(points["right"][1][1], expected[1], places=3)
 
     def test_missing_hand_returns_none(self):
-        lock, _ = self._locked(right_hand=("fist", (800, 400)))   # 모델 왼손 없음
-        self.assertIsNone(lock.user_swipe_points()["right"])      # mirror — 사용자 오른손 없음
+        # MediaPipe는 보이는 손만 보고한다 — 없는 쪽은 None (유령 손 없음)
+        lock = self._locked([make_hand("left", "fist", (800, 400))])
+        self.assertIsNone(lock.user_swipe_points()["right"])
 
     def test_open_hand_tracks_with_unknown_shape(self):
         # 펼친 손 — 정의된 모양이 아니라 모양 None, 좌표는 공급된다 (궤적 연속 —
         # 확정은 다수결이 막는다)
-        lock, person = self._locked(left_hand=("open", (500, 400)))
+        hands = [make_hand("right", "open", (500, 400))]
+        lock = self._locked(hands)
         shape, point = lock.user_swipe_points()["right"]
         self.assertIsNone(shape)
-        expected = hand_center_of(person.keypoints, "left")
-        self.assertAlmostEqual(point[0], expected[0])
+        expected = hand_center_of(hands[0].landmarks)
+        self.assertAlmostEqual(point[0], expected[0], places=3)
 
     def test_no_lock_returns_none_sides(self):
         lock, _ = make_lock()
         self.assertEqual(lock.user_swipe_points(), {"left": None, "right": None})
 
+    def test_mirror_picks_hand_near_swapped_shoulder(self):
+        # 같은 라벨 손이 2개면 짝지을 어깨에 가까운 손을 고른다 — 사용자 오른손은
+        # 거울 프레임에서 포즈 모델의 '왼쪽' 어깨와 같은 화면 쪽이다 (스왑 검증)
+        hands = [make_hand("right", "finger", (300, 450)),
+                 make_hand("right", "fist", (900, 450))]
+        shoulders = {"left_shoulder": (300, 400), "right_shoulder": (900, 400)}
+        mirrored = self._locked(hands, mirror=True, **shoulders)
+        self.assertEqual(mirrored.user_swipe_points()["right"][0], "finger")
+        plain = self._locked(hands, mirror=False, **shoulders)
+        self.assertEqual(plain.user_swipe_points()["right"][0], "fist")
+
 
 class ReachGateTest(unittest.TestCase):
-    """해부학적 도달 거리 게이트(2026-07-20) — 몸 박스에 걸친 옆 사람 손 오귀속 차단.
+    """해부학적 도달 거리 게이트(2026-07-20) — 옆 사람 손 오귀속 차단.
 
-    어깨너비 200px × hand 2.2 = 한도 440px.
+    어깨너비 200px × hand 2.2 = 한도 440px. 손 라벨이 같아도 잠긴 사용자의
+    어깨에서 한도 밖이면 버린다 (대기줄의 옆 사람 손).
     """
 
-    def _locked(self, **person_kwargs):
+    def _locked(self, hands, **person_kwargs):
         config = make_config(mirror=False)   # 모델 좌표 그대로 검증 (스왑 무관)
         config["person_lock"]["reach_limit_shoulder"] = {"hand": 2.2}
         lock, clock = make_lock(config)
         person = FakePerson(640, 360, **person_kwargs)
-        lock_person(lock, clock, person)
+        lock_person(lock, clock, person, hands)
         return lock
 
     def test_neighbor_hand_beyond_reach_is_rejected(self):
-        # 남의 손이 내 포즈의 왼손으로 출력(어깨에서 ~494px > 440) → 없음 처리
-        lock = self._locked(left_shoulder=(540, 480), right_shoulder=(740, 480),
-                            left_hand=("finger", (100, 300)))
+        # 남의 왼손(어깨에서 ~490px > 440) → 없음 처리
+        lock = self._locked([make_hand("left", "finger", (100, 300))],
+                            left_shoulder=(540, 480), right_shoulder=(740, 480))
         self.assertIsNone(lock.user_swipe_points()["left"])
 
     def test_own_hand_within_reach_passes(self):
-        # 자기 손(어깨에서 ~131px)은 그대로 통과 — 정상 제스처 무영향
-        lock = self._locked(left_shoulder=(540, 480), right_shoulder=(740, 480),
-                            left_hand=("finger", (500, 400)))
+        # 자기 손(어깨에서 ~130px)은 그대로 통과 — 정상 제스처 무영향
+        lock = self._locked([make_hand("left", "finger", (500, 400))],
+                            left_shoulder=(540, 480), right_shoulder=(740, 480))
         self.assertEqual(lock.user_swipe_points()["left"][0], "finger")
 
     def test_gate_skipped_without_shoulders(self):
         # 어깨 미검출(측면 자세) — 게이트 생략, 종전 동작 유지 (인식을 죽이지 않는다)
-        lock = self._locked(left_hand=("finger", (100, 300)))
+        lock = self._locked([make_hand("left", "finger", (100, 300))])
         self.assertEqual(lock.user_swipe_points()["left"][0], "finger")
 
     def test_missing_config_key_disables_gate(self):
         # 구 config(키 없음) — 게이트 없음 (브랜치 이식 안전)
         lock, clock = make_lock(make_config(mirror=False))
-        person = FakePerson(640, 360, left_shoulder=(540, 480), right_shoulder=(740, 480),
-                            left_hand=("finger", (100, 300)))
-        lock_person(lock, clock, person)
+        person = FakePerson(640, 360, left_shoulder=(540, 480), right_shoulder=(740, 480))
+        lock_person(lock, clock, person, [make_hand("left", "finger", (100, 300))])
         self.assertEqual(lock.user_swipe_points()["left"][0], "finger")
 
 

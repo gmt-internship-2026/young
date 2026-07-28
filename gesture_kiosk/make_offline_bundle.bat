@@ -35,12 +35,13 @@ pip download torch==2.11.0+cu128 torchvision==0.26.0+cu128 ^
 pip download onnxruntime-gpu==1.23.2 --no-deps -d wheelhouse || goto :fail
 
 :skip_gpu_wheels
-echo [INFO] requirements 휠 다운로드 (onnxruntime·rtmlib 포함)...
+echo [INFO] requirements 휠 다운로드 (onnxruntime·rtmlib·mediapipe 포함)...
 pip download -r requirements.txt -d wheelhouse || goto :fail
 echo [INFO] pip 자체도 담는다 (구버전 pip 대비)
 pip download pip -d wheelhouse
 
-REM ---- 2) 포즈(rtmlib) 모델 캐시 수집 --------------------------
+REM ---- 2) 모델 수집 — 포즈(rtmlib) 캐시 + 손(hand_landmarker.task는
+REM        download_weights.py가 models\weights\에 저장 — 프로젝트 zip에 포함됨)
 pip install --no-index --find-links wheelhouse -r requirements.txt >nul 2>&1 || pip install -r requirements.txt >nul
 python scripts\download_weights.py || goto :fail
 xcopy /y /q /e "%USERPROFILE%\.cache\rtmlib" bundle_models\rtmlib\ >nul

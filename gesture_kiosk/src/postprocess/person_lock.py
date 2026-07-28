@@ -13,9 +13,15 @@
    gesture_filter에 공급한다 (2026-07-23 새 스펙 — 손 모양이 계층을 정하므로
    손목·팔꿈치 폴백 제거, hand_shape.py 참고)
 
-거울 반전 주의: 포즈 모델의 왼/오른손 라벨은 화면에 보이는 해부학 기준이라
-mirror=true 프레임에서는 사용자 실제 좌/우와 반대다. 이 모듈이 뒤집어
-"사용자 기준" 좌/우로 돌려준다 (관련 테스트: tests/test_person_lock.py).
+손 신호 소스(2026-07-28 교체): wholebody 손 21점 → MediaPipe HandLandmarker
+(hand_tracker.py — 유령 손·원근 단축 실기 문제로 교체). update()가 프레임의
+손 목록(hands)을 함께 받아, handedness가 맞는 손을 같은 쪽 어깨 도달 거리
+게이트로 잠긴 사용자에게 귀속시킨다 — 옆 사람 손 차단은 종전과 동일.
+
+거울 반전 주의: 손의 좌/우는 hand_tracker가 이미 **사용자 기준**으로 넘겨준다
+(MediaPipe handedness는 셀피 기준 — 스왑 불필요). 포즈 키포인트(어깨)는 여전히
+화면 해부학 기준이라, 사용자 쪽 손과 짝지을 어깨를 고를 때만 이 모듈이 뒤집는다
+(관련 테스트: tests/test_person_lock.py).
 """
 import math
 import time
@@ -36,16 +42,6 @@ KPT_RIGHT_SHOULDER = 6
 FACE_BOX_PAD_RATIO = 0.6      # 머리 키포인트 묶음 -> 얼굴 박스로 넓히는 패딩 비율
 SHARPNESS_SQUASH = 300.0      # 라플라시안 분산 정규화 상수 (v/(v+K) — 0~1로 압축)
 MIN_SHOULDER_WIDTH_PX = 20.0  # 이보다 좁으면(측면 자세·검출 불량) 목 길이 정규화가 무의미
-
-
-def user_side_points(model_left, model_right, is_mirror):
-    """포즈 모델(화면 기준) 좌/우 값 -> 사용자 기준 {"left": ..., "right": ...}.
-
-    거울 프레임에서 포즈 모델의 '왼쪽' 키포인트는 사용자의 실제 오른쪽이다.
-    """
-    if is_mirror:
-        return {"left": model_right, "right": model_left}
-    return {"left": model_left, "right": model_right}
 
 
 def _center(bbox):
@@ -124,11 +120,11 @@ class PersonLock:
         # 사람 팔은 자기 어깨에서 팔 길이 이상 떨어질 수 없으므로, 추적점이 같은 쪽
         # 어깨로부터 어깨너비 N배 안일 때만 인정한다. 키 없으면 게이트 없음(구 config)
         self._reach_limit_shoulder = lock_cfg.get("reach_limit_shoulder") or {}
-        # 손 모양 판별(2026-07-23 새 스펙) — 주먹/한 손가락 분류·손 중심 추적의 임계
+        # 손 모양 판별(2026-07-23 새 스펙) — 주먹/한 손가락 분류의 임계.
+        # min_center_points는 2026-07-28 제거 — MediaPipe는 21점을 항상 채워 준다
         hand_cfg = lock_cfg["hand_shape"]
         self._hand_extend_ratio = hand_cfg["extend_ratio"]
         self._hand_min_valid_fingers = hand_cfg["min_valid_fingers"]
-        self._hand_min_center_points = hand_cfg["min_center_points"]
         # v2(2026-07-23 2차): 굽힘 확인 비율 — 키 없으면 v1 동작(짧으면 전부 굽힘)과
         # 같아지도록 extend_ratio를 그대로 쓴다 (구 config 하위 호환)
         self._hand_curl_confirm_ratio = hand_cfg.get("curl_confirm_ratio",
@@ -144,6 +140,7 @@ class PersonLock:
         self._candidate_center = None  # 잠금 전 최고 후보 추적
         self._candidate_count = 0
         self._last_seen_sec = None
+        self._hands = []               # 이번 프레임의 HandDetection 목록 (hand_tracker)
 
     # ----- 사용자 선정·추적 -----
 
@@ -159,8 +156,13 @@ class PersonLock:
         weight = self._sharpness_weight
         return (1.0 - weight) * min(area_ratio * 10.0, 1.0) + weight * sharpness_norm, face_box
 
-    def update(self, frame, persons):
-        """프레임의 사람 목록으로 잠금 상태를 갱신한다. 잠긴 사람(or None)을 돌려준다."""
+    def update(self, frame, persons, hands=None):
+        """프레임의 사람·손 목록으로 잠금 상태를 갱신한다. 잠긴 사람(or None)을 돌려준다.
+
+        hands: hand_tracker.HandTracker.infer() 결과 — user_swipe_points()가
+        잠긴 사용자에게 귀속시켜 쓴다 (2026-07-28). 미공급(None)이면 손 신호 없음.
+        """
+        self._hands = hands if hands is not None else []
         if not self.enabled:
             # 잠금 비활성이어도 쓸기(손목 궤적)·끄덕임은 기준 인물이 필요하다 —
             # 최고 신뢰도 사람을 추적해 user_swipe_points()가 동작하게 한다
@@ -266,44 +268,66 @@ class PersonLock:
         """잠긴 사용자의 손 신호 — 사용자 기준 좌/우: {"left": (손모양, (x,y)) | None, ...}.
 
         손모양 = "fist"(주먹 — 명령 계층) | "finger"(한 손가락 — 탐색 계층) |
-        None(모양 불명 — 블러·원거리). 추적점 = 손 21점 신뢰도 통과점의 평균(손 중심).
-        손이 안 보이는 팔은 None — 손목·팔꿈치 폴백은 2026-07-23 새 스펙에서 제거
-        (손 모양이 계층을 정하므로 손이 곧 조작 수단이다).
+        None(모양 불명). 추적점 = 손 21점 화면 좌표 평균(손 중심).
+        손이 안 보이는 팔은 None — MediaPipe는 보이는 손만 보고하므로(2026-07-28)
+        wholebody의 유령 손(한 팔에 좌/우 겹침)이 원천적으로 없다.
         모양 불명이어도 좌표는 공급한다 — 빠른 이동 중 블러로 모양 판별이 끊겨도
         궤적은 이어지고, 이벤트 확정 시점의 다수결(gesture_filter)이 모양을 정한다.
         """
         if self.locked_person is None:
             return {"left": None, "right": None}
-
         shoulder_width_px = self._shoulder_width_px()
+        return {
+            "left": self._hand_state("left", shoulder_width_px),
+            "right": self._hand_state("right", shoulder_width_px),
+        }
 
-        def hand_state(model_side, shoulder_idx):
-            """이 손의 (손모양, 손 중심) | None — 도달 거리 게이트 통과분만.
+    def _hand_state(self, user_side, shoulder_width_px):
+        """이 사용자 쪽 손의 (손모양, 손 중심) | None — 귀속·도달 게이트 통과분만.
 
-            같은 쪽 어깨 = 도달 거리 게이트의 기준점 (모델 좌표계 — 좌/우 스왑 전이라
-            손과 어깨의 해부학적 쪽이 일치한다). 어깨가 안 보이면 게이트 생략.
-            """
-            keypoints = self.locked_person.keypoints
-            center = hand_center_point(keypoints, model_side, self._kpt_conf,
-                                       self._hand_min_center_points)
+        후보 = handedness가 같은 쪽인 프레임의 손 전부(옆 사람 손 포함 가능).
+        기준점 = 같은 쪽 어깨(포즈 — 모델 좌표계라 거울이면 반대쪽 인덱스),
+        어깨 미검출이면 잠금 몸 박스 중심. 기준점 최근접 손을 고른 뒤 도달 거리
+        게이트(어깨너비 N배 — 2026-07-20)로 옆 사람 손을 거른다. 어깨나 어깨너비가
+        없으면 게이트 생략 — 측면 자세에서 인식을 죽이지 않는다 (종전 동작 유지).
+        """
+        candidates = [hand for hand in self._hands if hand.user_side == user_side]
+        if not candidates:
+            return None
+
+        model_side = self._pose_model_side(user_side)
+        shoulder_idx = KPT_LEFT_SHOULDER if model_side == "left" else KPT_RIGHT_SHOULDER
+        shoulder = self.locked_person.keypoint(shoulder_idx, self._kpt_conf)
+        reference = shoulder if shoulder is not None else _center(self.locked_person.bbox)
+
+        best_hand, best_center, best_dist = None, None, None
+        for hand in candidates:
+            center = hand_center_point(hand.landmarks)
             if center is None:
-                return None
-            limit = self._reach_limit_shoulder.get("hand")
-            shoulder = self.locked_person.keypoint(shoulder_idx, self._kpt_conf)
-            if (limit is not None and shoulder is not None and shoulder_width_px is not None
-                    and math.dist(center, shoulder) > limit * shoulder_width_px):
-                return None   # 몸 박스에 걸친 옆 사람 손 — 오귀속 차단 (2026-07-20 유지)
-            shape = classify_hand_shape(keypoints, model_side, self._kpt_conf,
-                                        self._hand_extend_ratio,
-                                        self._hand_min_valid_fingers,
-                                        self._hand_curl_confirm_ratio)
-            return (shape, center)
+                continue
+            dist = math.dist(center, reference)
+            if best_dist is None or dist < best_dist:
+                best_hand, best_center, best_dist = hand, center, dist
+        if best_hand is None:
+            return None
 
-        return user_side_points(
-            hand_state("left", KPT_LEFT_SHOULDER),
-            hand_state("right", KPT_RIGHT_SHOULDER),
-            self._is_mirror,
-        )
+        limit = self._reach_limit_shoulder.get("hand")
+        if (limit is not None and shoulder is not None and shoulder_width_px is not None
+                and best_dist > limit * shoulder_width_px):
+            return None   # 어깨 도달 거리 밖 — 옆 사람 손 오귀속 차단 (2026-07-20 유지)
+
+        # 모양 판별은 월드 랜드마크(미터·시점 불변) — 화면 좌표의 z는 노이즈가 커서
+        # 가리키기 자세의 한 손가락이 주먹으로 오판됐다 (2026-07-28 실기 재발 정정)
+        shape = classify_hand_shape(best_hand.world_landmarks, self._hand_extend_ratio,
+                                    self._hand_min_valid_fingers,
+                                    self._hand_curl_confirm_ratio)
+        return (shape, best_center)
+
+    def _pose_model_side(self, user_side):
+        """사용자 기준 쪽 -> 포즈 모델(화면 해부학) 좌표계 쪽 — 거울이면 반대."""
+        if not self._is_mirror:
+            return user_side
+        return "right" if user_side == "left" else "left"
 
     def _shoulder_width_px(self):
         """잠긴 사용자의 어깨너비(px) — 도달 거리 게이트의 자. 측정 불가면 None."""

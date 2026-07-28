@@ -1,6 +1,8 @@
 """hand_shape 단위 테스트 — 손 모양 판별(주먹/한 손가락) 기하 규칙 검증.
 
-카메라·모델 없이 합성 키포인트(hand_fixtures)로만 검증한다 (2026-07-23 새 스펙).
+카메라·모델 없이 합성 랜드마크(hand_fixtures)로만 검증한다.
+2026-07-28 v3 재작성: 입력이 MediaPipe 21점(x, y, z) — 원근 단축(카메라를
+가리키는 검지)이 z 거리로 "폄"이 되는 것이 교체의 핵심 검증 항목이다.
 """
 import os
 import sys
@@ -10,99 +12,71 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 
-from src.postprocess.hand_shape import (
-    HAND_LAYOUT, classify_hand_shape, hand_center_point,
-)
-from tests.hand_fixtures import hand_center_of, make_wholebody_keypoints, place_hand
+from src.postprocess.hand_shape import classify_hand_shape, hand_center_point
+from tests.hand_fixtures import hand_center_of, make_hand_landmarks
 
-MIN_CONF = 0.3
 EXTEND_RATIO = 1.35
 MIN_VALID_FINGERS = 3
-MIN_CENTER_POINTS = 5
 CURL_CONFIRM_RATIO = 0.9
 
 
-def classify(keypoints, side="left"):
-    return classify_hand_shape(keypoints, side, MIN_CONF, EXTEND_RATIO,
-                               MIN_VALID_FINGERS, CURL_CONFIRM_RATIO)
+def classify(landmarks):
+    return classify_hand_shape(landmarks, EXTEND_RATIO, MIN_VALID_FINGERS,
+                               CURL_CONFIRM_RATIO)
 
 
 class ClassifyHandShapeTest(unittest.TestCase):
     def test_fist_is_classified(self):
-        keypoints = place_hand(make_wholebody_keypoints(), "left", (500, 400), "fist")
-        self.assertEqual(classify(keypoints), "fist")
+        self.assertEqual(classify(make_hand_landmarks("fist")), "fist")
 
     def test_index_finger_is_classified(self):
-        keypoints = place_hand(make_wholebody_keypoints(), "left", (500, 400), "finger")
-        self.assertEqual(classify(keypoints), "finger")
+        self.assertEqual(classify(make_hand_landmarks("finger")), "finger")
 
     def test_any_single_finger_counts(self):
         # 보고서 "손가락 종류 무관" — 중지만 펴도 한 손가락이다
-        keypoints = place_hand(make_wholebody_keypoints(), "left", (500, 400), "middle_finger")
-        self.assertEqual(classify(keypoints), "finger")
+        self.assertEqual(classify(make_hand_landmarks("middle_finger")), "finger")
 
     def test_open_hand_is_unknown(self):
         # 펼친 손(4지 폄) — 정의된 모양이 아니다: None
-        keypoints = place_hand(make_wholebody_keypoints(), "left", (500, 400), "open")
-        self.assertIsNone(classify(keypoints))
+        self.assertIsNone(classify(make_hand_landmarks("open")))
 
-    def test_right_hand_uses_right_layout(self):
-        keypoints = place_hand(make_wholebody_keypoints(), "right", (800, 400), "fist")
-        self.assertEqual(classify(keypoints, side="right"), "fist")
-        self.assertIsNone(classify(keypoints, side="left"))   # 왼손 자리는 비어 있다
+    def test_point_at_camera_is_finger(self):
+        # v3 핵심(2026-07-28 교체 근거): 카메라를 가리키는 검지는 화면 투영이
+        # 짧지만 z(깊이)로는 길다 — 3D 거리로 "폄" 판정 → 한 손가락.
+        # (v2는 2D뿐이라 기권 — 화면을 가리키는 항법이 모양 기억에 의존했다)
+        self.assertEqual(classify(make_hand_landmarks("point_camera")), "finger")
 
-    def test_too_few_valid_fingers_is_unknown(self):
-        # 판단 가능한 손가락 2개(< 3) — 블러·원거리: 단정하지 않는다
-        keypoints = place_hand(make_wholebody_keypoints(), "left", (500, 400), "fist")
-        for _, pip, _, tip in list(HAND_LAYOUT["left"]["fingers"])[2:]:
-            keypoints[pip][2] = 0.0   # 약지·새끼 관절 신뢰도 미달
-            keypoints[tip][2] = 0.0
-        self.assertIsNone(classify(keypoints))
-
-    def test_missing_root_is_unknown(self):
-        keypoints = place_hand(make_wholebody_keypoints(), "left", (500, 400), "fist")
-        keypoints[HAND_LAYOUT["left"]["root"]][2] = 0.0
-        self.assertIsNone(classify(keypoints))
-
-    def test_body17_keypoints_are_unknown(self):
-        # body 17 엔진 — 손 키포인트 자체가 없어 판별 불가
-        self.assertIsNone(classify(np.zeros((17, 3))))
-
-    def test_point_at_camera_is_not_fist(self):
-        # v2 핵심(실기 사진 실증): 검지가 카메라 쪽으로 누우면 투영이 짧아지는데
-        # (원근 단축), 방향 반전이 없으므로 굽힘이 아니라 "기권"이다 — 나머지
-        # 3지가 굽힘이어도 기권이 있으면 주먹으로 단정하지 않는다 (right→ok 오발 차단)
-        keypoints = place_hand(make_wholebody_keypoints(), "left", (500, 400), "point_camera")
-        self.assertIsNone(classify(keypoints))
+    def test_bunched_flat_finger_is_not_fist(self):
+        # 짧지만 접힘 증거(방향 반전·확실 비율)가 없는 손가락 = 기권 —
+        # 기권이 있으면 주먹을 단정하지 않는다 (명령 오발 차단, v2 보수 구조 유지)
+        self.assertIsNone(classify(make_hand_landmarks("bunched_flat")))
 
     def test_folded_finger_confirms_curl_by_direction(self):
-        # 되접힘(방향 반전)은 비율과 무관하게 굽힘 확인 — 픽스처의 굽힌 손가락은
-        # DIP(-62)→TIP(-40)이 아래 방향이라 MCP→PIP(위)와 반전된다. curl_confirm을
-        # 0으로 줘서 비율 경로를 꺼도 fist가 나오면 방향 반전 경로가 동작한 것
-        keypoints = place_hand(make_wholebody_keypoints(), "left", (500, 400), "fist")
+        # 되접힘(방향 반전)은 비율과 무관하게 굽힘 확인 — curl_confirm을 0으로 줘서
+        # 비율 경로를 꺼도 fist가 나오면 방향 반전 경로가 동작한 것
         self.assertEqual(
-            classify_hand_shape(keypoints, "left", MIN_CONF, EXTEND_RATIO,
+            classify_hand_shape(make_hand_landmarks("fist"), EXTEND_RATIO,
                                 MIN_VALID_FINGERS, 0.0),
             "fist",
         )
 
+    def test_short_landmarks_are_unknown(self):
+        # 21점 미만(비정상 입력) — 단정하지 않는다
+        self.assertIsNone(classify(np.zeros((17, 3))))
+        self.assertIsNone(classify(None))
+
 
 class HandCenterPointTest(unittest.TestCase):
-    def test_center_is_mean_of_confident_points(self):
-        keypoints = place_hand(make_wholebody_keypoints(), "left", (500, 400), "fist")
-        center = hand_center_point(keypoints, "left", MIN_CONF, MIN_CENTER_POINTS)
-        expected = hand_center_of(keypoints, "left")
-        self.assertAlmostEqual(center[0], expected[0])
-        self.assertAlmostEqual(center[1], expected[1])
+    def test_center_is_mean_of_landmarks(self):
+        landmarks = make_hand_landmarks("fist")
+        center = hand_center_point(landmarks)
+        expected = hand_center_of(landmarks)
+        self.assertAlmostEqual(center[0], expected[0], places=4)
+        self.assertAlmostEqual(center[1], expected[1], places=4)
 
-    def test_too_few_points_returns_none(self):
-        keypoints = make_wholebody_keypoints()
-        layout = HAND_LAYOUT["left"]
-        keypoints[layout["root"]] = (500, 400, 0.9)   # 손목뿌리 1점뿐 (< 5)
-        self.assertIsNone(hand_center_point(keypoints, "left", MIN_CONF, MIN_CENTER_POINTS))
-
-    def test_body17_returns_none(self):
-        self.assertIsNone(hand_center_point(np.zeros((17, 3)), "left", MIN_CONF, MIN_CENTER_POINTS))
+    def test_short_landmarks_return_none(self):
+        self.assertIsNone(hand_center_point(np.zeros((17, 3))))
+        self.assertIsNone(hand_center_point(None))
 
 
 if __name__ == "__main__":

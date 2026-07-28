@@ -7,6 +7,7 @@
 # 2026-07-11 라이선스 B안: ultralytics(AGPL-3.0) 제거 —
 #   실행기 = ONNX Runtime(MIT), 포즈 = rtmlib/RTMPose(Apache-2.0)
 # 2026-07-16: EasyOCR(주민등록증 OCR) 제거 — 제스처 집중, 관련 의존성 삭제
+# 2026-07-28: mediapipe(Apache-2.0) 추가 — 손 모양·손 중심 전담 (B안 기준 유지)
 #
 # GPU PC에서 install.bat이 하는 추가 작업 (수동 설치 시에도 동일하게 필요):
 #   ① torch==2.11.0+cu128 torchvision==0.26.0+cu128 설치
@@ -17,7 +18,10 @@
 #      onnxruntime-gpu는 CUDA 12 빌드여야 한다 (1.27.0은 CUDA 13 빌드라
 #      cublasLt64_13.dll을 찾지 못해 조용히 CPU 폴백 — 2026-07-10 확인)
 onnxruntime==1.23.2                # CPU 실행 기본 — GPU PC는 install.bat이 onnxruntime-gpu로 교체
-rtmlib==0.0.15                     # RTMPose 포즈 추정 (Apache-2.0) — 사용자 잠금·손 모양 판별용
+rtmlib==0.0.15                     # RTMPose 포즈 추정 (Apache-2.0) — 사용자 잠금·어깨 자(尺)용
+mediapipe==1.0.0                   # 손 랜드마크 HandLandmarker (Apache-2.0) — 손 모양·손 중심
+                                   #   (2026-07-28 교체: wholebody 손 21점의 유령 손·원근 단축
+                                   #   실기 문제. 모델 파일은 download_weights.py가 받는다)
 opencv-python==5.0.0.93
 numpy==2.2.6
 pyyaml==6.0.3

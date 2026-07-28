@@ -200,7 +200,8 @@ event_output:
   mode: stdio             # stdio(파이프 연동 — 배포 기본) | console(로그만 — 개발)
 
 logging:
-  level: INFO
+  level: INFO             # DEBUG면 손 판별 계측(hand_measure — 손가락별 3D 비율·판정)이
+                          #   로그 파일에 남는다: 실측 튜닝 세션용 (2026-07-28 신설)
   save_dir: logs/
 
 runtime:                  # 배포 기준 명세 — 설치가이드.md와 일치해야 한다

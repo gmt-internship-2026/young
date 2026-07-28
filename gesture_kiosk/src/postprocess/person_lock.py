@@ -23,12 +23,13 @@
 화면 해부학 기준이라, 사용자 쪽 손과 짝지을 어깨를 고를 때만 이 모듈이 뒤집는다
 (관련 테스트: tests/test_person_lock.py).
 """
+import logging
 import math
 import time
 
 import cv2
 
-from src.postprocess.hand_shape import classify_hand_shape, hand_center_point
+from src.postprocess.hand_shape import classify_hand_shape, finger_states, hand_center_point
 from src.utils.logger import get_logger
 
 logger = get_logger("postprocess")
@@ -321,6 +322,15 @@ class PersonLock:
         shape = classify_hand_shape(best_hand.world_landmarks, self._hand_extend_ratio,
                                     self._hand_min_valid_fingers,
                                     self._hand_curl_confirm_ratio)
+        if logger.isEnabledFor(logging.DEBUG):
+            # 판별 계측(2026-07-28) — logging.level: DEBUG일 때만. 실기에서 주먹/
+            # 한 손가락/가리키기의 비율 분포를 측정해 임계값을 데이터로 정한다
+            # (형식: hand_measure side=right shape=fist f=0.71:curl|0.68:curl|...)
+            states = finger_states(best_hand.world_landmarks, self._hand_extend_ratio,
+                                   self._hand_curl_confirm_ratio)
+            logger.debug("hand_measure side=%s shape=%s conf=%.2f f=%s",
+                         user_side, shape, best_hand.conf,
+                         "|".join(f"{ratio:.2f}:{state}" for ratio, state in states))
         return (shape, best_center)
 
     def _pose_model_side(self, user_side):

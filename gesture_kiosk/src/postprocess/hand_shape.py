@@ -36,12 +36,48 @@ HAND_KPT_COUNT = 21
 SHAPE_FIST = "fist"       # 주먹 — 명령 계층
 SHAPE_FINGER = "finger"   # 한 손가락 — 탐색 계층
 
+STATE_EXTENDED = "extend"      # 폄
+STATE_CURLED = "curl"          # 굽힘 확인
+STATE_UNCERTAIN = "uncertain"  # 기권 — 접힘 증거 없음
+
 
 def _dist3d(point_a, point_b):
     return math.dist(
         (float(point_a[0]), float(point_a[1]), float(point_a[2])),
         (float(point_b[0]), float(point_b[1]), float(point_b[2])),
     )
+
+
+def finger_states(landmarks, extend_ratio, curl_confirm_ratio):
+    """손가락(검지~새끼)별 (3D 비율, 판정 상태) 목록 — 판별 근거 계측(2026-07-28).
+
+    classify_hand_shape가 이 계산을 그대로 쓰고, person_lock이 DEBUG 레벨에서
+    이 값을 로그로 남긴다 — 실기에서 주먹/한 손가락의 비율 분포를 측정해
+    extend_ratio·curl_confirm_ratio를 감이 아니라 데이터로 정하기 위한 계측이다.
+    """
+    if landmarks is None or len(landmarks) < HAND_KPT_COUNT:
+        return []
+    root = landmarks[HAND_ROOT_IDX]
+    states = []
+    for mcp, pip, dip, tip in HAND_FINGERS:
+        pip_dist = _dist3d(landmarks[pip], root)
+        if pip_dist <= 0.0:
+            continue
+        ratio = _dist3d(landmarks[tip], root) / pip_dist
+        if ratio >= extend_ratio:
+            states.append((ratio, STATE_EXTENDED))
+            continue
+        # 짧다 — 진짜 굽힘인지 확인: 되접힘(방향 반전)이 굽힘의 고유 기하다
+        base = landmarks[pip] - landmarks[mcp]
+        tip_dir = landmarks[tip] - landmarks[dip]
+        is_folded = float(
+            base[0] * tip_dir[0] + base[1] * tip_dir[1] + base[2] * tip_dir[2]
+        ) < 0.0
+        if is_folded or ratio <= curl_confirm_ratio:
+            states.append((ratio, STATE_CURLED))
+        else:
+            states.append((ratio, STATE_UNCERTAIN))
+    return states
 
 
 def classify_hand_shape(landmarks, extend_ratio, min_valid_fingers, curl_confirm_ratio):
@@ -54,31 +90,12 @@ def classify_hand_shape(landmarks, extend_ratio, min_valid_fingers, curl_confirm
     손가락별 3단계(폄/굽힘 확인/기권 — 모듈 주석)를 3D 거리로 세고,
     주먹은 기권이 하나라도 있으면 단정하지 않는다 (v2 보수 구조 유지).
     """
-    if landmarks is None or len(landmarks) < HAND_KPT_COUNT:
+    states = finger_states(landmarks, extend_ratio, curl_confirm_ratio)
+    if not states:
         return None
-    root = landmarks[HAND_ROOT_IDX]
-
-    extended_count = 0
-    curled_count = 0
-    uncertain_count = 0
-    for mcp, pip, dip, tip in HAND_FINGERS:
-        pip_dist = _dist3d(landmarks[pip], root)
-        if pip_dist <= 0.0:
-            continue
-        ratio = _dist3d(landmarks[tip], root) / pip_dist
-        if ratio >= extend_ratio:
-            extended_count += 1
-            continue
-        # 짧다 — 진짜 굽힘인지 확인: 되접힘(방향 반전)이 굽힘의 고유 기하다
-        base = landmarks[pip] - landmarks[mcp]
-        tip_dir = landmarks[tip] - landmarks[dip]
-        is_folded = float(
-            base[0] * tip_dir[0] + base[1] * tip_dir[1] + base[2] * tip_dir[2]
-        ) < 0.0
-        if is_folded or ratio <= curl_confirm_ratio:
-            curled_count += 1
-        else:
-            uncertain_count += 1   # 접힘 증거 없음 — 기권
+    extended_count = sum(1 for _, state in states if state == STATE_EXTENDED)
+    curled_count = sum(1 for _, state in states if state == STATE_CURLED)
+    uncertain_count = sum(1 for _, state in states if state == STATE_UNCERTAIN)
 
     if extended_count == 1 and curled_count >= min_valid_fingers - 1:
         return SHAPE_FINGER

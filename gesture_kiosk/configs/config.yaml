@@ -25,6 +25,18 @@ camera:
                           #   msmf는 30 FPS. 오픈이 수십 초 걸리는 장치면 dshow로 되돌릴 것
   fourcc: mjpg            # 캡처 픽셀 포맷 — 무압축(YUY2) 720p는 USB 한계로 ~5 FPS. auto면 미설정
                           #   (msmf는 이 설정을 무시하기도 한다 — dshow 계열 카메라용)
+  auto_select:            # A안(2026-07-28) — 시작 시 카메라 프로브: 웹캠 2대 구성(№12)에서
+                          #   얼굴·손 인식 점수가 가장 높은 장치를 메인으로 자동 선택.
+                          #   장치 열거 순서가 바뀌어도 올바른 카메라가 잡히고, IR 카메라 등
+                          #   인식 불가 장치는 자동 탈락. ★프로브 순간 카메라 앞에 사람이
+                          #   있어야 유효 — 전 장치 0점이면 위 device_id 폴백 (camera_probe.py)
+    enabled: true
+    probe_device_count: 4 # 장치 번호 0..N-1 시도 — 없는 번호는 열기 실패로 건너뜀
+    warmup_frames: 5      # 장치당 버리는 초기 프레임 (자동 노출 안정화)
+    probe_frames: 15      # 장치당 채점 프레임 — 30 FPS 기준 0.5초 (시작 지연과 트레이드오프)
+    probe_timeout_sec: 3.0  # 장치당 시간 한도 — MSMF는 오픈 직후 read 실패가 흔해
+                          #   (2026-07-28 실기) 성공 프레임 기준으로 세되 이 시간에 자른다
+    face_weight: 0.5      # 점수 배합: N×얼굴 감지율 + (1-N)×손 감지율
 
 model:
   # 모델 구성(2026-07-28 손 모델 교체): 포즈(rtmlib RTMPose, Apache-2.0)는 사람

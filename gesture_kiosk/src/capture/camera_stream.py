@@ -18,9 +18,14 @@ FIRST_FRAME_TIMEOUT_SEC = 5.0
 NEW_FRAME_TIMEOUT_SEC = 1.0   # 새 프레임 대기 한도 — 카메라 멈칫 시 기존 프레임으로 진행(파이프라인 생존)
 
 
-def init_camera(config):
-    """config 기준으로 카메라 장치를 열어 cv2.VideoCapture를 돌려준다."""
-    device_id = config["camera"]["device_id"]
+def init_camera(config, device_id=None):
+    """config 기준으로 카메라 장치를 열어 cv2.VideoCapture를 돌려준다.
+
+    device_id: 지정 시 config 값 대신 이 장치를 연다 — 자동 선별(camera_probe,
+    A안 2026-07-28)이 고른 장치·프로브 후보를 열 때 쓴다.
+    """
+    if device_id is None:
+        device_id = config["camera"]["device_id"]
     # 리눅스는 V4L2가 안정적. 윈도우는 MSMF가 열리는 데 수십 초 걸리는 장치가 있어
     # 기본을 DSHOW로 두고 config(camera.windows_backend)로 바꿀 수 있게 한다
     if sys.platform.startswith("linux"):
@@ -42,11 +47,11 @@ def init_camera(config):
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc.upper()))
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, config["camera"]["width_px"])
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config["camera"]["height_px"])
-    _log_camera_negotiation(cap, config)
+    _log_camera_negotiation(cap, config, device_id)
     return cap
 
 
-def _log_camera_negotiation(cap, config):
+def _log_camera_negotiation(cap, config, device_id):
     """어떤 카메라가 어떤 조건으로 열렸는지 기록 — 기기별 실기 로그의 증거용 (2026-07-16).
 
     OpenCV는 장치 이름을 못 주므로 기종은 config(camera.model — 사람이 기록)를 싣고,
@@ -61,7 +66,7 @@ def _log_camera_negotiation(cap, config):
         backend_label = "?"
     logger.info(
         "카메라 협상 결과: device_id=%s · 기종(config)=%s · 백엔드=%s · %dx%d @ %.0f FPS · 포맷=%s",
-        config["camera"]["device_id"],
+        device_id,
         config["camera"].get("model", "미기록"),
         backend_label,
         int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
@@ -74,8 +79,14 @@ def _log_camera_negotiation(cap, config):
 class CameraStream:
     """카메라 캡처 스레드. capture_frame()으로 최신 프레임(BGR)을 얻는다."""
 
-    def __init__(self, config):
+    def __init__(self, config, device_id=None, cap=None):
         self._config = config
+        # 자동 선별(A안)·보조 카메라가 config 밖의 장치를 열 수 있게 오버라이드 허용
+        self._device_id = (device_id if device_id is not None
+                           else config["camera"]["device_id"])
+        # 프로브가 이미 연 핸들 재사용(A안 2026-07-28) — MSMF는 release 직후
+        # 같은 장치 재오픈 시 프레임을 주지 않는다 (camera_probe.rank_cameras 주석)
+        self._preopened_cap = cap
         self._cap = None
         self._frame = None
         self._frame_seq = 0                # 프레임 일련번호 — 새 프레임 동기화(2026-07-20)
@@ -86,11 +97,12 @@ class CameraStream:
         self.fps_meter = FpsMeter()
 
     def start(self):
-        self._cap = init_camera(self._config)
+        self._cap = (self._preopened_cap if self._preopened_cap is not None
+                     else init_camera(self._config, self._device_id))
         self.is_running = True
         self._thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._thread.start()
-        logger.info("카메라 캡처 스레드 시작 (device_id=%s)", self._config["camera"]["device_id"])
+        logger.info("카메라 캡처 스레드 시작 (device_id=%s)", self._device_id)
         return self
 
     def _capture_loop(self):

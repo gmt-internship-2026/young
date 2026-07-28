@@ -14,6 +14,7 @@ PipelineState가 디버그 창과 공유되는 유일한 상태 저장소다.
 import threading
 import time
 
+from src.capture.camera_probe import select_camera
 from src.capture.camera_stream import CameraStream
 from src.utils.env_report import log_environment
 from src.inference.hand_tracker import HandTracker
@@ -89,10 +90,14 @@ def run_pipeline(config):
     """파이프라인 전체를 조립해 시작하고 PipelineState를 돌려준다 (기획서 4.6 계약)."""
     state = PipelineState()
     log_environment(config)   # 어느 하드웨어에서 돈 기록인지 로그 첫머리에 남긴다 (2026-07-16)
-    camera = CameraStream(config).start()
+    # A안(2026-07-28): 모델을 먼저 만들고 그 모델로 카메라를 프로브해 메인을 고른다
+    # (카메라 선 오픈의 워밍업 이득은 프로브 시간에 흡수 — 시작 +수 초)
     preprocessor = Preprocessor(config)
     pose_estimator = PoseEstimator(config)   # 사람 검출·잠금·어깨 자(尺)의 입력
     hand_tracker = HandTracker(config)       # 손 모양·손 중심의 입력 (2026-07-28 교체)
+    main_device_id, main_cap = select_camera(config, pose_estimator, hand_tracker,
+                                             preprocessor)
+    camera = CameraStream(config, device_id=main_device_id, cap=main_cap).start()
 
     first_frame = camera.capture_frame()
     frame_height_px, frame_width_px = first_frame.shape[:2]

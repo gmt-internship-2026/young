@@ -60,7 +60,8 @@ class _SwipeTracker:
 
     def __init__(self, window_sec, min_dist_x_shoulder, min_dist_y_shoulder,
                  axis_dominance, min_track_frames,
-                 flick_window_sec=None, flick_min_dist_shoulder=0.0):
+                 flick_window_sec=None, flick_min_dist_shoulder=0.0,
+                 first_line_cfg=None):
         self._window_sec = window_sec
         self._min_dist_x_shoulder = min_dist_x_shoulder   # 임계 단위: 어깨너비 배수
         self._min_dist_y_shoulder = min_dist_y_shoulder
@@ -72,6 +73,16 @@ class _SwipeTracker:
         # 키(flick_window_sec) 없으면 플릭 경로 없음 = 종전(이동량 단독) 동작
         self._flick_window_sec = flick_window_sec          # 최근 이동을 재는 구간(초)
         self._flick_min_dist = flick_min_dist_shoulder     # 그 구간의 최소 이동(어깨너비)
+        # 첫 선 방향 고정(2026-07-28 사용자 제안): 방향을 창 전체 이동량의 주축이
+        # 아니라 **원점(정지 지점)을 떠나는 첫 이동 벡터**로 확정한다 — 사람마다
+        # 궤적(호·갈고리·되돌림)이 달라도 시작 방향이 의도를 반영한다. 고정 해제는
+        # 정지·원점 복귀(새 원점 재장전)뿐. 발화 임계·플릭 거리는 그대로 쓰되
+        # 고정 축·부호와 일치할 때만 발화한다. 키(first_line) 없으면 종전 방식
+        first_line_cfg = first_line_cfg or {}
+        self._first_line_lock_dist = first_line_cfg.get("lock_dist_shoulder")
+        self._first_line_still_speed = first_line_cfg.get("still_speed_shoulder", 0.5)
+        self._first_line_origin = None    # 원점 — 마지막 정지 위치 (x_ratio, y_ratio)
+        self.locked_direction = None     # 고정된 첫 선 방향 ("left"/... | None=대기)
         self._track = deque()   # (ts_sec, x_ratio, y_ratio)
         # 계기판 노출용(2026-07-16 실기 튜닝) — 부호 있는 진행도: ±1.0 도달 시 확정
         self.progress_x = 0.0
@@ -86,9 +97,12 @@ class _SwipeTracker:
         body_scale: 어깨너비/프레임폭 — 임계값(어깨너비 배수)을 화면 비율로 환산하는
         자(尺). 카메라 거리·위치가 달라져도 같은 팔 동작이 같은 판정을 받는다.
         """
+        prev = self._track[-1] if self._track else None
         self._track.append((now_sec, x_ratio, y_ratio))
         while self._track and now_sec - self._track[0][0] > self._window_sec:
             self._track.popleft()
+        if self._first_line_lock_dist is not None:
+            self._update_first_line(x_ratio, y_ratio, now_sec, body_scale, prev)
         if len(self._track) < self._min_track_frames:
             return None   # 키포인트가 1~2프레임 튀며 순간이동하는 오발 방지
 
@@ -97,9 +111,15 @@ class _SwipeTracker:
         # 무단위 진행도(이동량/임계)로 축 비교 — 임계는 어깨너비 배수 × body_scale
         self.progress_x = dx_ratio / (self._min_dist_x_shoulder * body_scale)
         self.progress_y = dy_ratio / (self._min_dist_y_shoulder * body_scale)
+        recent_dx, recent_dy = self._measure_recent(x_ratio, y_ratio, now_sec, body_scale)
+
+        if self._first_line_lock_dist is not None:
+            # 첫 선 모드 — 방향은 이미 고정돼 있다: 고정 축·부호 진행이 임계·플릭에
+            # 닿을 때만 발화 (다른 축 이동은 개인 궤적 스타일로 보고 무시)
+            return self._fire_locked_direction(dx_ratio, dy_ratio, recent_dx, recent_dy)
+
         progress_x = abs(self.progress_x)
         progress_y = abs(self.progress_y)
-
         # 경로 A(이동량): 임계 이상 + 주축 우세 — 느긋한 큰 쓸기
         if progress_x >= 1.0 and progress_x >= progress_y * self._axis_dominance:
             return "right" if dx_ratio > 0 else "left"
@@ -110,23 +130,85 @@ class _SwipeTracker:
         # 손목만 까딱하는 작은 동작 구제. 이동량을 전체 창이 아니라 최근 flick_window_sec로
         # 재는 게 핵심: 전체 창은 앞의 정지 시간에 희석돼 정작 플릭을 놓치고, 느린 배회는
         # 어느 짧은 구간에서도 flick_min_dist를 못 넘어 안 터진다(오발 억제).
-        if self._flick_window_sec is not None:
-            anchor = self._track[0]
-            for entry in self._track:   # 최근 창 안의 가장 오래된 점 = 최근 구간의 시작
-                if now_sec - entry[0] <= self._flick_window_sec:
-                    anchor = entry
-                    break
-            recent_dx = (x_ratio - anchor[1]) / body_scale if body_scale else 0.0
-            recent_dy = (y_ratio - anchor[2]) / body_scale if body_scale else 0.0
-            recent_elapsed = now_sec - anchor[0]
-            self.speed_x = recent_dx / recent_elapsed if recent_elapsed > 0 else 0.0
-            self.speed_y = recent_dy / recent_elapsed if recent_elapsed > 0 else 0.0
+        if recent_dx is not None:
             abs_rx, abs_ry = abs(recent_dx), abs(recent_dy)
             if abs_rx >= self._flick_min_dist and abs_rx >= abs_ry * self._axis_dominance:
                 return "right" if recent_dx > 0 else "left"
             if abs_ry >= self._flick_min_dist and abs_ry >= abs_rx * self._axis_dominance:
                 return "down" if recent_dy > 0 else "up"
         return None   # 대각선(주축 불명)·느리고 작음 — 방향이 분명해질 때까지 보류
+
+    def _measure_recent(self, x_ratio, y_ratio, now_sec, body_scale):
+        """플릭 경로의 최근 구간 이동(어깨너비 단위) -> (dx, dy) | (None, None).
+
+        속도 계기판(speed_x/y)도 여기서 갱신 — 플릭 임계 튜닝 근거 (2026-07-22).
+        """
+        if self._flick_window_sec is None:
+            return None, None
+        anchor = self._track[0]
+        for entry in self._track:   # 최근 창 안의 가장 오래된 점 = 최근 구간의 시작
+            if now_sec - entry[0] <= self._flick_window_sec:
+                anchor = entry
+                break
+        recent_dx = (x_ratio - anchor[1]) / body_scale if body_scale else 0.0
+        recent_dy = (y_ratio - anchor[2]) / body_scale if body_scale else 0.0
+        recent_elapsed = now_sec - anchor[0]
+        self.speed_x = recent_dx / recent_elapsed if recent_elapsed > 0 else 0.0
+        self.speed_y = recent_dy / recent_elapsed if recent_elapsed > 0 else 0.0
+        return recent_dx, recent_dy
+
+    def _update_first_line(self, x_ratio, y_ratio, now_sec, body_scale, prev):
+        """첫 선 상태 갱신 — 원점 관리·방향 고정 (2026-07-28 사용자 제안).
+
+        원점 = 마지막 정지(저속) 위치. 원점에서 lock_dist를 벗어나는 순간의 변위
+        벡터(우세 축·부호)로 방향을 고정한다. 해제(재장전)는 ①정지(원점을 현재
+        위치로 갱신) ②원점 근처 복귀 — 둘뿐이다. 대각 출발(우세 축 불명)은 더
+        벗어나 한 축이 우세해질 때까지 고정을 보류한다.
+        """
+        if self._first_line_origin is None:
+            self._first_line_origin = (x_ratio, y_ratio)
+            return
+        if prev is not None and body_scale > 0:
+            dt_sec = now_sec - prev[0]
+            if dt_sec > 0:
+                speed = math.dist((x_ratio, y_ratio), (prev[1], prev[2])) / body_scale / dt_sec
+                if speed < self._first_line_still_speed:
+                    # 정지 — 현재 위치가 새 원점, 고정 해제(재장전)
+                    self._first_line_origin = (x_ratio, y_ratio)
+                    self.locked_direction = None
+                    return
+        dx = x_ratio - self._first_line_origin[0]
+        dy = y_ratio - self._first_line_origin[1]
+        lock_dist = self._first_line_lock_dist * body_scale
+        if self.locked_direction is not None:
+            if math.hypot(dx, dy) <= lock_dist:
+                self.locked_direction = None   # 원점 복귀 — 새 첫 선 대기
+            return
+        if math.hypot(dx, dy) < lock_dist:
+            return
+        if abs(dx) >= abs(dy) * self._axis_dominance:
+            self.locked_direction = "right" if dx > 0 else "left"
+        elif abs(dy) >= abs(dx) * self._axis_dominance:
+            self.locked_direction = "down" if dy > 0 else "up"
+
+    def _fire_locked_direction(self, dx_ratio, dy_ratio, recent_dx, recent_dy):
+        """고정된 첫 선 방향 축의 진행이 임계(경로 A)·플릭(경로 B)에 닿으면 발화."""
+        direction = self.locked_direction
+        if direction is None:
+            return None   # 첫 선 미확정(대각 출발·재장전 대기) — 보류
+        if direction in ("left", "right"):
+            if abs(self.progress_x) >= 1.0 and (dx_ratio > 0) == (direction == "right"):
+                return direction
+            if (recent_dx is not None and abs(recent_dx) >= self._flick_min_dist
+                    and (recent_dx > 0) == (direction == "right")):
+                return direction
+            return None
+        if abs(self.progress_y) >= 1.0 and (dy_ratio > 0) == (direction == "down"):
+            return direction
+        if (recent_dy is not None and abs(recent_dy) >= self._flick_min_dist
+                and (recent_dy > 0) == (direction == "down")):
+            return direction
+        return None
 
     def start_point(self):
         """현재 궤적의 시작점(가장 오래된 관측) (x, y) — 없으면 None.
@@ -151,12 +233,14 @@ class _SwipeTracker:
         )
 
     def reset(self):
-        """추적점 소실·팔 교체·이벤트 확정 — 궤적을 비운다."""
+        """추적점 소실·팔 교체·이벤트 확정 — 궤적·첫 선 상태를 비운다."""
         self._track.clear()
         self.progress_x = 0.0
         self.progress_y = 0.0
         self.speed_x = 0.0
         self.speed_y = 0.0
+        self._first_line_origin = None   # 새 원점은 다음 관측 위치에서 다시 시작
+        self.locked_direction = None
 
 
 
@@ -180,6 +264,7 @@ class GestureFilter:
             swipe["window_sec"], swipe["min_dist_x_shoulder"], swipe["min_dist_y_shoulder"],
             swipe["axis_dominance"], swipe["min_track_frames"],
             swipe.get("flick_window_sec"), swipe.get("flick_min_dist_shoulder", 0.0),
+            first_line_cfg=swipe.get("first_line"),
         )
         self._active_side = None     # 현재 인식 중인 팔 ("left"/"right")
         self._active_shape = None    # 이번 프레임의 원시 손 모양 판별 (계기판용)
@@ -612,6 +697,7 @@ class GestureFilter:
             "swallow": self._swallow_direction,               # 이 방향은 복귀로 무시 예정
             "swipe_progress_x": round(tracker.progress_x, 2), # ±1.0 도달 시 좌/우 확정
             "swipe_progress_y": round(tracker.progress_y, 2), # ±1.0 도달 시 상/하 판정
+            "first_line": tracker.locked_direction,          # 고정된 첫 선 방향 (첫 선 모드)
             "swipe_speed_x": round(tracker.speed_x, 2),       # 어깨너비/초 — 플릭 임계 튜닝 근거
             "swipe_speed_y": round(tracker.speed_y, 2),
             "raise_ignored": self._raise_ignored_count,       # 들어올리기로 무시된 위 쓸기 누계

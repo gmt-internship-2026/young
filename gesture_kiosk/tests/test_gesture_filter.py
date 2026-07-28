@@ -271,6 +271,64 @@ class HandShapeLatchTest(GestureFilterTestBase):
         self.assertIsNone(event)
 
 
+class FirstLineTest(GestureFilterTestBase):
+    """첫 선 방향 고정(2026-07-28 사용자 제안) — 원점을 떠나는 첫 이동 벡터가 방향을 정한다.
+
+    기본 setUp은 첫 선 키 없음(종전 방식) — 이 클래스만 켠다.
+    body_scale 0.25 기준: lock_dist 0.12×0.25=0.03, 발화 임계 1.0×0.25=0.25.
+    """
+
+    def _use_first_line(self):
+        config = make_config()
+        config["gestures"]["swipe"]["first_line"] = {
+            "lock_dist_shoulder": 0.12, "still_speed_shoulder": 0.5,
+        }
+        self.filter = GestureFilter(config, clock=self.clock)
+
+    def test_hook_tail_does_not_override_first_direction(self):
+        # 우로 출발(임계 미달) 후 위로 크게 꺾는 갈고리 궤적 — 종전엔 위가 주축이
+        # 되어 top 오발 소지. 첫 선이 right로 고정돼 위 이동은 무시된다(무발화)
+        self._use_first_line()
+        points = [(0.2, 0.4)] * 4                                   # 정지 — 원점
+        points += path(0.24, 0.38, 5, y_ratio=0.4)                  # 우 출발 — right 고정
+        points += [(0.38, 0.4 - 0.05 * i) for i in range(1, 7)]     # 위로 갈고리
+        event = self._feed_swipe("right", points)
+        self.assertIsNone(event)
+        self.assertEqual(self.filter.debug["first_line"], "right")
+
+    def test_first_direction_fires_despite_diagonal_drift(self):
+        # 우로 출발해 고정된 뒤 대각(우상향)으로 흘러도 — 종전 주축 우세는 보류하던
+        # 궤적 — 고정 축(x) 임계 도달로 right가 나간다 (개인 궤적 스타일 흡수)
+        self._use_first_line()
+        points = [(0.2, 0.4)] * 4
+        points += path(0.24, 0.28, 2, y_ratio=0.4)                  # 우 출발 — right 고정
+        points += [(0.28 + 0.04 * i, 0.4 - 0.05 * i) for i in range(1, 7)]  # 대각 흐름
+        event = self._feed_swipe("right", points)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "right")
+
+    def test_origin_return_rearms_new_direction(self):
+        # 우로 살짝 나갔다(임계 미달) 원점 복귀 — 재장전: 이어지는 좌 쓸기가 left로
+        self._use_first_line()
+        points = [(0.5, 0.4)] * 4
+        points += [(0.54, 0.4), (0.58, 0.4), (0.54, 0.4), (0.5, 0.4)]   # 우 → 원점 복귀
+        points += path(0.46, 0.2, 7, y_ratio=0.4)                       # 좌 쓸기
+        event = self._feed_swipe("right", points)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "left")
+
+    def test_still_rearm_moves_origin(self):
+        # 우로 나가다 멈추면 그 자리가 새 원점 — 이어지는 위 쓸기가 top으로
+        self._use_first_line()
+        points = [(0.2, 0.4)] * 4
+        points += path(0.24, 0.36, 3, y_ratio=0.4)                  # 우 출발(임계 미달)
+        points += [(0.36, 0.4)] * 5                                 # 정지 — 재장전
+        points += [(0.36, 0.4 - 0.04 * i) for i in range(1, 9)]     # 위 쓸기
+        event = self._feed_swipe("right", points)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "top")
+
+
 class SwipeJudgeTest(GestureFilterTestBase):
     """방향 판정 공통 규칙 — 임계·주축 우세·최소 프레임·소실 리셋 (스펙 무관 유지)."""
 

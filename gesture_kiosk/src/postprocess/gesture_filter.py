@@ -7,9 +7,10 @@
 
 손 모양이 계층을(탐색/명령), 이동 방향이 기능을 정한다 — 반복 횟수·화면 좌표는
 쓰지 않는다 (보고서 핵심 규칙). 방향은 이동량(경로 A)·플릭(경로 B)으로 확정하고,
-손 모양은 궤적과 나란히 쌓인 프레임별 판별(hand_shape.py)의 **다수결**로 확정
-시점에 정한다 — 빠른 동작 중 블러로 판별이 간헐적으로 끊겨도(None = 기권)
-이벤트가 유실되지 않는다.
+손 모양은 **래치 상태기**(2026-07-28 v3 — 구 다수결·모양 기억·주먹 우세 대체)가
+정한다: 저속에서 연속 판별로 고정 → 빠른 이동 중엔 판별 동결(블러 오염 차단)
+→ 반대 모양이 연속 확인될 때만 전환 → 손 소실 시에만 해제. 키오스크 사용
+패턴("모양을 정하고 그 모드로 여러 번 쓸기")에 맞춘 구조다.
 
 구 스펙(위 1회=select · 아래 1회/2연속 분기)은 2026-07-23 제거 — 아래 방향
 보류·확정 지연이 함께 소멸했다. 쿨다운·반대 방향 복귀 삼킴·들어올리기 게이트
@@ -188,21 +189,22 @@ class GestureFilter:
         # 온전히 확정돼 반대 방향 오발이 난다 (back이 ok로 둔갑). 키 없으면 종전 동작
         self._side_flap_jump_shoulder = swipe.get("side_flap_jump_shoulder")
 
-        # 손 모양 다수결(2026-07-23 새 스펙): 궤적과 나란히 프레임별 판별을 쌓아 두고
-        # 방향 확정 시점에 표가 많은 모양을 채택한다. 판별 None(블러·원거리)은 기권 —
-        # 주먹↔한 손가락 좌표는 연속이라 모양이 흔들려도 궤적은 리셋하지 않는다
-        # (구 스펙의 "출처 전환 리셋"이 빠른 쓸기를 잃던 문제가 구조적으로 소멸).
-        self._shape_votes = deque()          # (ts_sec, shape)
-        self._shape_window_sec = swipe["window_sec"]   # 투표 유효 기간 = 궤적 창과 동일
-        # v2(2026-07-23 2차 — 원근 단축 실기 대응):
-        # ① 주먹 우세 조건 — 주먹(명령 계층)은 화면을 바꾸므로 표가 확실히 우세할
-        #   때만 인정한다(오발 비용 비대칭: 탐색 오발=한 칸, 명령 오발=화면 이탈).
-        #   1.0 = 종전(단순 다수). ② 모양 기억 — 화면을 가리키면(손가락이 카메라
-        #   쪽으로 누움) 판별이 기권돼 표가 비는데, 최근 확정 모양을 이 시간 안에서
-        #   이어받아 항법이 끊기지 않게 한다. 0 = 기억 없음(종전)
-        self._fist_vote_dominance = swipe.get("fist_vote_dominance", 1.0)
-        self._shape_hold_sec = swipe.get("shape_hold_sec", 0.0)
-        self._shape_memory = None            # (shape, 확정 시각) — 최근 다수결 결과
+        # 손 모양 래치(2026-07-28 v3 — 다수결·모양 기억·주먹 우세 대체): 프레임별
+        # 판별의 출렁임이 창 다수결을 오염시켜 계층 오발이 났다(실기 — 특히 이동 중
+        # 모션 블러 프레임이 가장 부정확한데 그 표가 판정을 갈랐다). 대체 상태기:
+        # ① 고정 — 저속에서 같은 판별 latch_frames 연속이면 모양 고정
+        # ② 동결 — freeze_speed 이상 이동 중엔 판별을 아예 무시 (블러 표 차단,
+        #   쓸기 중엔 고정된 모양이 그대로 유지된다)
+        # ③ 전환 — 반대 판별 switch_frames 연속일 때만 (노이즈 한두 프레임 면역)
+        # ④ 해제 — 손 소실·팔 교체 시에만 (다음 손·다른 사용자에 승계 금지)
+        # 키(shape_latch) 없으면 latch/switch 1프레임 = 프레임 추종(구 동작 근사)
+        latch_cfg = swipe.get("shape_latch") or {}
+        self._latch_frames = latch_cfg.get("latch_frames", 1)
+        self._switch_frames = latch_cfg.get("switch_frames", 1)
+        self._latch_freeze_speed = latch_cfg.get("freeze_speed_shoulder")
+        self._latched_shape = None           # 고정된 모양 — 판정은 이것만 본다
+        self._latch_candidate_shape = None   # 전환 후보 모양 (연속 관측 세는 중)
+        self._latch_candidate_count = 0
 
         # One Euro 필터(2026-07-20 정확도) — 추적점 떨림 저감. 궤적 단절 시 트래커와
         # 함께 리셋한다. 키 미설정 브랜치는 종전대로 무필터 (point_filter.py 주석 참고)
@@ -300,22 +302,25 @@ class GestureFilter:
             self._reset_stroke()   # 유예 초과 소실 — 끊긴 궤적을 이어 붙이지 않는다
             self._active_side = None
             self._active_shape = None
-            self._shape_memory = None   # 손이 사라졌다 — 다음 손에 기억을 잇지 않는다
+            self._clear_shape_latch()   # 손이 사라졌다 — 다음 손에 래치를 잇지 않는다
             if self._point_filter is not None:
                 self._point_filter.reset()
         else:
             shape, point = point_info
+            prev_point = self._swipe_tracker.last_point()   # 래치 동결(속도)용 — update 전 좌표
+            prev_point_sec = self._last_point_sec
             if side != self._active_side:
                 if self._is_side_flap(swipe_points, point, body_scale):
-                    # 같은 물리적 손의 라벨 플랩 — 팔 교체가 아니다: 궤적·투표·기억을
+                    # 같은 물리적 손의 라벨 플랩 — 팔 교체가 아니다: 궤적·래치를
                     # 유지한 채 라벨만 승계한다 (2026-07-28 실기 — 주먹 handedness 불안정)
                     self._active_side = side
                 else:
                     self._reset_stroke()   # 팔 교체 — 궤적 연결 금지. 손 모양 전환은 리셋
                     #   대상이 아니다: 추적점(손 중심)은 주먹↔한 손가락에서 좌표가 연속이다
-                    self._shape_memory = None   # 다른 손의 기억을 물려주지 않는다
+                    self._clear_shape_latch()   # 다른 손 — 래치를 물려주지 않는다
                     was_absent = self._active_side is None
                     self._active_side = side
+                    prev_point, prev_point_sec = None, None   # 새 손 — 속도 연속성 없음
                     if self._point_filter is not None:
                         self._point_filter.reset()   # 다른 점의 잔상으로 새 궤적 오염 금지
                     # 팔의 "등장"도 휴식 존 이력로 취급(2026-07-21 실기 정정): 근거리에선
@@ -327,15 +332,11 @@ class GestureFilter:
                                  or point[1] > self._shoulder_line_y)):
                         self._last_rest_zone_sec = now_sec
             self._active_shape = shape
-            if shape is not None:
-                self._add_shape_vote(shape, now_sec)
-                decided = self._decide_votes(now_sec)
-                if decided is not None:
-                    # 표가 우세한 동안 매 프레임 기억을 갱신 — "마지막으로 모양이
-                    # 분명했던 시각"이 기억의 기준점이 된다 (기권 구간에서 이어받음)
-                    self._shape_memory = (decided, now_sec)
             if self._point_filter is not None:
                 point = self._point_filter.filter(point, now_sec)   # 떨림 저감 (One Euro)
+            if shape is not None and self._is_latch_observable(
+                    point, prev_point, prev_point_sec, now_sec, body_scale):
+                self._update_shape_latch(shape)
             self._last_point_sec = now_sec   # 소실 유예의 기준 시각
             self._stamp_rest_zone(point, now_sec, body_scale)
             self._update_swallow_origin(point)
@@ -394,11 +395,11 @@ class GestureFilter:
             self._reset_stroke()
             return None
 
-        shape = self._voted_shape(now_sec)
+        shape = self._latched_shape
         if shape is None:
-            # 모양 불명(표 없음·동수 — 블러·펼친 손 등) — 방향은 나왔지만 계층을
-            # 정할 수 없다: 오발보다 무시가 낫다. 실제로 움직인 팔의 반동이 반대
-            # 방향으로 오발되지 않게 삼킴은 무장해 둔다
+            # 래치 없음(고정된 적 없음 — 블러·펼친 손·판별 불가만 계속) — 방향은
+            # 나왔지만 계층을 정할 수 없다: 오발보다 무시가 낫다. 실제로 움직인
+            # 팔의 반동이 반대 방향으로 오발되지 않게 삼킴은 무장해 둔다
             self._shape_unknown_count += 1
             self._reset_stroke()
             self._set_swallow(direction, now_sec, point, stroke_start)
@@ -433,47 +434,62 @@ class GestureFilter:
             return False
         return math.dist(new_point, last) <= self._side_flap_jump_shoulder * body_scale
 
-    # ----- 손 모양 다수결 (2026-07-23) -----
+    # ----- 손 모양 래치 (2026-07-28 v3 — 다수결 대체) -----
 
-    def _add_shape_vote(self, shape, now_sec):
-        self._shape_votes.append((now_sec, shape))
-        self._prune_shape_votes(now_sec)
+    def _is_latch_observable(self, point, prev_point, prev_point_sec, now_sec, body_scale):
+        """이 프레임 판별을 래치 관측으로 쓸 수 있나 — 빠른 이동 중이면 False(동결).
 
-    def _prune_shape_votes(self, now_sec):
-        while self._shape_votes and now_sec - self._shape_votes[0][0] > self._shape_window_sec:
-            self._shape_votes.popleft()
-
-    def _voted_shape(self, now_sec):
-        """궤적 창 안 판별들의 다수결 -> "fist" | "finger" | None.
-
-        주먹은 fist_vote_dominance배 우세일 때만(명령 오발 억제), 한 손가락은 단순
-        다수. 결정 불가(표 없음·우세 미달)면 shape_hold_sec 안의 최근 확정 모양을
-        이어받는다 — 화면을 가리켜 판별이 기권되는 구간(원근 단축)의 항법 유지.
+        이동 중 판별은 모션 블러로 가장 부정확한데, 다수결 시절 그 표가 판정을
+        오염시켰다 (래치 도입 배경 — 2026-07-28 실기). 속도 미상(첫 관측·직전
+        점 없음)은 관측 허용 — 손이 새로 나타난 정지 프레임을 놓치지 않는다.
         """
-        shape = self._decide_votes(now_sec)
-        if shape is not None:
-            self._shape_memory = (shape, now_sec)
-            return shape
-        if (self._shape_memory is not None and self._shape_hold_sec > 0.0
-                and now_sec - self._shape_memory[1] <= self._shape_hold_sec):
-            return self._shape_memory[0]   # 기억 사용 — 시각은 갱신하지 않는다(무한 지속 방지)
-        return None
+        if self._latch_freeze_speed is None:
+            return True
+        if prev_point is None or prev_point_sec is None:
+            return True
+        dt_sec = now_sec - prev_point_sec
+        if dt_sec <= 0.0 or body_scale <= 0.0:
+            return True
+        speed_shoulder = math.dist(point, prev_point) / body_scale / dt_sec
+        return speed_shoulder <= self._latch_freeze_speed
 
-    def _decide_votes(self, now_sec):
-        """현재 창의 표만으로 결정 — 우세 미달·표 없음이면 None (기억 미참조)."""
-        self._prune_shape_votes(now_sec)
-        fist_count = sum(1 for _, shape in self._shape_votes if shape == SHAPE_FIST)
-        finger_count = len(self._shape_votes) - fist_count
-        if fist_count > finger_count * self._fist_vote_dominance:
-            return SHAPE_FIST
-        if finger_count > fist_count:
-            return SHAPE_FINGER
-        return None
+    def _update_shape_latch(self, shape):
+        """관측 1건 반영 — 연속 관측이 문턱을 넘으면 고정/전환한다.
+
+        고정 문턱(latch_frames)보다 전환 문턱(switch_frames)이 높은 이력
+        (hysteresis) 구조 — 한번 고정된 모양은 노이즈 한두 프레임으로 안 풀린다.
+        고정 모양과 같은 관측은 후보를 리셋한다(전환 카운트가 산발 노이즈로
+        누적되지 않게 — 연속만 인정).
+        """
+        if shape == self._latched_shape:
+            self._latch_candidate_shape = None
+            self._latch_candidate_count = 0
+            return
+        if shape == self._latch_candidate_shape:
+            self._latch_candidate_count += 1
+        else:
+            self._latch_candidate_shape = shape
+            self._latch_candidate_count = 1
+        needed = (self._latch_frames if self._latched_shape is None
+                  else self._switch_frames)
+        if self._latch_candidate_count >= needed:
+            self._latched_shape = shape
+            self._latch_candidate_shape = None
+            self._latch_candidate_count = 0
+
+    def _clear_shape_latch(self):
+        """래치 해제 — 손 소실·팔 교체 시에만 (다음 손에 승계 금지)."""
+        self._latched_shape = None
+        self._latch_candidate_shape = None
+        self._latch_candidate_count = 0
 
     def _reset_stroke(self):
-        """궤적 단절(팔 교체·소실·확정·삼킴) — 트래커와 모양 투표를 함께 비운다."""
+        """궤적 단절(팔 교체·소실·확정·삼킴) — 트래커를 비운다.
+
+        래치는 여기서 건드리지 않는다 — 이벤트 확정·삼킴 후에도 사용자의 손
+        모양(모드)은 그대로이므로 유지가 맞다 (해제는 _clear_shape_latch 경로만).
+        """
         self._swipe_tracker.reset()
-        self._shape_votes.clear()
 
     # ----- 휴식 존 · 들어올리기 게이트 -----
 
@@ -558,15 +574,15 @@ class GestureFilter:
     def _update_debug(self, body_scale, shoulder_width_ratio):
         """판정 내부값 스냅샷 — 실기에서 임계가 왜 안/잘 넘는지 숫자로 보기 위한 계기판."""
         tracker = self._swipe_tracker
-        fist_count = sum(1 for _, shape in self._shape_votes if shape == SHAPE_FIST)
         self.debug = {
             "body_scale": round(body_scale, 3),               # 어깨너비/프레임폭 (평활 후)
             "shoulder_raw": None if shoulder_width_ratio is None else round(shoulder_width_ratio, 3),
             "active_side": self._active_side,
             "hand_shape": self._active_shape,                 # 이번 프레임 원시 판별 (fist/finger/None)
-            "votes_fist": fist_count,                         # 다수결 현황 — 확정 시점에 많은 쪽 채택
-            "votes_finger": len(self._shape_votes) - fist_count,
-            "shape_memory": None if self._shape_memory is None else self._shape_memory[0],
+            "latched_shape": self._latched_shape,             # 고정 모양 — 판정은 이것만 본다
+            "latch_candidate": (                              # 전환 후보:연속 관측 수
+                None if self._latch_candidate_shape is None
+                else f"{self._latch_candidate_shape}:{self._latch_candidate_count}"),
             "swallow": self._swallow_direction,               # 이 방향은 복귀로 무시 예정
             "swipe_progress_x": round(tracker.progress_x, 2), # ±1.0 도달 시 좌/우 확정
             "swipe_progress_y": round(tracker.progress_y, 2), # ±1.0 도달 시 상/하 판정

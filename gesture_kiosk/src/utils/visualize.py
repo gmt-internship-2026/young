@@ -37,8 +37,9 @@ def draw_person_lock(frame, person_lock):
 def draw_debug_panel(frame, debug):
     """판정 계기판 — 좌하단에 내부값 표시 (실기 튜닝용, 2026-07-16).
 
-    SCALE=어깨 스케일 / ARM=활성 팔+손 모양 / RET=복귀 삼킴 예약 방향 /
-    SWIPE=진행도(±1.0 판정) / VOTE=손 모양 다수결 현황(F=주먹, 1=한 손가락).
+    SCALE=어깨 스케일 / ARM=활성 팔+손 모양(원시 판별) / RET=복귀 삼킴 예약 방향 /
+    SWIPE=진행도(±1.0 판정) / LATCH=고정 모양(F=주먹, 1=한 손가락, -=없음)과
+    전환 후보(cand 모양:연속 수) — 판정은 래치만 본다 (2026-07-28 v3).
     """
     if not debug:
         return frame
@@ -47,10 +48,13 @@ def draw_debug_panel(frame, debug):
     swallow_tag = f" [RET:{swallow}]" if swallow else ""
     side = debug.get("active_side") or "-"
     shape_tag = SHAPE_TAG.get(debug.get("hand_shape"), "")
+    latch_label = {"fist": "F", "finger": "1"}.get(debug.get("latched_shape"), "-")
+    candidate = debug.get("latch_candidate")
+    latch_tag = latch_label + (f" cand:{candidate}" if candidate else "")
     lines = [
         f"SCALE {debug.get('body_scale', 0):.2f}  ARM {side}{shape_tag}{swallow_tag}",
         f"SWIPE x{debug.get('swipe_progress_x', 0):+.2f} y{debug.get('swipe_progress_y', 0):+.2f}"
-        f"  VOTE F{debug.get('votes_fist', 0)}/1-{debug.get('votes_finger', 0)}",
+        f"  LATCH {latch_tag}",
     ]
     for line_idx, line in enumerate(lines):
         y_px = h_px - 14 - 24 * (len(lines) - 1 - line_idx)

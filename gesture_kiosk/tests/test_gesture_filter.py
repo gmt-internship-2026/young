@@ -26,29 +26,29 @@ class FakeClock:
         self.now_sec += dt_sec
 
 
-def make_config():
-    return {
-        "gestures": {
-            "cooldown_sec": 1.0,
-            "swipe": {
-                # 임계 단위 = 어깨너비 배수. 테스트 기본 어깨너비(0.25)와 곱하면
-                # x/y 0.25 — 종전 화면 비율 임계와 동일 수치.
-                # raise_guard·flick 키는 의도적으로 없다 — 게이트·플릭 없는 순수
-                # 판정을 검증한다 (게이트·플릭은 실 config 시나리오 테스트가 담당)
-                "window_sec": 0.6,
-                "min_dist_x_shoulder": 1.0,
-                "min_dist_y_shoulder": 1.0,
-                "axis_dominance": 1.5,
-                "min_track_frames": 4,
-                "switch_margin_y_shoulder": 0.2,
-                "fist_vote_dominance": 1.5,
-                "shape_hold_sec": 2.5,
-                "body_scale": {"fallback_ratio": 0.25, "min_ratio": 0.08, "max_ratio": 0.4, "alpha": 0.1},
-                "return_suppress_sec": 1.6,
-                "return_origin_shoulder": 0.6,
-            },
-        },
+def make_config(shape_latch=None):
+    """shape_latch 미지정 시 래치 키 없음 — 프레임 추종(래치·동결 없는 순수 판정).
+
+    래치 동작 자체는 HandShapeLatchTest가 shape_latch를 명시해 검증한다.
+    """
+    swipe = {
+        # 임계 단위 = 어깨너비 배수. 테스트 기본 어깨너비(0.25)와 곱하면
+        # x/y 0.25 — 종전 화면 비율 임계와 동일 수치.
+        # raise_guard·flick 키는 의도적으로 없다 — 게이트·플릭 없는 순수
+        # 판정을 검증한다 (게이트·플릭은 실 config 시나리오 테스트가 담당)
+        "window_sec": 0.6,
+        "min_dist_x_shoulder": 1.0,
+        "min_dist_y_shoulder": 1.0,
+        "axis_dominance": 1.5,
+        "min_track_frames": 4,
+        "switch_margin_y_shoulder": 0.2,
+        "body_scale": {"fallback_ratio": 0.25, "min_ratio": 0.08, "max_ratio": 0.4, "alpha": 0.1},
+        "return_suppress_sec": 1.6,
+        "return_origin_shoulder": 0.6,
     }
+    if shape_latch is not None:
+        swipe["shape_latch"] = shape_latch
+    return {"gestures": {"cooldown_sec": 1.0, "swipe": swipe}}
 
 
 FRAME_DT_SEC = 1.0 / 30.0  # 30 FPS 가정
@@ -159,62 +159,82 @@ class FistCommandTest(GestureFilterTestBase):
         self.assertIsNone(event)
 
 
-class HandShapeVoteTest(GestureFilterTestBase):
-    """손 모양 다수결 — 프레임별 판별이 흔들려도 확정 시점의 다수가 정한다."""
+class HandShapeLatchTest(GestureFilterTestBase):
+    """손 모양 래치(2026-07-28 v3) — 연속 판별로 고정, 노이즈로 안 풀린다."""
+
+    def _use_latch(self, latch_frames=2, switch_frames=6, freeze_speed=None):
+        """래치 설정을 명시한 필터로 교체 (기본 setUp은 래치 없는 프레임 추종)."""
+        shape_latch = {"latch_frames": latch_frames, "switch_frames": switch_frames}
+        if freeze_speed is not None:
+            shape_latch["freeze_speed_shoulder"] = freeze_speed
+        self.filter = GestureFilter(make_config(shape_latch), clock=self.clock)
 
     def test_unknown_shape_drops_event(self):
-        # 판별 전부 불명(None — 블러·원거리) — 방향이 나와도 계층을 못 정해 무시
+        # 판별 전부 불명(None) — 래치가 생긴 적 없어 방향이 나와도 무시
         event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4), shape=None)
         self.assertIsNone(event)
         self.assertGreaterEqual(self.filter.debug["shape_unknown"], 1)
 
-    def test_majority_fist_wins_over_sparse_finger(self):
-        # 주먹이 우세 조건(한손가락 표의 1.5배 초과)까지 충족하면 명령으로 확정 —
-        # 확정 시점(6번째 프레임)의 표는 한손가락 2 : 주먹 4 (4 > 2×1.5)
-        shapes = ["finger"] * 2 + ["fist"] * 7
-        event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4), shapes=shapes)
-        self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "ok")
-
     def test_blur_gaps_do_not_lose_event(self):
-        # 중간 프레임들의 판별 실패(None = 기권)는 표에 안 들어간다 — 소수의 유효
-        # 판별만으로 확정된다 (빠른 동작 모션 블러 재현)
+        # 중간 프레임들의 판별 실패(None)는 관측에 안 들어간다 — 소수의 유효
+        # 판별로 래치가 걸려 확정된다 (빠른 동작 모션 블러 재현)
         shapes = [None, "finger", None, None, "finger", None, None, None, "finger"]
         event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4), shapes=shapes)
         self.assertIsNotNone(event)
         self.assertEqual(event.class_name, "right")
 
     def test_shape_change_does_not_reset_track(self):
-        # 주먹↔한 손가락 전환은 손 중심 좌표가 연속 — 궤적을 리셋하지 않는다
-        # (구 스펙의 출처 전환 리셋이 빠른 쓸기를 잃던 문제의 구조적 소멸 확인).
+        # 주먹↔한 손가락 전환은 손 중심 좌표가 연속 — 궤적을 리셋하지 않는다.
         # 총 이동 0.28(임계 0.25의 1.1배)이라, 3번째 프레임의 모양 전환이 궤적을
         # 리셋했다면 남은 이동(0.21)으로는 절대 확정되지 않는다 — 확정 자체가 증명.
-        # 다수결은 fist(7>2) — ok
+        # 래치 없음(프레임 추종) — 확정 시점의 판별은 fist — ok
         shapes = ["finger"] * 2 + ["fist"] * 7
         event = self._feed_swipe("right", path(0.2, 0.48, 8, y_ratio=0.4), shapes=shapes)
         self.assertIsNotNone(event)
         self.assertEqual(event.class_name, "ok")
 
-    def test_noisy_fist_votes_do_not_hijack_finger_navigation(self):
-        # v2 우세 조건: 항법 중 주먹 오판별이 섞여 확정 시점에 주먹 4 : 한손가락 3이
-        # 돼도 — 단순 다수라면 ok(실행!)가 나가던 상황 — 주먹은 우세(1.5배) 미달이라
-        # 기각되고, 직전까지 분명했던 한 손가락 기억으로 right(안전한 탐색)가 나간다
+    def test_noisy_fist_frames_do_not_hijack_finger_navigation(self):
+        # 래치 핵심: 항법(한 손가락 고정) 중 주먹 오판별 4프레임 연속이 끼어도 —
+        # 전환 문턱(6) 미달이라 래치가 안 풀린다: right(안전한 탐색)가 나간다.
+        # 다수결 시절 이런 노이즈가 표를 갈라 ok(실행!) 오발이 났다 (2026-07-28 실기)
+        self._use_latch(latch_frames=2, switch_frames=6)
         shapes = ["finger"] * 3 + ["fist"] * 4 + ["finger"] * 2
         event = self._feed_swipe("right", path(0.2, 0.55, 8, y_ratio=0.4), shapes=shapes)
         self.assertIsNotNone(event)
         self.assertEqual(event.class_name, "right")
 
-    def test_pointing_at_screen_keeps_navigation_via_memory(self):
-        # v2 모양 기억(실기 사진 실증): 손가락을 세워 보였다가(분명한 판별) 화면을
-        # 가리키며 쓸면(판별 전부 기권 — 표 없음) 최근 기억으로 한 손가락을 이어받아
-        # 항법이 유지된다
-        self._feed_swipe("right", [(0.3, 0.4)] * 6, shape="finger")   # 정지 — 모양만 각인
+    def test_sustained_opposite_shape_switches_latch(self):
+        # 전환은 막히지 않는다 — 반대 모양이 문턱(4프레임) 이상 연속이면 전환:
+        # 한 손가락으로 탐색하다 주먹을 분명히 쥐면 명령 계층(ok)으로 넘어간다
+        self._use_latch(latch_frames=2, switch_frames=4)
+        self._feed_swipe("right", [(0.3, 0.4)] * 4, shape="finger")   # finger 고정
+        self._feed_swipe("right", [(0.3, 0.4)] * 5, shape="fist")     # 연속 5 ≥ 4 — 전환
+        event = self._feed_swipe("right", path(0.3, 0.7, 8, y_ratio=0.4), shape=None)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "ok")
+
+    def test_freeze_ignores_shapes_during_fast_move(self):
+        # 동결: 빠른 이동 중 판별(모션 블러 — 가장 부정확)은 관측에서 제외된다.
+        # 전환 문턱 1(즉시 전환 설정)이어도 이동 중 fist 판별이 전부 무시돼
+        # 정지 때 고정한 finger가 유지 — right가 나간다 (동결 없으면 ok 오발)
+        self._use_latch(latch_frames=1, switch_frames=1, freeze_speed=1.0)
+        self._feed_swipe("right", [(0.3, 0.4)] * 3, shape="finger")   # 정지 — finger 고정
+        # 이동 경로는 정지점(0.3)과 겹치지 않게 0.35부터 — 첫 점까지 전부 고속 유지
+        event = self._feed_swipe("right", path(0.35, 0.7, 7, y_ratio=0.4), shape="fist")
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "right")
+
+    def test_pointing_at_screen_keeps_navigation(self):
+        # 손가락을 세워 보였다가(고정) 화면을 가리키며 쓸면(판별 전부 기권 — 관측
+        # 없음) 래치가 그대로 유지돼 항법이 끊기지 않는다 (구 모양 기억의 계승 —
+        # 래치는 시간 만료가 없어 더 안정적)
+        self._feed_swipe("right", [(0.3, 0.4)] * 6, shape="finger")   # 정지 — 모양 고정
         event = self._feed_swipe("right", path(0.3, 0.7, 8, y_ratio=0.4), shape=None)
         self.assertIsNotNone(event)
         self.assertEqual(event.class_name, "right")
 
-    def test_memory_cleared_when_hand_disappears(self):
-        # 손이 사라지면 기억도 버린다 — 다음 손(다른 사용자·반대 손)에 잇지 않는다
+    def test_latch_cleared_when_hand_disappears(self):
+        # 손이 사라지면 래치도 버린다 — 다음 손(다른 사용자·반대 손)에 잇지 않는다
         self._feed_swipe("right", [(0.3, 0.4)] * 6, shape="finger")
         self._feed(swipe_points={"right": None, "left": None})        # 소실 (유예 없음 설정)
         event = self._feed_swipe("right", path(0.3, 0.7, 8, y_ratio=0.4), shape=None)
@@ -313,12 +333,12 @@ class DebugPanelTest(GestureFilterTestBase):
         self.assertIsNone(debug["swallow"])
         self.assertAlmostEqual(debug["body_scale"], 0.25)    # 테스트 폴백 스케일
 
-    def test_hand_shape_and_votes_are_exposed(self):
+    def test_hand_shape_and_latch_are_exposed(self):
         self._feed_swipe("right", path(0.2, 0.3, 3, y_ratio=0.3), shape="fist")
         debug = self.filter.debug
         self.assertEqual(debug["hand_shape"], "fist")
-        self.assertGreaterEqual(debug["votes_fist"], 1)
-        self.assertEqual(debug["votes_finger"], 0)
+        self.assertEqual(debug["latched_shape"], "fist")   # 래치 없음 설정 = 즉시 고정
+        self.assertIsNone(debug["latch_candidate"])
 
     def test_swallow_is_exposed(self):
         self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.3))    # 확정 — 좌 삼킴 예약

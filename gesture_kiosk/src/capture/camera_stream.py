@@ -2,6 +2,11 @@
 
 캡처는 전용 스레드에서 돌리고(기획서 3.2 멀티스레딩), capture_frame()은
 항상 가장 최신 프레임을 돌려준다. 추론이 느려도 오래된 프레임이 쌓이지 않는다.
+
+런타임 자동 복구(2026-07-28): 무인 키오스크에서 USB 탈락·드라이버 멈춤이
+조용한 정지가 되면 사고다 — 프레임이 recovery_timeout_sec 동안 안 오면 장치를
+닫고 재연결될 때까지 계속 다시 연다. 복구 중에도 파이프라인은 마지막 프레임으로
+생존한다 (capture_new_frame의 멈칫 폴백).
 """
 import sys
 import threading
@@ -84,6 +89,10 @@ class CameraStream:
         # 자동 선별(A안)·보조 카메라가 config 밖의 장치를 열 수 있게 오버라이드 허용
         self._device_id = (device_id if device_id is not None
                            else config["camera"]["device_id"])
+        # 런타임 자동 복구(2026-07-28) — 키가 없어도 기본값으로 켠다: 무인 운영에서
+        # 조용한 정지보다 나쁜 기본값은 없다 (모듈 독스트링 참고)
+        self._recovery_timeout_sec = config["camera"].get("recovery_timeout_sec", 3.0)
+        self._recovery_retry_sec = config["camera"].get("recovery_retry_sec", 2.0)
         # 프로브가 이미 연 핸들 재사용(A안 2026-07-28) — MSMF는 release 직후
         # 같은 장치 재오픈 시 프레임을 주지 않는다 (camera_probe.rank_cameras 주석)
         self._preopened_cap = cap
@@ -106,13 +115,52 @@ class CameraStream:
         return self
 
     def _capture_loop(self):
+        last_frame_sec = time.monotonic()
         while self.is_running:
             ret, frame = self._cap.read()
-            if not ret:
-                time.sleep(0.1)
+            if ret:
+                self._publish_frame(frame)
+                self.fps_meter.update()
+                last_frame_sec = time.monotonic()
                 continue
-            self._publish_frame(frame)
-            self.fps_meter.update()
+            # 읽기 실패 — 일시 멈칫(자동 노출 조정 등)과 끊김(USB 탈락)을 시간으로 구분
+            if time.monotonic() - last_frame_sec < self._recovery_timeout_sec:
+                time.sleep(0.1)   # 짧은 멈칫 — 종전대로 그냥 기다린다
+                continue
+            self._recover_camera()
+            last_frame_sec = time.monotonic()   # 복구 후 끊김 판정 시계 재시작
+
+    def _recover_camera(self):
+        """카메라 자동 복구 — 핸들을 버리고 같은 장치를 재연결될 때까지 다시 연다.
+
+        같은 device_id만 다시 여는 이유: 키오스크에서 카메라를 교체해 꽂아도
+        보통 같은 번호로 잡힌다. 다른 번호로 옮겨 잡히는 경우는 재시작(프로브
+        자동 선별)이 담당한다. 복구 대기 중에도 stop()이 즉시 먹히도록 재시도
+        간격을 잘게 쪼개 잔다.
+        """
+        logger.warning("카메라 응답 없음 %.0f초 — 자동 복구 시작 (device_id=%s)",
+                       self._recovery_timeout_sec, self._device_id)
+        if self._cap is not None:
+            self._cap.release()
+            self._cap = None
+        attempt_count = 0
+        while self.is_running:
+            deadline_sec = time.monotonic() + self._recovery_retry_sec
+            while self.is_running and time.monotonic() < deadline_sec:
+                time.sleep(0.1)
+            if not self.is_running:
+                return
+            attempt_count += 1
+            try:
+                self._cap = init_camera(self._config, self._device_id)
+            except RuntimeError:
+                if attempt_count % 10 == 1:   # 로그 폭주 방지 — 첫 실패 후 드문드문만
+                    logger.warning("카메라 재연결 실패 %d회 — %.0f초 간격 재시도 중 (device_id=%s)",
+                                   attempt_count, self._recovery_retry_sec, self._device_id)
+                continue
+            logger.info("카메라 자동 복구 성공 (device_id=%s, 재시도 %d회)",
+                        self._device_id, attempt_count)
+            return
 
     def _publish_frame(self, frame):
         """새 프레임 게시 — 일련번호를 올리고 대기 중인 소비자를 깨운다 (테스트 접점)."""

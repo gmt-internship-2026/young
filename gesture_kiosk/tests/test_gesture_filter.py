@@ -162,11 +162,14 @@ class FistCommandTest(GestureFilterTestBase):
 class HandShapeLatchTest(GestureFilterTestBase):
     """손 모양 래치(2026-07-28 v3) — 연속 판별로 고정, 노이즈로 안 풀린다."""
 
-    def _use_latch(self, latch_frames=2, switch_frames=6, freeze_speed=None):
+    def _use_latch(self, latch_frames=2, switch_frames=6, freeze_speed=None,
+                   release_sec=None):
         """래치 설정을 명시한 필터로 교체 (기본 setUp은 래치 없는 프레임 추종)."""
         shape_latch = {"latch_frames": latch_frames, "switch_frames": switch_frames}
         if freeze_speed is not None:
             shape_latch["freeze_speed_shoulder"] = freeze_speed
+        if release_sec is not None:
+            shape_latch["release_sec"] = release_sec
         self.filter = GestureFilter(make_config(shape_latch), clock=self.clock)
 
     def test_unknown_shape_drops_event(self):
@@ -235,9 +238,36 @@ class HandShapeLatchTest(GestureFilterTestBase):
 
     def test_latch_cleared_when_hand_disappears(self):
         # 손이 사라지면 래치도 버린다 — 다음 손(다른 사용자·반대 손)에 잇지 않는다
+        # (release_sec 미설정 = 즉시 해제 — 구 config 하위 호환)
         self._feed_swipe("right", [(0.3, 0.4)] * 6, shape="finger")
         self._feed(swipe_points={"right": None, "left": None})        # 소실 (유예 없음 설정)
         event = self._feed_swipe("right", path(0.3, 0.7, 8, y_ratio=0.4), shape=None)
+        self.assertIsNone(event)
+
+    def test_latch_survives_brief_loss_within_release(self):
+        # 소실 유예(2026-07-28 실측): 화면을 가리키면 손 검출이 잠깐 끊긴다 —
+        # 같은 쪽 손이 release_sec 안에 돌아오면 래치(모드)를 이어 항법이 유지된다
+        self._use_latch(latch_frames=2, switch_frames=6, release_sec=1.0)
+        self._feed_swipe("right", [(0.3, 0.4)] * 4, shape="finger")   # finger 고정
+        self._feed(swipe_points={"right": None, "left": None}, frame_count=9)  # 0.3초 소실
+        event = self._feed_swipe("right", path(0.3, 0.7, 8, y_ratio=0.4), shape=None)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "right")
+
+    def test_latch_cleared_after_release_expires(self):
+        # 유예를 넘긴 소실 — 래치를 버린다 (다음 사용자에 모드 승계 금지)
+        self._use_latch(latch_frames=2, switch_frames=6, release_sec=0.5)
+        self._feed_swipe("right", [(0.3, 0.4)] * 4, shape="finger")
+        self._feed(swipe_points={"right": None, "left": None}, frame_count=30)  # 1초 소실
+        event = self._feed_swipe("right", path(0.3, 0.7, 8, y_ratio=0.4), shape=None)
+        self.assertIsNone(event)
+
+    def test_latch_not_inherited_by_opposite_hand(self):
+        # 유예 안이라도 **반대쪽** 손 등장이면 래치를 잇지 않는다 (다른 손·다른 사람)
+        self._use_latch(latch_frames=2, switch_frames=6, release_sec=1.0)
+        self._feed_swipe("right", [(0.3, 0.4)] * 4, shape="finger")
+        self._feed(swipe_points={"right": None, "left": None}, frame_count=6)
+        event = self._feed_swipe("left", path(0.3, 0.7, 8, y_ratio=0.6), shape=None)
         self.assertIsNone(event)
 
 

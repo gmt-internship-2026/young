@@ -202,9 +202,16 @@ class GestureFilter:
         self._latch_frames = latch_cfg.get("latch_frames", 1)
         self._switch_frames = latch_cfg.get("switch_frames", 1)
         self._latch_freeze_speed = latch_cfg.get("freeze_speed_shoulder")
+        # 소실 유예(2026-07-28 실측): 화면을 가리키면 손바닥이 가려져 손 검출이
+        # 수 초씩 끊긴다 — 즉시 해제하면 재등장마다 재고정이 필요해 항법이 끊긴다.
+        # 같은 쪽 손이 release_sec 안에 돌아오면 모양(모드)을 잇는다 (궤적은 별개 —
+        # 종전대로 리셋). 0 = 즉시 해제(구 config 하위 호환)
+        self._latch_release_sec = latch_cfg.get("release_sec", 0.0)
         self._latched_shape = None           # 고정된 모양 — 판정은 이것만 본다
         self._latch_candidate_shape = None   # 전환 후보 모양 (연속 관측 세는 중)
         self._latch_candidate_count = 0
+        self._latch_lost_side = None         # 소실 시점의 활성 팔 — 유예 대조용
+        self._latch_lost_sec = None
 
         # One Euro 필터(2026-07-20 정확도) — 추적점 떨림 저감. 궤적 단절 시 트래커와
         # 함께 리셋한다. 키 미설정 브랜치는 종전대로 무필터 (point_filter.py 주석 참고)
@@ -300,9 +307,20 @@ class GestureFilter:
                 self._update_debug(body_scale, shoulder_width_ratio)
                 return None
             self._reset_stroke()   # 유예 초과 소실 — 끊긴 궤적을 이어 붙이지 않는다
+            if self._active_side is not None and self._latched_shape is not None:
+                if self._latch_release_sec > 0.0:
+                    # 소실 유예 시작 — 같은 쪽이 유예 안에 돌아오면 래치(모드) 승계
+                    self._latch_lost_side = self._active_side
+                    self._latch_lost_sec = now_sec
+                else:
+                    self._clear_shape_latch()   # 종전 — 즉시 해제
+            elif (self._latch_lost_sec is not None
+                    and now_sec - self._latch_lost_sec > self._latch_release_sec):
+                self._clear_shape_latch()   # 유예 만료 — 다음 손에 래치를 잇지 않는다
+                self._latch_lost_side = None
+                self._latch_lost_sec = None
             self._active_side = None
             self._active_shape = None
-            self._clear_shape_latch()   # 손이 사라졌다 — 다음 손에 래치를 잇지 않는다
             if self._point_filter is not None:
                 self._point_filter.reset()
         else:
@@ -317,8 +335,16 @@ class GestureFilter:
                 else:
                     self._reset_stroke()   # 팔 교체 — 궤적 연결 금지. 손 모양 전환은 리셋
                     #   대상이 아니다: 추적점(손 중심)은 주먹↔한 손가락에서 좌표가 연속이다
-                    self._clear_shape_latch()   # 다른 손 — 래치를 물려주지 않는다
                     was_absent = self._active_side is None
+                    is_latch_resume = (   # 소실 유예 안의 같은 쪽 재등장 — 래치(모드) 승계
+                        was_absent and self._latch_lost_side == side
+                        and self._latch_lost_sec is not None
+                        and now_sec - self._latch_lost_sec <= self._latch_release_sec
+                    )
+                    if not is_latch_resume:
+                        self._clear_shape_latch()   # 다른 손·유예 만료 — 래치 승계 금지
+                    self._latch_lost_side = None
+                    self._latch_lost_sec = None
                     self._active_side = side
                     prev_point, prev_point_sec = None, None   # 새 손 — 속도 연속성 없음
                     if self._point_filter is not None:

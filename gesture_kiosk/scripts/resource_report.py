@@ -42,12 +42,12 @@ def main():
     config = load_config(args.config)
     init_logging(config)
 
-    from src.inference.pose_estimator import PoseEstimator
+    from src.inference.hand_tracker import HandTracker
     from src.utils.env_report import log_environment
 
     log_environment(config)                    # 어느 하드웨어의 수치인지 함께 기록
     base_mb = rss_mb()
-    pose_estimator = PoseEstimator(config)
+    hand_tracker = HandTracker(config)
 
     if args.source == "camera":
         from src.capture.camera_stream import CameraStream
@@ -62,12 +62,12 @@ def main():
         label = "무인(더미 — 사람 없음: 검출만)"
 
     for _ in range(WARMUP_COUNT):
-        pose_estimator.infer(get_frame())
+        hand_tracker.infer(get_frame())
     loaded_mb = rss_mb()
 
     start_sec = time.perf_counter()
     for _ in range(MEASURE_COUNT):
-        pose_estimator.infer(get_frame())
+        hand_tracker.infer(get_frame())
     per_frame_ms = (time.perf_counter() - start_sec) / MEASURE_COUNT * 1000
     peak_mb = rss_mb()
 

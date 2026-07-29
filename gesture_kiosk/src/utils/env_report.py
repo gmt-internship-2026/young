@@ -42,18 +42,18 @@ def _physical_memory_gb():
 def collect_environment(config):
     """실제 실행 환경 스냅샷 dict — 로깅과 분리해 단위 테스트 가능하게 한다."""
     try:
-        import onnxruntime as ort  # 무거운 의존 — 사용 시점 임포트
+        import mediapipe  # 무거운 의존 — 사용 시점 임포트
 
-        ort_providers = ort.get_available_providers()
+        engine = f"MediaPipe {mediapipe.__version__} (TFLite/XNNPACK, CPU)"
     except Exception:
-        ort_providers = []
+        engine = "미확인 — mediapipe 임포트 실패 (설치 확인)"
     return {
         "os": f"{platform.system()} {platform.release()} ({platform.machine()})",
         "python": platform.python_version(),
         "cpu": platform.processor() or platform.machine(),
         "cpu_cores": os.cpu_count(),
         "ram_gb": _physical_memory_gb(),
-        "ort_providers": ort_providers,   # CUDA/VitisAI 가용 여부가 여기서 드러난다
+        "engine": engine,   # 2026-07-29 포즈 제거 — 추론 엔진은 MediaPipe 하나
         "declared_target": config.get("runtime") or {},   # config runtime 절 — 타깃 명세
     }
 
@@ -66,7 +66,7 @@ def log_environment(config):
         env["os"], env["python"], env["cpu"], env["cpu_cores"],
         "확인불가" if env["ram_gb"] is None else env["ram_gb"],
     )
-    logger.info("가속기(ORT providers): %s", ", ".join(env["ort_providers"]) or "없음")
+    logger.info("추론 엔진: %s", env["engine"])
     declared = env["declared_target"]
     if declared:
         logger.info(

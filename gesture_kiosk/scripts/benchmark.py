@@ -1,7 +1,7 @@
 """추론 단독 FPS 벤치마크 — 기획서 6.1 (1,000프레임 평균, 병목 분석용).
 
-2026-07-15 2차: 측정 대상 = 포즈(RTMPose) 단일 모델 — 쓸기·끄덕임·잠금이
-전부 이 추론 위에서 돌므로 이 수치가 곧 판정 엔진의 상한이다.
+2026-07-29 포즈 제거: 측정 대상 = 손(MediaPipe HandLandmarker) 단일 모델 —
+모양·궤적·선별이 전부 이 추론 위에서 돌므로 이 수치가 곧 판정 엔진의 상한이다.
 
 사용법:
     python scripts/benchmark.py                  # 더미 프레임 1000장
@@ -35,11 +35,11 @@ def main():
     config = load_config(args.config)
     init_logging(config)
 
-    from src.inference.pose_estimator import PoseEstimator
+    from src.inference.hand_tracker import HandTracker
     from src.utils.env_report import log_environment
 
     log_environment(config)   # 벤치마크 수치가 어느 하드웨어 것인지 함께 기록 (2026-07-16)
-    pose_estimator = PoseEstimator(config)
+    hand_tracker = HandTracker(config)
 
     camera = None
     if args.source == "camera":
@@ -58,7 +58,7 @@ def main():
         if camera is not None:
             frame = camera.capture_frame()
         t0 = time.monotonic()
-        pose_estimator.infer(frame)
+        hand_tracker.infer(frame)
         latencies_ms.append((time.monotonic() - t0) * 1000.0)
         if (frame_idx + 1) % 100 == 0:
             print(f"  {frame_idx + 1}/{args.frame_count} 프레임 처리")

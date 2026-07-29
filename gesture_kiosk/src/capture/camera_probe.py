@@ -2,20 +2,17 @@
 
 배포 키오스크에 웹캠이 2대 달리는 구성(№12 연계) 대응 — 장치 번호는 OS 열거
 순서라 재부팅·포트 교체로 바뀔 수 있어 고정 device_id는 깨지기 쉽다. 시작할 때
-각 장치를 잠깐 열어 **얼굴(포즈)·손 감지율**로 채점하면, 올바른 카메라가
-번호와 무관하게 뽑히고 IR 카메라·가려진 카메라는 자동 탈락한다.
+각 장치를 잠깐 열어 **손 인식 품질**로 채점하면, 올바른 카메라가 번호와 무관하게
+뽑히고 IR 카메라·가려진 카메라는 자동 탈락한다.
 
-주의: 프로브 순간 카메라 앞에 사람이 있어야 점수가 유효하다 — 아무도 없으면
-전 장치 0점이라 config의 device_id를 그대로 쓴다(폴백). 설치 절차상 install/
-run 실행자는 카메라 앞에 있으므로 실사용에서 자연 충족된다.
+2026-07-29 포즈 제거: 채점도 손 품질 단독 — 얼굴(포즈) 감지율 항목 소멸.
+점수 = 손 품질(크기×신뢰도) 평균 (2026-07-29 품질 채점 — 이진 감지는 앉은
+사용자에서 위·아래 카메라가 동점이 되고, 동점은 낮은 번호가 이겨 구도 나쁜
+카메라가 메인이 됐다. 손이 크게·또렷하게 보이는 카메라가 이긴다).
 
-점수 = face_weight × 얼굴 감지율 + (1 - face_weight) × 손 품질 평균
-(2026-07-29 품질 채점 도입 — 실기: 손을 "보이냐"만 세면(이진) 앉은 사용자에서
-위·아래 카메라가 둘 다 만점 동점이 되고, 동점은 낮은 장치 번호가 이겨 구도
-나쁜 위 카메라가 메인이 됐다. 손 품질 = 손 크기(프레임 대비)×신뢰도로 채점해
-손이 크고 또렷하게 보이는 카메라 — 사람이 느끼는 "구도 좋은" 카메라 — 가
-이기게 한다. score_probe_frames·_hand_quality는 순수 함수라 카메라 없이
-단위 테스트된다 — tests/test_camera_probe.py)
+주의: 프로브 순간 카메라 앞에 사람이 손을 보여야 점수가 유효하다 — 아무도
+없으면 전 장치 0점이라 config의 device_id를 그대로 쓴다(폴백).
+score_probe_frames·_hand_quality는 순수 함수 — tests/test_camera_probe.py.
 """
 import time
 
@@ -25,18 +22,11 @@ from src.utils.logger import get_logger
 logger = get_logger("capture")
 
 
-def score_probe_frames(face_frames, hand_frames, face_weight):
-    """프레임별 감지 결과 -> 카메라 점수(0.0~1.0).
-
-    face_frames: 프레임별 '얼굴 보임'(머리 키포인트 있는 사람 존재) 여부 목록.
-    hand_frames: 프레임별 손 품질(0.0~1.0 — _hand_quality) 목록. 감지 없음 = 0.0.
-    (불리언을 넣어도 동작한다 — True=1.0. 구 이진 채점과의 호환)
-    """
-    if not face_frames:
+def score_probe_frames(hand_frames):
+    """프레임별 손 품질(0~1 — _hand_quality) 목록 -> 카메라 점수(0.0~1.0)."""
+    if not hand_frames:
         return 0.0
-    face_rate = sum(1 for seen in face_frames if seen) / len(face_frames)
-    hand_rate = (sum(hand_frames) / len(hand_frames) if hand_frames else 0.0)
-    return face_weight * face_rate + (1.0 - face_weight) * hand_rate
+    return sum(hand_frames) / len(hand_frames)
 
 
 def _hand_quality(hands, frame_width_px, good_span_ratio):
@@ -57,7 +47,7 @@ def _hand_quality(hands, frame_width_px, good_span_ratio):
     return best_quality
 
 
-def rank_cameras(config, pose_estimator, hand_tracker, preprocessor):
+def rank_cameras(config, hand_tracker, preprocessor):
     """장치 0..N-1을 프로브 -> ([(device_id, 점수)] 내림차순, {device_id: 열린 cap}).
 
     cap을 닫지 않고 함께 돌려주는 이유(2026-07-28 실기): MSMF는 release 직후
@@ -72,8 +62,7 @@ def rank_cameras(config, pose_estimator, hand_tracker, preprocessor):
         return [], {}
     ranked, caps = [], {}
     for device_id in range(probe_cfg["probe_device_count"]):
-        result = _probe_device(config, device_id, probe_cfg,
-                               pose_estimator, hand_tracker, preprocessor)
+        result = _probe_device(config, device_id, probe_cfg, hand_tracker, preprocessor)
         if result is None:
             continue   # 장치 없음/열기 실패 — 후보 제외
         score, cap = result
@@ -84,21 +73,21 @@ def rank_cameras(config, pose_estimator, hand_tracker, preprocessor):
     return ranked, caps
 
 
-def select_camera(config, pose_estimator, hand_tracker, preprocessor):
+def select_camera(config, hand_tracker, preprocessor):
     """프로브 1위를 고른다 -> (device_id, 열린 cap | None).
 
     후보 없음·전원 0점이면 config의 device_id 폴백. 선택 장치의 cap은 열린
     채로 넘기고(MSMF 재오픈 무프레임 회피 — rank_cameras 주석) 나머지는 닫는다.
     """
     fallback = config["camera"]["device_id"]
-    ranked, caps = rank_cameras(config, pose_estimator, hand_tracker, preprocessor)
+    ranked, caps = rank_cameras(config, hand_tracker, preprocessor)
     if ranked and ranked[0][1] > 0.0:
         chosen = ranked[0][0]
         logger.info("카메라 자동 선별: device_id=%d (점수 %.2f)", chosen, ranked[0][1])
     else:
         chosen = fallback
         if config["camera"].get("auto_select", {}).get("enabled"):
-            logger.warning("카메라 프로브 무효(후보 없음/전원 0점 — 사람 미검출?) "
+            logger.warning("카메라 프로브 무효(후보 없음/전원 0점 — 손 미검출?) "
                            "— config device_id=%s 유지", fallback)
     chosen_cap = caps.pop(chosen, None)
     for cap in caps.values():
@@ -106,8 +95,7 @@ def select_camera(config, pose_estimator, hand_tracker, preprocessor):
     return chosen, chosen_cap
 
 
-def _probe_device(config, device_id, probe_cfg,
-                  pose_estimator, hand_tracker, preprocessor):
+def _probe_device(config, device_id, probe_cfg, hand_tracker, preprocessor):
     """장치 1개를 열어 채점 -> (점수, 열린 cap) | None(열기 실패 — 장치 없음).
 
     시간 한도(probe_timeout_sec) 기반으로 읽는다 — MSMF는 오픈 직후 read 실패가
@@ -118,10 +106,10 @@ def _probe_device(config, device_id, probe_cfg,
         cap = init_camera(config, device_id=device_id)
     except RuntimeError:
         return None
-    face_frames, hand_frames = [], []
+    hand_frames = []
     warmup_left = probe_cfg["warmup_frames"]
     deadline_sec = time.monotonic() + probe_cfg.get("probe_timeout_sec", 3.0)
-    while (len(face_frames) < probe_cfg["probe_frames"]
+    while (len(hand_frames) < probe_cfg["probe_frames"]
            and time.monotonic() < deadline_sec):
         is_ok, frame = cap.read()
         if not is_ok:
@@ -130,9 +118,7 @@ def _probe_device(config, device_id, probe_cfg,
             warmup_left -= 1   # 자동 노출 안정화 전 프레임은 채점 제외
             continue
         frame = preprocessor.preprocess_frame(frame)
-        persons = pose_estimator.infer(frame)
         hands = hand_tracker.infer(frame)
-        face_frames.append(any(person.head_points for person in persons))
         hand_frames.append(_hand_quality(
             hands, frame.shape[1], probe_cfg.get("good_hand_span_ratio", 0.10)))
-    return score_probe_frames(face_frames, hand_frames, probe_cfg["face_weight"]), cap
+    return score_probe_frames(hand_frames), cap

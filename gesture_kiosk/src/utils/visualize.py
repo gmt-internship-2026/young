@@ -8,20 +8,19 @@ HAND_COLOR = {"left": (255, 120, 60), "right": (60, 120, 255)}
 SHAPE_TAG = {"fist": "(F)", "finger": "(1)"}   # F=주먹(fist), 1=한 손가락. 불명은 무표시
 
 
-def draw_person_lock(frame, person_lock):
-    """잠긴 사용자의 몸 박스와 손 추적점(사용자 기준 좌/우)을 그린다.
+def draw_user_hands(frame, hand_selector):
+    """선별된 사용자 손 박스와 손 추적점(사용자 기준 좌/우)을 그린다.
 
-    2026-07-29 얼굴 박스 → 몸 박스: 얼굴 선명도 잠금 제거(사용자 결정)로 얼굴
-    개념이 사라졌다 — 잠금 표시는 EMA 평활된 몸 박스다.
+    2026-07-29 포즈 제거: 잠금 몸 박스 대신 주 손 주변 박스(EMA 평활)를 표시한다.
     라벨: L/R + 손 모양 — 주먹 "(F)" / 한 손가락 "(1)" — 을 화면에서 확인할 수 있게.
     """
-    if person_lock.locked_box is not None:
-        x1, y1, x2, y2 = person_lock.locked_box
+    if hand_selector.locked_box is not None:
+        x1, y1, x2, y2 = hand_selector.locked_box
         cv2.rectangle(frame, (x1, y1), (x2, y2), LOCK_COLOR, 2)
         cv2.putText(
-            frame, "USER LOCK", (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, LOCK_COLOR, 2
+            frame, "USER HAND", (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, LOCK_COLOR, 2
         )
-    for side, point_info in person_lock.user_swipe_points().items():
+    for side, point_info in hand_selector.user_swipe_points().items():
         if point_info is None:
             continue
         shape, point = point_info

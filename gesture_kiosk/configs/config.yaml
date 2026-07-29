@@ -3,13 +3,14 @@
 # 2026-07-10 전면 개편 — 타깃: 윈도우 + Python 3.11.5 (정부 민원발급기)
 # 2026-07-24 win 통합판(feat/think_win): 구 win_cpu/win_gpu 브랜치 통합 —
 #   NVIDIA GPU가 있으면 CUDA로, 없으면 CPU로 자동 실행 (device/pose_mode: auto)
-# 2026-07-28 손 모델 교체: 손 모양·손 중심을 wholebody 손 21점 → MediaPipe
-#   HandLandmarker(hand_tracker 섹션)로 분리 — 유령 손·원근 단축 실기 문제 해결
+# 2026-07-29 포즈 스택 제거(사용자 결정): 추론 = MediaPipe HandLandmarker 단독
+#   (TFLite/XNNPACK, Apache-2.0). 포즈가 하던 잠금·자·게이트는 hand_select가
+#   손 기반으로 대체 — 한 명 사용 가정. onnxruntime·rtmlib·GPU 스택 소멸
+# 2026-07-28 손 모델 교체: 손 판별을 MediaPipe HandLandmarker(hand_tracker 섹션)로
 # 2026-07-23 동작 체계 (「제스처 정의 보고서」 손 모양 기준 — 회사 확정 이벤트 명):
 #   한 손가락 + 좌/우/위/아래 = left/right/top/bottom (포커스 이동 — 탐색 계층)
 #   주먹 + 왼쪽/위/오른쪽 = back(이전) / home(처음으로) / ok(확인) — 명령 계층
 #   손 모양이 계층을, 이동 방향이 기능을 정한다 — 반복 횟수·화면 좌표 안 씀.
-#   판별은 wholebody 손 21점 기하 규칙(hand_shape.py) — 손 모양 CNN 없음.
 #   구 스펙(위 1회=select·아래 1회/2연속 분기)·손목/팔꿈치 폴백은 07-23 제거.
 
 camera:
@@ -31,44 +32,30 @@ camera:
                           #   파이프라인은 마지막 프레임으로 생존. 키 없어도 기본값으로 켜짐
   recovery_retry_sec: 2.0 # 재연결 시도 간격 — 너무 짧으면 드라이버 초기화 중에 계속 실패
   auto_select:            # A안(2026-07-28) — 시작 시 카메라 프로브: 웹캠 2대 구성(№12)에서
-                          #   얼굴·손 인식 점수가 가장 높은 장치를 메인으로 자동 선택.
+                          #   손 인식 품질이 가장 높은 장치를 메인으로 자동 선택.
+                          #   (2026-07-29 포즈 제거 — 얼굴 감지율 항목 소멸: 손 품질 단독)
                           #   장치 열거 순서가 바뀌어도 올바른 카메라가 잡히고, IR 카메라 등
-                          #   인식 불가 장치는 자동 탈락. ★프로브 순간 카메라 앞에 사람이
-                          #   있어야 유효 — 전 장치 0점이면 위 device_id 폴백 (camera_probe.py)
+                          #   인식 불가 장치는 자동 탈락. ★프로브 순간 카메라 앞에서 손을
+                          #   보여야 유효 — 전 장치 0점이면 위 device_id 폴백 (camera_probe.py)
     enabled: true
     probe_device_count: 4 # 장치 번호 0..N-1 시도 — 없는 번호는 열기 실패로 건너뜀
     warmup_frames: 5      # 장치당 버리는 초기 프레임 (자동 노출 안정화)
     probe_frames: 15      # 장치당 채점 프레임 — 30 FPS 기준 0.5초 (시작 지연과 트레이드오프)
     probe_timeout_sec: 3.0  # 장치당 시간 한도 — MSMF는 오픈 직후 read 실패가 흔해
                           #   (2026-07-28 실기) 성공 프레임 기준으로 세되 이 시간에 자른다
-    face_weight: 0.5      # 점수 배합: N×얼굴 감지율 + (1-N)×손 품질 평균
     good_hand_span_ratio: 0.10  # 손 크기 만점 기준 — 손 랜드마크 폭이 프레임 폭의 이
                           #   비율이면 크기 점수 1.0 (2026-07-29 품질 채점: 이진 감지는
                           #   앉은 사용자에서 위·아래 카메라가 동점 — 손이 크게 보이는
                           #   구도 좋은 카메라가 이기도록 크기×신뢰도로 채점)
 
-model:
-  # 모델 구성(2026-07-28 손 모델 교체): 포즈(rtmlib RTMPose, Apache-2.0)는 사람
-  # 검출·잠금·어깨 자(尺)를 담당하고, 손 모양·손 중심은 hand_tracker(MediaPipe,
-  # Apache-2.0) 섹션이 담당한다 — 라이선스 기준은 07-11 B안 그대로
-  pose_engine: body       # body(몸 17)로 충분 — 손 21점은 hand_tracker가 공급 (2026-07-28).
-                          #   "wholebody 필수"(07-23)는 손 판별 때문이었고 교체로 소멸.
-                          #   wholebody로 되돌려도 동작하나 CPU만 더 쓴다 (손 키포인트 미사용)
-  device: auto            # auto(CUDA 있으면 cuda, 없으면 cpu — 시작 로그에서 확인) | cuda | cpu
-  use_tensorrt: false     # true면 TensorRT 가속(NVIDIA GPU 전용) — 첫 실행 때 이 PC 전용 엔진 캐시 생성
-  pose_mode: auto         # auto(2026-07-24 통합판): 위 device 판별이 cuda면 balanced(정확),
-                          #   cpu면 lightweight(30 FPS 확보). 수동 고정: lightweight | balanced | performance
-  input_size_px: 640
-  max_infer_fps: 60       # 추론 루프 FPS 상한 — 초과분은 대기 (GPU 낭비 방지).
-                          #   2026-07-16 30→60 상향(사용자 결정 — 제한 완화). ★주의: 2026-07-10
-                          #   실측에서 CPU 추론 루프가 60으로 돌 때 캡처 스레드의 CPU/GIL을
-                          #   빼앗아 캡처 FPS 반토막 → CPU 기기에서 인식 저하 시 30으로 되돌릴 것
-  idle_infer_fps: 10      # 유휴(사람 없음·잠금 없음) 시 추론 FPS — 키오스크 대기 시간의
-                          #   CPU·전력 절감 (2026-07-20). 사람이 감지되면 즉시 max로 복귀
-  det_interval_frames: 10 # 사람 검출(YOLOX) 실행 간격 — 추적 중엔 N프레임에 1회만 돌리고
-                          #   사이엔 신뢰도 통과 사람의 박스만 재사용(자체 미니 트래커,
-                          #   2026-07-20 2차 — 검출 0명이면 포즈 생략: 허수 포즈·CPU 낭비 차단).
-                          #   사람이 안 보이면 즉시 검출 재개. 1=검출 매 프레임
+model:                    # 추론 루프 설정 — 2026-07-29 포즈 스택 제거(사용자 결정)로
+                          #   포즈 키(pose_engine·device·pose_mode·det_interval 등)는
+                          #   전부 소멸. 추론 모델은 hand_tracker(MediaPipe) 하나다
+  max_infer_fps: 60       # 추론 루프 FPS 상한 — 초과분은 대기.
+                          #   ★주의: 2026-07-10 실측 — CPU 추론 루프가 60으로 돌 때 캡처
+                          #   스레드의 CPU/GIL을 빼앗아 캡처 FPS 반토막 → 인식 저하 시 30으로
+  idle_infer_fps: 10      # 유휴(손 없음) 시 추론 FPS — 키오스크 대기 시간의
+                          #   CPU·전력 절감 (2026-07-20). 손이 보이면 즉시 max로 복귀
 
 hand_tracker:             # 손 랜드마크 — MediaPipe HandLandmarker (2026-07-28 도입,
                           #   Apache-2.0). 보이는 손만 보고(유령 손 없음) + 좌/우 내장
@@ -84,28 +71,12 @@ hand_tracker:             # 손 랜드마크 — MediaPipe HandLandmarker (2026-
   min_presence_conf: 0.4  # 추적 유지 중 손 존재 신뢰도 — 미달이면 재검출로 복귀
   min_tracking_conf: 0.4  # 프레임 간 추적 신뢰도 — 미달이면 재검출 (블러·빠른 이동)
 
-person_lock:              # 오토포커스 카메라 — 초점 맞은 사용자에게 잠금, 다른 사람 무시
-  enabled: true
-  kpt_conf_threshold: 0.3     # 포즈 키포인트(손목·어깨·머리) 최소 신뢰도
-  lock_frame_count: 3         # 최고 점수 후보가 N프레임 연속이면 그 사용자에게 잠금
-  follow_radius_ratio: 0.25   # 잠금 유지·추적 반경 (프레임 폭 대비 비율) — 아래 IoU
-                              #   매칭 실패 시(빠르게 움직인 같은 사람)의 폴백에만 쓰인다
-  follow_min_iou: 0.3         # 잠금 전이 차단(2026-07-22 실기 — 대기줄에서 잠금이 옆
-                              #   사람에게 넘어감): 직전 잠금 몸 박스와 겹침(IoU)이 이 이상인
-                              #   사람만 같은 사용자로 잇는다. 옆/뒤 사람은 겹침이 작아 배제 →
-                              #   가까이 있어도 잠금을 못 뺏는다. 키 삭제 시 종전(최근접) 동작
-  follow_size_ratio_range: [0.5, 2.0]  # IoU 약할 때 폴백의 크기 게이트 — 후보 몸 박스
-                              #   면적이 잠금 박스의 0.5~2.0배일 때만 인정(원근이 다른 뒤/앞
-                              #   사람 배제). 빠르게 움직인 같은 사람은 크기가 비슷해 통과
-  release_sec: 2.0            # 이 시간 동안 안 보이면 잠금 해제 — 다음 사용자 인식
-                              # (sharpness_weight는 2026-07-29 제거 — 얼굴 선명도 잠금 폐지:
-                              #  고정초점 키오스크에서 무의미 + 매 프레임 얼굴 연산·박스
-                              #  노이즈 제거. 잠금 기준 = 가장 크게 보이는(가까운) 사람)
-  wrist_bridge_sec: 0.5       # 손목 브리지(2026-07-29 실기) — 주먹이 옆면으로 회전하면
-                              #   MediaPipe 손 검출이 수 프레임 끊겨 ok 스트로크가 중단됐다.
-                              #   손 소실 후 이 시간 안에서는 포즈 손목으로 궤적점을 잇는다
-                              #   (모양은 래치가 유지 — 직전 손 위치가 손목 근처일 때만).
-                              #   0 = 브리지 없음(종전)
+hand_select:              # 사용자 손 선별(2026-07-29 — 포즈 잠금 대체, hand_select.py):
+                          #   쪽별로 가장 큰 손(가장 가까운 사람) + 연속성 우선 선별.
+                          #   ★한 명 사용 가정 — 화각에 여러 명이 상시 잡히면 포즈 잠금이
+                          #   있던 구판(2ea58a5 이전) 검토. 거리 자(尺)는 손 실측 크기
+                          #   (월드 랜드마크 미터) 기반 가상 어깨너비 — 기존 임계 체계 유지
+  release_sec: 2.0        # 손이 이 시간 동안 안 보이면 사용 종료 — 유휴 전환·선별 초기화
   hand_shape:                 # 손 모양 판별(hand_shape.py 기하 규칙 — 2026-07-28 v3:
                               #   입력이 MediaPipe 21점이라 아래 비율은 **3D 거리** 기준.
                               #   min_center_points는 제거 — MediaPipe가 21점을 항상 채움)
@@ -122,11 +93,6 @@ person_lock:              # 오토포커스 카메라 — 초점 맞은 사용�
                               #   관절 방향 반전)일 때만 굽힘. 그 사이(0.85~0.95)는 기권.
                               #   2026-07-28 실측: 굽힌 손가락은 전 자세에서 0.51~0.78 —
                               #   0.85면 여유 있게 덮고 폄(≥1.04)과 안 겹친다 (0.9→0.85)
-  reach_limit_shoulder:       # 해부학적 도달 거리 게이트(2026-07-20) — 추적점이 같은 쪽
-                              #   어깨에서 어깨너비 N배 안일 때만 인정. 톱다운 포즈가 몸 박스에
-                              #   걸친 **옆 사람의 손**을 사용자 손으로 출력하는 오귀속 차단
-                              #   (실기 관찰). 어깨 미검출 프레임은 게이트 생략(측면 자세 보호)
-    hand: 2.2                 # 손 중심 — 팔 전체+손 길이 + 여유
 
 gestures:
   cooldown_sec: 0.9           # 이벤트 확정 직후 입력 무시 시간 — 연타 방지.
@@ -231,8 +197,11 @@ gestures:
       min_cutoff_hz: 1.5      # 정지 시 컷오프 — 낮출수록 떨림 제거 강함(대신 느린 동작 지연↑)
       beta: 1.0               # 속도 반응 계수 — 클수록 빠른 쓸기에서 원신호를 더 믿는다(지연↓)
       d_cutoff_hz: 1.0        # 속도 추정 자체의 평활 컷오프 (보통 1.0 고정)
-    body_scale:               # 어깨너비 자(尺)의 안정화 — person_lock.user_shoulder_width_ratio
-      fallback_ratio: 0.22    # 어깨 미검출 시 가정값(어깨너비/프레임폭) — 키오스크 표준 거리 기준.
+    body_scale:               # 거리 자(尺)의 안정화 — 2026-07-29부터 hand_select.
+                              #   hand_scale_ratio(손 실측 크기 기반 **가상 어깨너비**)가
+                              #   공급한다: px/m 환산 × 표준 어깨 0.4m — 어깨 자와 등가라
+                              #   위 임계(어깨너비 배수) 숫자가 그대로 유지된다
+      fallback_ratio: 0.22    # 손 미관측 시 가정값(가상 어깨너비/프레임폭) — 표준 거리 기준.
                               #   이 값일 때 위 임계들이 종전 화면 비율 임계와 정확히 등가
       min_ratio: 0.05         # 하한 클램프 — 측면으로 돌아 어깨가 좁아져도 임계 과민 방지.
                               #   2026-07-16 0.08→0.05: 멀리(앉아서) 있는 사용자의 실제 어깨가
@@ -262,10 +231,11 @@ logging:
 runtime:                  # 배포 기준 명세 — 설치가이드.md와 일치해야 한다
   python_version: "3.11.5"
   target_os: windows
-  target_gpu: auto        # 통합판 — NVIDIA GPU 있으면 사용, 없으면 CPU (시작 로그의 실측값과 대조)
+  target_gpu: none        # 2026-07-29 포즈 제거 — 추론은 MediaPipe TFLite(CPU) 단독.
+                          #   GPU 스택(torch·onnxruntime-gpu)은 포즈용이었고 함께 소멸
   hardware:               # 타깃 하드웨어 명세 기록(2026-07-16 신설) — №12 기기 확정 시 채울 것.
-                          #   시작 로그에 실제 감지값(OS·CPU·RAM·가속기)과 나란히 남아 대조된다
+                          #   시작 로그에 실제 감지값(OS·CPU·RAM·엔진)과 나란히 남아 대조된다
     device_model: 미확정   # 기기 모델명 (예: 미니PC 제조사·모델)
     cpu: 미확정
     ram: 미확정
-    accelerator: 자동 감지 (NVIDIA GPU 있으면 CUDA, 없으면 CPU)
+    accelerator: CPU (MediaPipe TFLite/XNNPACK — 2026-07-29 단독 확정)

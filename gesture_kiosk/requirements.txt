@@ -1,28 +1,15 @@
-# 추론(윈도우 통합판 — GPU 자동 감지, Python 3.11.5) 고정 버전 — 타 PC 재현성 보장 (설치가이드.md 참고)
-# 통합판(feat/think_win, 2026-07-24 — 구 win_cpu/win_gpu 브랜치 통합):
-#   install.bat이 NVIDIA GPU(nvidia-smi)를 감지해 스택을 고른다 —
-#   GPU 없음 = 이 파일 그대로(CPU onnxruntime) / GPU 있음 = 아래 추가 작업.
-#   런타임도 config model.device: auto가 CUDA 유무로 자동 선택 — 코드는 한 벌.
+# 추론(윈도우, Python 3.11.5) 고정 버전 — 타 PC 재현성 보장 (설치가이드.md 참고)
+# 2026-07-29 포즈 스택 제거(사용자 결정): 추론 = MediaPipe HandLandmarker 단독
+#   (내장 TFLite/XNNPACK, CPU). onnxruntime·rtmlib·GPU 스택(torch) 소멸 —
+#   제스처 판정(손 모양·궤적)은 손 데이터만으로 끝난다 (hand_select.py 참고).
 #
-# 2026-07-11 라이선스 B안: ultralytics(AGPL-3.0) 제거 —
-#   실행기 = ONNX Runtime(MIT), 포즈 = rtmlib/RTMPose(Apache-2.0)
-# 2026-07-16: EasyOCR(주민등록증 OCR) 제거 — 제스처 집중, 관련 의존성 삭제
-# 2026-07-28: mediapipe(Apache-2.0) 추가 — 손 모양·손 중심 전담 (B안 기준 유지)
-#
-# GPU PC에서 install.bat이 하는 추가 작업 (수동 설치 시에도 동일하게 필요):
-#   ① torch==2.11.0+cu128 torchvision==0.26.0+cu128 설치
-#      (--index-url https://download.pytorch.org/whl/cu128) —
-#      onnxruntime-gpu가 쓰는 CUDA 12.8 DLL 등록용 (RTX 50시리즈 포함 지원)
-#   ② 아래 onnxruntime 제거 후 onnxruntime-gpu==1.23.2 를 --no-deps 로 재설치 —
-#      rtmlib이 CPU용 onnxruntime을 의존성으로 끌고 와 GPU판 파일을 덮어쓰기 때문.
-#      onnxruntime-gpu는 CUDA 12 빌드여야 한다 (1.27.0은 CUDA 13 빌드라
-#      cublasLt64_13.dll을 찾지 못해 조용히 CPU 폴백 — 2026-07-10 확인)
-onnxruntime==1.23.2                # CPU 실행 기본 — GPU PC는 install.bat이 onnxruntime-gpu로 교체
-rtmlib==0.0.15                     # RTMPose 포즈 추정 (Apache-2.0) — 사용자 잠금·어깨 자(尺)용
-mediapipe==1.0.0                   # 손 랜드마크 HandLandmarker (Apache-2.0) — 손 모양·손 중심
-                                   #   (2026-07-28 교체: wholebody 손 21점의 유령 손·원근 단축
-                                   #   실기 문제. 모델 파일은 download_weights.py가 받는다)
-opencv-python==5.0.0.93
+# 라이선스(B안 유지): MediaPipe Apache-2.0 — 상업 사용 가능, 코드 공개 의무 없음,
+#   저작자표시(CC-BY류) 의무 없음. 배포물에 라이선스 고지문 동봉만 필요 (№9).
+# 2026-07-11 라이선스 B안: ultralytics(AGPL-3.0) 제거
+# 2026-07-16: EasyOCR(주민등록증 OCR) 제거 — 제스처 집중
+mediapipe==1.0.0                   # 손 랜드마크 HandLandmarker — 유일한 추론 의존
+                                   #   (모델 파일은 download_weights.py가 받는다)
+opencv-python==5.0.0.93            # 카메라 캡처·디버그 창·평가 지시 창
 numpy==2.2.6
 pyyaml==6.0.3
 psutil==7.2.2                      # scripts/resource_report.py 자원 실측용

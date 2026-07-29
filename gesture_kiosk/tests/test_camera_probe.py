@@ -1,7 +1,8 @@
 """camera_probe 단위 테스트 — 카메라 없이 채점 로직(순수 함수)만 검증한다 (A안 2026-07-28).
 
-2026-07-29 품질 채점 보강: 손을 이진(보임/안 보임)으로 세면 앉은 사용자에서
-위·아래 카메라가 동점 — 손 크기×신뢰도 품질로 구도 좋은 카메라가 이겨야 한다.
+2026-07-29 포즈 제거: 채점 = 손 품질(크기×신뢰도) 단독 — 얼굴 항목 소멸.
+이진 감지는 앉은 사용자에서 위·아래 카메라가 동점 — 손이 크게 보이는(구도 좋은)
+카메라가 이겨야 한다.
 """
 import os
 import sys
@@ -26,39 +27,26 @@ def _make_hand_with_span(span_px, conf=1.0):
 
 class ScoreProbeFramesTest(unittest.TestCase):
     def test_perfect_camera_scores_one(self):
-        # 전 프레임 얼굴·손 감지 — 만점
-        self.assertAlmostEqual(
-            score_probe_frames([True] * 10, [True] * 10, face_weight=0.5), 1.0)
+        # 전 프레임 손 품질 만점 — 만점
+        self.assertAlmostEqual(score_probe_frames([1.0] * 10), 1.0)
 
     def test_ir_like_camera_scores_zero(self):
-        # IR 카메라 등 인식 불가 장치 — 얼굴·손 전무: 0점(자동 탈락)
-        self.assertAlmostEqual(
-            score_probe_frames([False] * 10, [False] * 10, face_weight=0.5), 0.0)
+        # IR 카메라 등 인식 불가 장치 — 손 전무: 0점(자동 탈락)
+        self.assertAlmostEqual(score_probe_frames([0.0] * 10), 0.0)
 
-    def test_weight_mixes_face_and_hand_rates(self):
-        # 얼굴 100%·손 0%, face_weight 0.5 — 0.5점 (배합 검증)
-        self.assertAlmostEqual(
-            score_probe_frames([True] * 10, [False] * 10, face_weight=0.5), 0.5)
-        # face_weight 0.7이면 얼굴 쪽 배점이 커진다
-        self.assertAlmostEqual(
-            score_probe_frames([True] * 10, [False] * 10, face_weight=0.7), 0.7)
-
-    def test_partial_rates(self):
-        # 얼굴 6/10 · 손 4/10, 0.5 배합 = 0.3 + 0.2 = 0.5
-        face_frames = [True] * 6 + [False] * 4
-        hand_frames = [True] * 4 + [False] * 6
-        self.assertAlmostEqual(
-            score_probe_frames(face_frames, hand_frames, face_weight=0.5), 0.5)
+    def test_partial_quality_averages(self):
+        # 품질 평균 — 0.8×5 + 0.2×5 = 0.5
+        self.assertAlmostEqual(score_probe_frames([0.8] * 5 + [0.2] * 5), 0.5)
 
     def test_no_frames_scores_zero(self):
         # 프레임을 한 장도 못 읽은 장치(계속 read 실패) — 0점
-        self.assertAlmostEqual(score_probe_frames([], [], face_weight=0.5), 0.0)
+        self.assertAlmostEqual(score_probe_frames([]), 0.0)
 
     def test_bigger_hand_camera_beats_detect_only_tie(self):
-        # 품질 채점의 존재 이유(2026-07-29): 두 카메라 다 얼굴·손이 "보이지만"
+        # 품질 채점의 존재 이유(2026-07-29): 두 카메라 다 손이 "보이지만"
         # 손이 크게 보이는(구도 좋은) 카메라가 이겨야 한다 — 이진이면 동점이던 상황
-        lower_camera = score_probe_frames([True] * 10, [1.0] * 10, face_weight=0.5)
-        upper_camera = score_probe_frames([True] * 10, [0.3] * 10, face_weight=0.5)
+        lower_camera = score_probe_frames([1.0] * 10)
+        upper_camera = score_probe_frames([0.3] * 10)
         self.assertGreater(lower_camera, upper_camera)
 
 

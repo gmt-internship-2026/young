@@ -1,9 +1,8 @@
-"""모델 준비 — 포즈(RTMPose) 캐시 프리페치 + 손(HandLandmarker) 모델 다운로드.
+"""모델 준비 — 손(HandLandmarker) 모델 다운로드.
 
-2026-07-15 2차 구성: 포즈 단일 모델 — rtmlib 캐시 프리페치만 담당했다.
-2026-07-28 손 모델 교체: MediaPipe HandLandmarker 도입 — mediapipe 1.0은 모델을
-wheel에 담지 않으므로 hand_landmarker.task를 models/weights/에 내려받는다
-(내부망 반입 시 make_offline_bundle.bat이 rtmlib 캐시와 함께 담는다).
+2026-07-29 포즈 스택 제거로 내려받을 것이 hand_landmarker.task 하나뿐이다
+(mediapipe 1.0은 모델을 wheel에 담지 않는다). 내부망 반입 시에는 이 파일이
+프로젝트 폴더(models/weights/)에 포함돼 있어 다운로드가 필요 없다.
 
 사용법:
     python scripts/download_weights.py
@@ -38,30 +37,9 @@ def download_hand_model(config):
     print(f"[DONE] 손 모델 저장 — {model_path}")
 
 
-def download_pose_cache(config):
-    """포즈(rtmlib) 모델 캐시 프리페치 — 첫 실행이 현장에서 느려지지 않게."""
-    model = config["model"]
-    engine = model.get("pose_engine", "body")
-    pose_mode = model["pose_mode"]
-    # pose_mode: auto(통합판)는 실행 PC의 GPU 유무에 따라 balanced/lightweight로
-    # 갈린다 — 번들이 어느 기기로 갈지 모르므로 두 모드 캐시를 모두 받아 둔다.
-    # ('auto'를 rtmlib에 그대로 넘기면 KeyError — 2026-07-24 실기)
-    modes = ["lightweight", "balanced"] if pose_mode == "auto" else [pose_mode]
-    if engine == "wholebody":
-        from rtmlib import Wholebody as solution
-    else:
-        from rtmlib import Body as solution
-
-    for mode in modes:
-        print(f"[INFO] 포즈 모델(rtmlib {engine} {mode}) 캐시 준비 — 없으면 지금 내려받습니다 (수십~수백 MB)")
-        solution(mode=mode, backend="onnxruntime", device="cpu")  # 다운로드만 목적 — CPU로 가볍게
-    print("[DONE] 포즈 모델 캐시 완료 (~/.cache/rtmlib)")
-
-
 def main():
     config = load_config(DEFAULT_CONFIG_PATH)
     download_hand_model(config)
-    download_pose_cache(config)
 
 
 if __name__ == "__main__":

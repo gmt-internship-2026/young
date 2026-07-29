@@ -24,7 +24,7 @@ class CollectEnvironmentTest(unittest.TestCase):
 
     def test_log_environment_returns_snapshot(self):
         env = log_environment({"runtime": {"hardware": {"device_model": "테스트"}}})
-        self.assertIn("ort_providers", env)
+        self.assertIn("engine", env)   # 2026-07-29 포즈 제거 — 엔진 표기(MediaPipe)로 교체
 
 
 if __name__ == "__main__":

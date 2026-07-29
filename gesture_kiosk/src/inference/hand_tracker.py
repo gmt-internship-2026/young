@@ -26,6 +26,37 @@ from src.utils.logger import get_logger
 logger = get_logger("inference")
 
 HAND_KPT_COUNT = 21
+DUPLICATE_CENTER_SPAN_RATIO = 0.5   # 중복 검출 판정 — 두 검출의 중심 거리가 손 크기의
+                                    # 이 비율 이내면 같은 물리적 손 (서로 다른 두 손은
+                                    # 물리적으로 겹칠 수 없다 — 2026-07-29 실기)
+
+
+def suppress_duplicate_hands(hands):
+    """같은 물리적 손의 중복 검출 억제 (2026-07-29 실기 — 유령 라벨 재발 대응).
+
+    MediaPipe가 드물게 한 손을 좌/우 라벨로 **두 번** 보고한다 — 한 손에 L·R이
+    겹쳐 붙어 활성 팔 선택·궤적·래치가 오염된다(실기: 오른손에 왼손 라벨 동반).
+    중심 거리가 손 크기(랜드마크 폭)의 절반 이내면 같은 손으로 보고 handedness
+    신뢰도가 높은 검출만 남긴다. 순수 함수 — tests/test_hand_tracker.py.
+    """
+    kept = []
+    for hand in sorted(hands, key=lambda entry: -entry.conf):
+        center_x = float(hand.landmarks[:, 0].mean())
+        center_y = float(hand.landmarks[:, 1].mean())
+        span_px = max(
+            float(hand.landmarks[:, 0].max() - hand.landmarks[:, 0].min()),
+            float(hand.landmarks[:, 1].max() - hand.landmarks[:, 1].min()),
+        )
+        is_duplicate = False
+        for other_center_x, other_center_y, other_span_px, _ in kept:
+            dist_px = ((center_x - other_center_x) ** 2
+                       + (center_y - other_center_y) ** 2) ** 0.5
+            if dist_px < DUPLICATE_CENTER_SPAN_RATIO * max(span_px, other_span_px):
+                is_duplicate = True   # 신뢰도 내림차순 순회 — 먼저 남은 쪽이 더 확실한 라벨
+                break
+        if not is_duplicate:
+            kept.append((center_x, center_y, span_px, hand))
+    return [entry[3] for entry in kept]
 
 
 @dataclass
@@ -115,4 +146,4 @@ class HandTracker:
                 HandDetection(user_side=side, landmarks=landmarks,
                               world_landmarks=world, conf=float(category.score))
             )
-        return hands
+        return suppress_duplicate_hands(hands)

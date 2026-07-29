@@ -284,6 +284,21 @@ class ReachGateTest(unittest.TestCase):
         self.assertEqual(lock.user_swipe_points()["left"][0], "finger")
 
 
+class FaceBoxSmoothingTest(unittest.TestCase):
+    """잠금 얼굴 박스 EMA(2026-07-29) — 머리 키포인트 떨림 노이즈 흡수."""
+
+    def test_blends_toward_new_box(self):
+        from src.postprocess.person_lock import smooth_face_box
+        # alpha 0.4 — 이전 (100,100,200,200)에서 새 (110,100,210,200) 쪽으로 40%만
+        smoothed = smooth_face_box((100, 100, 200, 200), (110, 100, 210, 200), alpha=0.4)
+        self.assertEqual(smoothed, (104, 100, 204, 200))
+
+    def test_first_box_passes_through(self):
+        from src.postprocess.person_lock import smooth_face_box
+        self.assertEqual(smooth_face_box(None, (10, 20, 30, 40)), (10, 20, 30, 40))
+        self.assertIsNone(smooth_face_box((10, 20, 30, 40), None))
+
+
 class UserShoulderWidthRatioTest(unittest.TestCase):
     """어깨너비/프레임폭 — 쓸기 임계의 몸 크기 정규화 자 (2026-07-16)."""
 

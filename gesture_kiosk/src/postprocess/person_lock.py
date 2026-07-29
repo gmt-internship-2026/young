@@ -41,8 +41,24 @@ KPT_RIGHT_SHOULDER = 6
 
 
 FACE_BOX_PAD_RATIO = 0.6      # 머리 키포인트 묶음 -> 얼굴 박스로 넓히는 패딩 비율
+FACE_BOX_SMOOTH_ALPHA = 0.4   # 잠금 얼굴 박스 EMA — 머리 키포인트의 프레임별 떨림이
+                              #   박스를 흔드는 노이즈 저감 (2026-07-29 실기. 1.0=평활 없음)
 SHARPNESS_SQUASH = 300.0      # 라플라시안 분산 정규화 상수 (v/(v+K) — 0~1로 압축)
 MIN_SHOULDER_WIDTH_PX = 20.0  # 이보다 좁으면(측면 자세·검출 불량) 목 길이 정규화가 무의미
+
+
+def smooth_face_box(prev_box, new_box, alpha=FACE_BOX_SMOOTH_ALPHA):
+    """얼굴 박스 EMA — 이전 박스에서 새 박스 쪽으로 alpha만큼만 이동 (떨림 흡수).
+
+    이전 박스가 없으면(첫 잠금) 새 박스 그대로. 판정에는 안 쓰이고(추적은 몸
+    박스 기준) 표시·기록용이라 지연 부작용이 없다.
+    """
+    if prev_box is None or new_box is None:
+        return new_box
+    return tuple(
+        int(round(prev_value + alpha * (new_value - prev_value)))
+        for prev_value, new_value in zip(prev_box, new_box)
+    )
 
 
 def _center(bbox):
@@ -214,7 +230,10 @@ class PersonLock:
         best_match = self._match_locked(scored)
 
         if best_match is not None:
-            self.locked_person, self.locked_face_box = best_match
+            matched_person, matched_face_box = best_match
+            self.locked_person = matched_person
+            # 얼굴 박스는 EMA로 잇는다 — 머리 키포인트 떨림 노이즈 흡수 (2026-07-29)
+            self.locked_face_box = smooth_face_box(self.locked_face_box, matched_face_box)
             self._last_seen_sec = now_sec
             return self.locked_person
 
@@ -338,6 +357,16 @@ class PersonLock:
         if not self._is_mirror:
             return user_side
         return "right" if user_side == "left" else "left"
+
+    def classify_hand(self, hand):
+        """HandDetection 1건의 모양 판별 — 보조 카메라 표(B안 2026-07-28)용.
+
+        잠금·귀속 게이트 없음: 보조 시점에는 포즈가 없어 소유자 검증이 불가하다 —
+        호출자(gesture_filter.add_aux_shape_vote)가 활성 팔 일치로 거른다.
+        """
+        return classify_hand_shape(hand.world_landmarks, self._hand_extend_ratio,
+                                   self._hand_min_valid_fingers,
+                                   self._hand_curl_confirm_ratio)
 
     def _shoulder_width_px(self):
         """잠긴 사용자의 어깨너비(px) — 도달 거리 게이트의 자. 측정 불가면 None."""

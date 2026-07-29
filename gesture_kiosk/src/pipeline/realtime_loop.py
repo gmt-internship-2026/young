@@ -122,7 +122,7 @@ def run_pipeline(config):
             # CPU 낭비 차단 (idle_infer_fps 절감 설계와 같은 취지, 2026-07-28)
             has_subject = bool(persons) or person_lock.locked_person is not None
             hands = hand_tracker.infer(input_tensor) if has_subject else []
-            person_lock.update(input_tensor, persons, hands)
+            person_lock.update(persons, hands)   # 프레임 불필요 — 얼굴 연산 제거(07-29)
             state.is_user_locked = (
                 person_lock.enabled and person_lock.locked_person is not None
             )

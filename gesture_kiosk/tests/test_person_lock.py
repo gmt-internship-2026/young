@@ -1,10 +1,9 @@
 """person_lock 단위 테스트 — 카메라·포즈·손 모델 없이 잠금·신호 로직만 검증한다.
 
-포즈 결과는 PersonPose와 같은 필드를 가진 대역(FakePerson)으로 만들고,
-초점 선명도는 sharpness_fn 주입으로 고정해 결정적으로 테스트한다.
+포즈 결과는 PersonPose와 같은 필드를 가진 대역(FakePerson)으로 만든다.
 2026-07-28 손 모델 교체 반영: 손 신호는 keypoints가 아니라 update()에 넘기는
 HandDetection 목록(hand_fixtures.make_hand — 사용자 기준 좌/우 라벨)에서 온다.
-좌/우 스왑은 손에는 없고, 손과 짝지을 어깨(포즈 — 모델 좌표계)에만 남았다.
+2026-07-29: 얼굴 선명도 잠금 제거(잠금 기준 = 몸 크기) + 손목 브리지 추가.
 """
 import os
 import sys
@@ -15,7 +14,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 
 from src.postprocess.person_lock import (
-    KPT_LEFT_SHOULDER, KPT_RIGHT_SHOULDER, PersonLock,
+    KPT_LEFT_SHOULDER, KPT_LEFT_WRIST, KPT_RIGHT_SHOULDER, KPT_RIGHT_WRIST,
+    PersonLock, smooth_box,
 )
 from tests.hand_fixtures import hand_center_of, make_hand
 
@@ -28,7 +28,8 @@ class FakePerson:
     """PersonPose와 같은 필드·메서드를 가진 테스트 대역 (rtmlib 임포트 회피)."""
 
     def __init__(self, center_x, center_y, size_px=200.0,
-                 left_shoulder=None, right_shoulder=None, head_points=None):
+                 left_shoulder=None, right_shoulder=None,
+                 left_wrist=None, right_wrist=None, head_points=None):
         half = size_px / 2.0
         self.bbox = (center_x - half, center_y - half, center_x + half, center_y + half)
         self.conf = 0.9
@@ -37,6 +38,10 @@ class FakePerson:
             self.keypoints[KPT_LEFT_SHOULDER] = (*left_shoulder, 0.9)
         if right_shoulder is not None:
             self.keypoints[KPT_RIGHT_SHOULDER] = (*right_shoulder, 0.9)
+        if left_wrist is not None:
+            self.keypoints[KPT_LEFT_WRIST] = (*left_wrist, 0.9)
+        if right_wrist is not None:
+            self.keypoints[KPT_RIGHT_WRIST] = (*right_wrist, 0.9)
         self.head_points = head_points if head_points is not None else [
             (center_x - 20, center_y - half + 30), (center_x + 20, center_y - half + 30)
         ]
@@ -68,7 +73,6 @@ def make_config(enabled=True, mirror=True):
             "lock_frame_count": 3,
             "follow_radius_ratio": 0.25,
             "release_sec": 2.0,
-            "sharpness_weight": 0.5,
             "hand_shape": {
                 "extend_ratio": 1.35,
                 "min_valid_fingers": 3,
@@ -78,33 +82,16 @@ def make_config(enabled=True, mirror=True):
     }
 
 
-def make_lock(config=None, sharpness_by_x=None):
-    """sharpness_by_x: 얼굴 박스 중심 x -> 선명도. 미지정 시 모두 같은 값."""
-
-    def sharpness_fn(frame, face_box):
-        if sharpness_by_x is None:
-            return 100.0
-        center_x = (face_box[0] + face_box[2]) / 2.0
-        for x_range, value in sharpness_by_x.items():
-            if x_range[0] <= center_x <= x_range[1]:
-                return value
-        return 10.0
-
+def make_lock(config=None):
     clock = FakeClock()
-    lock = PersonLock(
-        config or make_config(), FRAME_WIDTH_PX, FRAME_HEIGHT_PX,
-        clock=clock, sharpness_fn=sharpness_fn,
-    )
+    lock = PersonLock(config or make_config(), FRAME_WIDTH_PX, FRAME_HEIGHT_PX, clock=clock)
     return lock, clock
-
-
-FRAME = np.zeros((FRAME_HEIGHT_PX, FRAME_WIDTH_PX, 3), dtype=np.uint8)
 
 
 def lock_person(lock, clock, person, hands=None):
     """lock_frame_count(3) 프레임 연속 공급해 person에게 잠근다."""
     for _ in range(3):
-        lock.update(FRAME, [person], hands)
+        lock.update([person], hands)
         clock.tick(1 / 30)
 
 
@@ -113,23 +100,24 @@ class LockSelectionTest(unittest.TestCase):
         lock, clock = make_lock()
         person = FakePerson(640, 360)
         for _ in range(2):
-            lock.update(FRAME, [person])
+            lock.update([person])
             clock.tick(1 / 30)
         self.assertIsNone(lock.locked_person)   # lock_frame_count(3) 미만
-        lock.update(FRAME, [person])
+        lock.update([person])
         self.assertIsNotNone(lock.locked_person)
 
-    def test_sharpest_face_wins_over_blurry(self):
-        # 같은 크기 두 사람 — 왼쪽(x<600)이 흐릿, 오른쪽이 선명(초점 맞음)
-        lock, clock = make_lock(sharpness_by_x={(0, 600): 5.0, (601, 1280): 500.0})
-        blurry = FakePerson(300, 360)
-        sharp = FakePerson(900, 360)
+    def test_closer_person_wins(self):
+        # 잠금 기준 = 몸 크기(2026-07-29 — 얼굴 선명도 제거): 크게 보이는(가까운)
+        # 사람이 사용자다 — 키오스크 앞에 선 사람이 뒷사람을 이긴다
+        lock, clock = make_lock()
+        far_person = FakePerson(300, 360, size_px=120.0)
+        near_person = FakePerson(900, 360, size_px=280.0)
         for _ in range(3):
-            lock.update(FRAME, [blurry, sharp])
+            lock.update([far_person, near_person])
             clock.tick(1 / 30)
         self.assertIsNotNone(lock.locked_person)
         locked_cx = (lock.locked_person.bbox[0] + lock.locked_person.bbox[2]) / 2.0
-        self.assertGreater(locked_cx, 600)      # 선명한 쪽이 잠겼다
+        self.assertEqual(locked_cx, 900.0)      # 가까운(큰) 쪽이 잠겼다
 
     def test_release_after_absence(self):
         lock, clock = make_lock()
@@ -137,14 +125,14 @@ class LockSelectionTest(unittest.TestCase):
         lock_person(lock, clock, person)
         self.assertIsNotNone(lock.locked_person)
         clock.tick(2.5)                          # release_sec(2.0) 초과 공백
-        lock.update(FRAME, [])
+        lock.update([])
         self.assertIsNone(lock.locked_person)
 
     def test_disabled_lock_tracks_best_person_for_signals(self):
         # 잠금 비활성 — 손 신호용으로 최고 신뢰도 사람을 추적한다
         lock, _ = make_lock(make_config(enabled=False))
         person = FakePerson(640, 360)
-        lock.update(FRAME, [person], [make_hand("right", "finger", (500, 400))])
+        lock.update([person], [make_hand("right", "finger", (500, 400))])
         self.assertIsNotNone(lock.locked_person)
         self.assertIsNotNone(lock.user_swipe_points()["right"])
 
@@ -166,7 +154,7 @@ class FollowMatchTest(unittest.TestCase):
         user = FakePerson(640, 360)
         lock_person(lock, clock, user)
         neighbor = FakePerson(750, 360, size_px=100.0)
-        lock.update(FRAME, [neighbor])
+        lock.update([neighbor])
         locked_cx = (lock.locked_person.bbox[0] + lock.locked_person.bbox[2]) / 2.0
         self.assertEqual(locked_cx, 640.0)       # 여전히 원래 사용자
 
@@ -176,7 +164,7 @@ class FollowMatchTest(unittest.TestCase):
         user = FakePerson(640, 360)
         lock_person(lock, clock, user)
         moved = FakePerson(900, 360)
-        lock.update(FRAME, [moved])
+        lock.update([moved])
         locked_cx = (lock.locked_person.bbox[0] + lock.locked_person.bbox[2]) / 2.0
         self.assertEqual(locked_cx, 900.0)
 
@@ -186,7 +174,7 @@ class FollowMatchTest(unittest.TestCase):
         user = FakePerson(640, 360)
         lock_person(lock, clock, user)
         neighbor = FakePerson(750, 360, size_px=100.0)
-        lock.update(FRAME, [neighbor])
+        lock.update([neighbor])
         locked_cx = (lock.locked_person.bbox[0] + lock.locked_person.bbox[2]) / 2.0
         self.assertEqual(locked_cx, 750.0)       # 구 동작: 반경 안 최근접이 잇는다
 
@@ -284,19 +272,66 @@ class ReachGateTest(unittest.TestCase):
         self.assertEqual(lock.user_swipe_points()["left"][0], "finger")
 
 
-class FaceBoxSmoothingTest(unittest.TestCase):
-    """잠금 얼굴 박스 EMA(2026-07-29) — 머리 키포인트 떨림 노이즈 흡수."""
+class BoxSmoothingTest(unittest.TestCase):
+    """잠금 표시 박스 EMA(2026-07-29) — 키포인트 떨림 노이즈 흡수."""
 
     def test_blends_toward_new_box(self):
-        from src.postprocess.person_lock import smooth_face_box
         # alpha 0.4 — 이전 (100,100,200,200)에서 새 (110,100,210,200) 쪽으로 40%만
-        smoothed = smooth_face_box((100, 100, 200, 200), (110, 100, 210, 200), alpha=0.4)
+        smoothed = smooth_box((100, 100, 200, 200), (110, 100, 210, 200), alpha=0.4)
         self.assertEqual(smoothed, (104, 100, 204, 200))
 
     def test_first_box_passes_through(self):
-        from src.postprocess.person_lock import smooth_face_box
-        self.assertEqual(smooth_face_box(None, (10, 20, 30, 40)), (10, 20, 30, 40))
-        self.assertIsNone(smooth_face_box((10, 20, 30, 40), None))
+        self.assertEqual(smooth_box(None, (10, 20, 30, 40)), (10, 20, 30, 40))
+        self.assertIsNone(smooth_box((10, 20, 30, 40), None))
+
+
+class WristBridgeTest(unittest.TestCase):
+    """손목 브리지(2026-07-29) — 손 검출 순간 탈락 시 포즈 손목으로 궤적 잇기.
+
+    mirror=False로 검증 — 사용자 왼쪽 = 모델 왼쪽 손목(9번). 어깨너비 200px.
+    """
+
+    def _locked_with_bridge(self, bridge_sec=0.5, hand_root=(500, 400)):
+        config = make_config(mirror=False)
+        config["person_lock"]["wrist_bridge_sec"] = bridge_sec
+        lock, clock = make_lock(config)
+        person = FakePerson(640, 360, left_shoulder=(540, 480), right_shoulder=(740, 480),
+                            left_wrist=(510, 390))
+        lock_person(lock, clock, person, [make_hand("left", "fist", hand_root)])
+        lock.user_swipe_points()   # 손이 보이는 프레임 — 브리지 근거(직전 손 위치) 기록
+        return lock, clock, person
+
+    def test_bridges_to_wrist_within_window(self):
+        # 손 소실 직후 — 손목 좌표가 (모양 None으로) 공급돼 스트로크가 이어진다
+        lock, clock, person = self._locked_with_bridge()
+        lock.update([person], [])                     # 주먹 회전 — 손 검출 탈락
+        shape, point = lock.user_swipe_points()["left"]
+        self.assertIsNone(shape)                      # 모양은 래치 담당 — 관측은 불명
+        self.assertEqual(point, (510.0, 390.0))       # 포즈 왼 손목
+
+    def test_bridge_expires_after_window(self):
+        lock, clock, person = self._locked_with_bridge(bridge_sec=0.5)
+        lock.update([person], [])
+        clock.tick(0.6)                               # 유예 초과
+        lock.update([person], [])
+        self.assertIsNone(lock.user_swipe_points()["left"])
+
+    def test_bridge_rejects_far_wrist(self):
+        # 직전 손이 손목에서 먼 위치였다면(어깨너비 0.8배=160px 초과) 잇지 않는다 —
+        # 다른 팔·옆 사람 손목 오귀속 방지
+        lock, clock, person = self._locked_with_bridge(hand_root=(200, 300))
+        lock.update([person], [])
+        self.assertIsNone(lock.user_swipe_points()["left"])
+
+    def test_no_bridge_without_config(self):
+        # 구 config(키 없음) — 브리지 없음: 손이 사라지면 즉시 None (종전 동작)
+        config = make_config(mirror=False)
+        lock, clock = make_lock(config)
+        person = FakePerson(640, 360, left_wrist=(510, 390))
+        lock_person(lock, clock, person, [make_hand("left", "fist", (500, 400))])
+        lock.user_swipe_points()   # 직전 손 위치 기록 — 그래도 브리지 키가 없으면 안 잇는다
+        lock.update([person], [])
+        self.assertIsNone(lock.user_swipe_points()["left"])
 
 
 class UserShoulderWidthRatioTest(unittest.TestCase):

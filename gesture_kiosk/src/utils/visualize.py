@@ -9,12 +9,14 @@ SHAPE_TAG = {"fist": "(F)", "finger": "(1)"}   # F=주먹(fist), 1=한 손가락
 
 
 def draw_person_lock(frame, person_lock):
-    """잠긴 사용자의 얼굴 박스와 손 추적점(사용자 기준 좌/우)을 그린다.
+    """잠긴 사용자의 몸 박스와 손 추적점(사용자 기준 좌/우)을 그린다.
 
+    2026-07-29 얼굴 박스 → 몸 박스: 얼굴 선명도 잠금 제거(사용자 결정)로 얼굴
+    개념이 사라졌다 — 잠금 표시는 EMA 평활된 몸 박스다.
     라벨: L/R + 손 모양 — 주먹 "(F)" / 한 손가락 "(1)" — 을 화면에서 확인할 수 있게.
     """
-    if person_lock.locked_face_box is not None:
-        x1, y1, x2, y2 = person_lock.locked_face_box
+    if person_lock.locked_box is not None:
+        x1, y1, x2, y2 = person_lock.locked_box
         cv2.rectangle(frame, (x1, y1), (x2, y2), LOCK_COLOR, 2)
         cv2.putText(
             frame, "USER LOCK", (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, LOCK_COLOR, 2

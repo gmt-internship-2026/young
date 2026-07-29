@@ -28,6 +28,9 @@ from src.utils.logger import get_logger
 logger = get_logger("postprocess")
 
 OPPOSITE_DIRECTION = {"left": "right", "right": "left", "up": "down", "down": "up"}
+# 방향 -> (좌표 축 인덱스, 전진 부호) — 첫 선 극점(꺾임 재고정) 추적용
+AXIS_SIGN_BY_DIRECTION = {"right": (0, 1.0), "left": (0, -1.0),
+                          "down": (1, 1.0), "up": (1, -1.0)}
 RAISE_TRIM_PROGRESS = 0.5   # 들어올리기 중 위 방향 진행이 이 비율을 넘으면 궤적을 비운다 —
                             # 상승 꼬리가 창에 남아 직후의 아래/좌/우 쓸기를 상쇄(지연)하는 것 방지
 
@@ -76,12 +79,19 @@ class _SwipeTracker:
         # 첫 선 방향 고정(2026-07-28 사용자 제안): 방향을 창 전체 이동량의 주축이
         # 아니라 **원점(정지 지점)을 떠나는 첫 이동 벡터**로 확정한다 — 사람마다
         # 궤적(호·갈고리·되돌림)이 달라도 시작 방향이 의도를 반영한다. 고정 해제는
-        # 정지·원점 복귀(새 원점 재장전)뿐. 발화 임계·플릭 거리는 그대로 쓰되
-        # 고정 축·부호와 일치할 때만 발화한다. 키(first_line) 없으면 종전 방식
+        # 정지·원점 복귀(새 원점 재장전)와 꺾임 재고정(아래). 발화 임계·플릭 거리는
+        # 그대로 쓰되 고정 축·부호와 일치할 때만 발화한다. 키(first_line) 없으면 종전 방식
         first_line_cfg = first_line_cfg or {}
         self._first_line_lock_dist = first_line_cfg.get("lock_dist_shoulder")
         self._first_line_still_speed = first_line_cfg.get("still_speed_shoulder", 0.5)
+        # 꺾임 재고정(2026-07-29 실기): 예비 동작(살짝 들기·당기기)이 먼저 방향을
+        # 선점하면 진짜 쓸기가 축 불일치로 전부 무시됐다(해제 조건인 정지·원점
+        # 복귀가 올 때까지 죽은 상태 — "크게 움직였는데 무반응" 체감의 원인).
+        # 고정 방향 진행이 멈춘 극점에서 이 거리 이상 다른 우세 축으로 꺾이면
+        # 극점을 새 원점 삼아 재고정한다("새 첫 선"). 키 없으면 재고정 없음(종전)
+        self._first_line_relock_dist = first_line_cfg.get("relock_dist_shoulder")
         self._first_line_origin = None    # 원점 — 마지막 정지 위치 (x_ratio, y_ratio)
+        self._first_line_far_point = None  # 고정 방향 진행 극점 — 꺾임 재고정의 기준점
         self.locked_direction = None     # 고정된 첫 선 방향 ("left"/... | None=대기)
         self._track = deque()   # (ts_sec, x_ratio, y_ratio)
         # 계기판 노출용(2026-07-16 실기 튜닝) — 부호 있는 진행도: ±1.0 도달 시 확정
@@ -162,8 +172,9 @@ class _SwipeTracker:
 
         원점 = 마지막 정지(저속) 위치. 원점에서 lock_dist를 벗어나는 순간의 변위
         벡터(우세 축·부호)로 방향을 고정한다. 해제(재장전)는 ①정지(원점을 현재
-        위치로 갱신) ②원점 근처 복귀 — 둘뿐이다. 대각 출발(우세 축 불명)은 더
-        벗어나 한 축이 우세해질 때까지 고정을 보류한다.
+        위치로 갱신) ②원점 근처 복귀 ③꺾임 재고정(_relock_on_turn — 2026-07-29
+        신설, 예비 동작 선점 구제). 대각 출발(우세 축 불명)은 더 벗어나 한 축이
+        우세해질 때까지 고정을 보류한다.
         """
         if self._first_line_origin is None:
             self._first_line_origin = (x_ratio, y_ratio)
@@ -176,6 +187,7 @@ class _SwipeTracker:
                     # 정지 — 현재 위치가 새 원점, 고정 해제(재장전)
                     self._first_line_origin = (x_ratio, y_ratio)
                     self.locked_direction = None
+                    self._first_line_far_point = None
                     return
         dx = x_ratio - self._first_line_origin[0]
         dy = y_ratio - self._first_line_origin[1]
@@ -183,13 +195,47 @@ class _SwipeTracker:
         if self.locked_direction is not None:
             if math.hypot(dx, dy) <= lock_dist:
                 self.locked_direction = None   # 원점 복귀 — 새 첫 선 대기
+                self._first_line_far_point = None
+            elif self._first_line_relock_dist is not None:
+                self._relock_on_turn(x_ratio, y_ratio, body_scale)
             return
         if math.hypot(dx, dy) < lock_dist:
             return
         if abs(dx) >= abs(dy) * self._axis_dominance:
             self.locked_direction = "right" if dx > 0 else "left"
+            self._first_line_far_point = (x_ratio, y_ratio)
         elif abs(dy) >= abs(dx) * self._axis_dominance:
             self.locked_direction = "down" if dy > 0 else "up"
+            self._first_line_far_point = (x_ratio, y_ratio)
+
+    def _relock_on_turn(self, x_ratio, y_ratio, body_scale):
+        """꺾임 재고정(2026-07-29 실기) — 예비 동작의 방향 선점을 구제한다.
+
+        고정 방향으로 나아가는 동안은 극점(far_point)만 따라간다 — 전진 중엔
+        수직 표류가 누적되지 않아 호(弧) 궤적이 오재고정되지 않는다. 전진이
+        멈춘 뒤 극점에서 relock_dist 이상 다른 우세 축으로 벗어나면 그 극점을
+        새 원점 삼아 방향을 다시 고정한다("새 첫 선" — 진짜 쓸기는 크게 움직이므로
+        구제되고, 작은 갈고리 꼬리는 relock_dist 미만이라 종전대로 무시된다).
+        """
+        point = (x_ratio, y_ratio)
+        axis_idx, sign = AXIS_SIGN_BY_DIRECTION[self.locked_direction]
+        far = self._first_line_far_point
+        if far is None or (point[axis_idx] - far[axis_idx]) * sign > 0:
+            self._first_line_far_point = point   # 고정 방향 전진 중 — 꺾임 아님
+            return
+        turn_dx = x_ratio - far[0]
+        turn_dy = y_ratio - far[1]
+        if math.hypot(turn_dx, turn_dy) < self._first_line_relock_dist * body_scale:
+            return
+        if abs(turn_dx) >= abs(turn_dy) * self._axis_dominance:
+            new_direction = "right" if turn_dx > 0 else "left"
+        elif abs(turn_dy) >= abs(turn_dx) * self._axis_dominance:
+            new_direction = "down" if turn_dy > 0 else "up"
+        else:
+            return   # 대각 꺾임 — 우세해질 때까지 기존 고정 유지
+        self._first_line_origin = far
+        self._first_line_far_point = point
+        self.locked_direction = new_direction
 
     def _fire_locked_direction(self, dx_ratio, dy_ratio, recent_dx, recent_dy):
         """고정된 첫 선 방향 축의 진행이 임계(경로 A)·플릭(경로 B)에 닿으면 발화."""
@@ -240,6 +286,7 @@ class _SwipeTracker:
         self.speed_x = 0.0
         self.speed_y = 0.0
         self._first_line_origin = None   # 새 원점은 다음 관측 위치에서 다시 시작
+        self._first_line_far_point = None
         self.locked_direction = None
 
 

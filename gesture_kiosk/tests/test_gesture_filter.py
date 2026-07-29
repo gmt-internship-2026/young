@@ -278,11 +278,12 @@ class FirstLineTest(GestureFilterTestBase):
     body_scale 0.25 기준: lock_dist 0.12×0.25=0.03, 발화 임계 1.0×0.25=0.25.
     """
 
-    def _use_first_line(self):
+    def _use_first_line(self, relock_dist_shoulder=None):
         config = make_config()
-        config["gestures"]["swipe"]["first_line"] = {
-            "lock_dist_shoulder": 0.12, "still_speed_shoulder": 0.5,
-        }
+        first_line = {"lock_dist_shoulder": 0.12, "still_speed_shoulder": 0.5}
+        if relock_dist_shoulder is not None:
+            first_line["relock_dist_shoulder"] = relock_dist_shoulder
+        config["gestures"]["swipe"]["first_line"] = first_line
         self.filter = GestureFilter(config, clock=self.clock)
 
     def test_hook_tail_does_not_override_first_direction(self):
@@ -327,6 +328,30 @@ class FirstLineTest(GestureFilterTestBase):
         event = self._feed_swipe("right", points)
         self.assertIsNotNone(event)
         self.assertEqual(event.class_name, "top")
+
+    def test_windup_lock_is_relocked_by_real_swipe(self):
+        # 꺾임 재고정(2026-07-29): 예비 동작(살짝 들기)이 up을 선점 — 종전엔
+        # 이어지는 좌 쓸기가 축 불일치로 전부 무시됐다(정지·원점 복귀 전까지 죽음
+        # — "크게 움직였는데 무반응" 체감). 극점에서 relock_dist 이상 좌로 꺾이면
+        # 극점을 새 원점 삼아 left 재고정 → 발화
+        self._use_first_line(relock_dist_shoulder=0.24)
+        points = [(0.6, 0.4)] * 4                                   # 정지 — 원점
+        points += [(0.6, 0.4 - 0.025 * i) for i in range(1, 4)]     # 살짝 들기 — up 선점
+        points += path(0.56, 0.2, 9, y_ratio=0.325)                 # 진짜 좌 쓸기
+        event = self._feed_swipe("right", points)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "left")
+
+    def test_small_hook_below_relock_dist_keeps_lock(self):
+        # 재고정 문턱(0.24×0.25=0.06) 미만의 갈고리 꼬리 — 개인 궤적 스타일:
+        # 종전대로 무시되고 첫 선(right) 고정이 유지된다 (재고정 과민 방지)
+        self._use_first_line(relock_dist_shoulder=0.24)
+        points = [(0.2, 0.4)] * 4
+        points += path(0.24, 0.36, 3, y_ratio=0.4)                  # 우 출발 — right 고정
+        points += [(0.36, 0.4 - 0.0125 * i) for i in range(1, 5)]   # 작은 갈고리(문턱 미달)
+        event = self._feed_swipe("right", points)
+        self.assertIsNone(event)
+        self.assertEqual(self.filter.debug["first_line"], "right")
 
 
 class SwipeJudgeTest(GestureFilterTestBase):

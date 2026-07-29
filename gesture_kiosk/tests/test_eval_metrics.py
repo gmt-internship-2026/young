@@ -17,19 +17,19 @@ class JudgeTrialTest(unittest.TestCase):
 
     def test_different_event_is_wrong(self):
         # 첫 이벤트 기준 — 나중에 맞는 게 와도 사용자는 이미 잘못된 화면을 봤다
-        self.assertEqual(judge_trial("back", "ok"), RESULT_WRONG)
+        self.assertEqual(judge_trial("back", "confirm"), RESULT_WRONG)
 
     def test_no_event_is_miss(self):
-        self.assertEqual(judge_trial("top", None), RESULT_MISS)
+        self.assertEqual(judge_trial("select", None), RESULT_MISS)
 
 
 class AggregateTrialsTest(unittest.TestCase):
     TRIALS = [
         ("right", "right"), ("right", "right"),   # 정답 2
-        ("back", "ok"),                           # 오인식 (back→ok)
-        ("back", "ok"),                           # 오인식 (back→ok) — 같은 쌍 2회
-        ("top", None),                            # 미인식
-        ("bottom", "bottom"),                     # 정답
+        ("back", "confirm"),                      # 오인식 (back→confirm)
+        ("back", "confirm"),                      # 오인식 (back→confirm) — 같은 쌍 2회
+        ("select", None),                         # 미인식
+        ("home", "home"),                         # 정답
     ]
 
     def test_accuracy_ratio_is_kpi_formula(self):
@@ -43,11 +43,11 @@ class AggregateTrialsTest(unittest.TestCase):
         per_event = aggregate_trials(self.TRIALS)["per_event"]
         self.assertEqual(per_event["right"]["correct_count"], 2)
         self.assertEqual(per_event["back"]["wrong_count"], 2)
-        self.assertEqual(per_event["top"]["miss_count"], 1)
+        self.assertEqual(per_event["select"]["miss_count"], 1)
 
     def test_confusions_sorted_by_frequency(self):
         confusions = aggregate_trials(self.TRIALS)["confusions"]
-        self.assertEqual(confusions[0], (("back", "ok"), 2))   # 가장 잦은 혼동이 먼저
+        self.assertEqual(confusions[0], (("back", "confirm"), 2))   # 가장 잦은 혼동이 먼저
 
     def test_empty_trials_are_zero_accuracy(self):
         summary = aggregate_trials([])
@@ -64,7 +64,7 @@ class RenderReportTest(unittest.TestCase):
         })
         self.assertIn("전체 정확도: 50.0%", report)
         self.assertIn("| right | 2 | 2 | 0 | 0 | 100% |", report)
-        self.assertIn("back → ok: 2회", report)
+        self.assertIn("back → confirm: 2회", report)
         self.assertIn("유휴 오발", report)
 
     def test_partial_session_notes_are_included(self):

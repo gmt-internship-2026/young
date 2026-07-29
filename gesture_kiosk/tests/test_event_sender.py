@@ -16,7 +16,7 @@ from src.pipeline.event_sender import (
 from src.postprocess.gesture_filter import GestureEvent
 
 
-def _event(class_name="ok", hand_side="left"):
+def _event(class_name="confirm", hand_side="left"):
     return GestureEvent(class_name=class_name, conf=1.0, ts_sec=12345.6789, hand_side=hand_side)
 
 
@@ -24,7 +24,7 @@ class PayloadFormatTest(unittest.TestCase):
     def test_text_payload_is_delphi_line(self):
         # GESTURE|이벤트|손|신뢰도|시각 + CRLF — 델파이7 Pos/Copy 파싱 규격
         self.assertEqual(
-            build_text_payload(_event()), b"GESTURE|ok|left|1.00|12345.679\r\n"
+            build_text_payload(_event()), b"GESTURE|confirm|left|1.00|12345.679\r\n"
         )
 
     def test_text_payload_without_hand_side(self):
@@ -62,10 +62,10 @@ class StdioSenderTest(unittest.TestCase):
     def test_consecutive_events_are_separate_lines(self):
         sender = StdioEventSender()
         sender.send(_event("right", "right"))
-        sender.send(_event("ok", "left"))
+        sender.send(_event("confirm", "left"))
         lines = sys.stdout.buffer.getvalue().split(b"\r\n")
         self.assertEqual(lines[0], b"GESTURE|right|right|1.00|12345.679")
-        self.assertEqual(lines[1], b"GESTURE|ok|left|1.00|12345.679")
+        self.assertEqual(lines[1], b"GESTURE|confirm|left|1.00|12345.679")
 
 
 class CreateSenderTest(unittest.TestCase):

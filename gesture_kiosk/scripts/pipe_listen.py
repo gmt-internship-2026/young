@@ -27,7 +27,7 @@ def main():
            "--config", args.config]
     print(f"[INFO] 엔진 실행: {' '.join(cmd)}")
     print("[INFO] stdout 파이프 수신 대기 — 카메라 앞에서 제스처를 해 보세요 (종료 Ctrl+C)")
-    print("[INFO] 기대 규격: GESTURE|이벤트|손|신뢰도|시각  (이벤트 = left/right/top/bottom/back/home/ok)")
+    print("[INFO] 기대 규격: GESTURE|이벤트|손|신뢰도|시각  (이벤트 = left/right/select/back/home/confirm)")
 
     # stderr는 물려받아 그대로 콘솔에 — 엔진 로그와 수신 줄이 한눈에 대조된다
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE)

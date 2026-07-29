@@ -1,7 +1,8 @@
 """gesture_filter 단위 테스트 — 카메라·모델 없이 판정 로직만 검증한다.
 
-2026-07-23 새 스펙: 손 모양(주먹/한 손가락) × 이동 방향 -> 이벤트
-(left/right/top/bottom/back/home/ok — 회사 확정 명칭).
+2026-07-29 개편 스펙: 손 모양(주먹/한 손가락) × 이동 방향 -> 이벤트
+(left/right/select/back/home/confirm — 상하(top/bottom) 제거·ok→confirm,
+아래 방향은 두 모양 다 정의 없음).
 
 실행 (프로젝트 루트에서):
     python -m unittest discover tests -v
@@ -104,7 +105,7 @@ def path(start, end, step_count, y_ratio=None, x_ratio=None):
 
 
 class FingerSwipeTest(GestureFilterTestBase):
-    """한 손가락(탐색 계층) — 좌/우/위/아래 = left/right/top/bottom (즉시 발화)."""
+    """한 손가락(탐색 계층) — 좌/우/위 = left/right/select (즉시 발화), 아래 = 정의 없음."""
 
     def test_finger_right_fires_right(self):
         event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4))
@@ -116,20 +117,20 @@ class FingerSwipeTest(GestureFilterTestBase):
         event = self._feed_swipe("left", path(0.6, 0.2, 8, y_ratio=0.4))
         self.assertEqual(event.class_name, "left")
 
-    def test_finger_up_fires_top(self):
+    def test_finger_up_fires_select(self):
+        # 2026-07-29 개편: 한 손가락+위 = select (구 top — 포커스 이동)
         event = self._feed_swipe("right", path(0.8, 0.3, 8, x_ratio=0.5))
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "top")
+        self.assertEqual(event.class_name, "select")
 
-    def test_finger_down_fires_bottom_immediately(self):
-        # 구 스펙의 아래 1회/2연속 분기·판정 창 지연은 제거됐다 — 즉시 발화
+    def test_finger_down_is_undefined(self):
+        # 2026-07-29 개편: 아래 방향은 정의 없음(구 bottom 제거) — 무시
         event = self._feed_swipe("right", path(0.3, 0.8, 8, x_ratio=0.5))
-        self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "bottom")
+        self.assertIsNone(event)
 
 
 class FistCommandTest(GestureFilterTestBase):
-    """주먹(명령 계층) — 왼쪽=back · 위=home · 오른쪽=ok · 아래=정의 없음."""
+    """주먹(명령 계층) — 왼쪽=back · 위=home · 오른쪽=confirm(구 ok) · 아래=정의 없음."""
 
     def test_fist_left_fires_back(self):
         event = self._feed_swipe("right", path(0.6, 0.2, 8, y_ratio=0.4), shape="fist")
@@ -141,10 +142,10 @@ class FistCommandTest(GestureFilterTestBase):
         self.assertIsNotNone(event)
         self.assertEqual(event.class_name, "home")
 
-    def test_fist_right_fires_ok(self):
+    def test_fist_right_fires_confirm(self):
         event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4), shape="fist")
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "ok")
+        self.assertEqual(event.class_name, "confirm")
 
     def test_fist_down_is_undefined(self):
         # 주먹+아래는 보고서 스펙에 없다 — 무시
@@ -190,16 +191,16 @@ class HandShapeLatchTest(GestureFilterTestBase):
         # 주먹↔한 손가락 전환은 손 중심 좌표가 연속 — 궤적을 리셋하지 않는다.
         # 총 이동 0.28(임계 0.25의 1.1배)이라, 3번째 프레임의 모양 전환이 궤적을
         # 리셋했다면 남은 이동(0.21)으로는 절대 확정되지 않는다 — 확정 자체가 증명.
-        # 래치 없음(프레임 추종) — 확정 시점의 판별은 fist — ok
+        # 래치 없음(프레임 추종) — 확정 시점의 판별은 fist — confirm
         shapes = ["finger"] * 2 + ["fist"] * 7
         event = self._feed_swipe("right", path(0.2, 0.48, 8, y_ratio=0.4), shapes=shapes)
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "ok")
+        self.assertEqual(event.class_name, "confirm")
 
     def test_noisy_fist_frames_do_not_hijack_finger_navigation(self):
         # 래치 핵심: 항법(한 손가락 고정) 중 주먹 오판별 4프레임 연속이 끼어도 —
         # 전환 문턱(6) 미달이라 래치가 안 풀린다: right(안전한 탐색)가 나간다.
-        # 다수결 시절 이런 노이즈가 표를 갈라 ok(실행!) 오발이 났다 (2026-07-28 실기)
+        # 다수결 시절 이런 노이즈가 표를 갈라 confirm(실행!) 오발이 났다 (2026-07-28 실기)
         self._use_latch(latch_frames=2, switch_frames=6)
         shapes = ["finger"] * 3 + ["fist"] * 4 + ["finger"] * 2
         event = self._feed_swipe("right", path(0.2, 0.55, 8, y_ratio=0.4), shapes=shapes)
@@ -208,18 +209,18 @@ class HandShapeLatchTest(GestureFilterTestBase):
 
     def test_sustained_opposite_shape_switches_latch(self):
         # 전환은 막히지 않는다 — 반대 모양이 문턱(4프레임) 이상 연속이면 전환:
-        # 한 손가락으로 탐색하다 주먹을 분명히 쥐면 명령 계층(ok)으로 넘어간다
+        # 한 손가락으로 탐색하다 주먹을 분명히 쥐면 명령 계층(confirm)으로 넘어간다
         self._use_latch(latch_frames=2, switch_frames=4)
         self._feed_swipe("right", [(0.3, 0.4)] * 4, shape="finger")   # finger 고정
         self._feed_swipe("right", [(0.3, 0.4)] * 5, shape="fist")     # 연속 5 ≥ 4 — 전환
         event = self._feed_swipe("right", path(0.3, 0.7, 8, y_ratio=0.4), shape=None)
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "ok")
+        self.assertEqual(event.class_name, "confirm")
 
     def test_freeze_ignores_shapes_during_fast_move(self):
         # 동결: 빠른 이동 중 판별(모션 블러 — 가장 부정확)은 관측에서 제외된다.
         # 전환 문턱 1(즉시 전환 설정)이어도 이동 중 fist 판별이 전부 무시돼
-        # 정지 때 고정한 finger가 유지 — right가 나간다 (동결 없으면 ok 오발)
+        # 정지 때 고정한 finger가 유지 — right가 나간다 (동결 없으면 confirm 오발)
         self._use_latch(latch_frames=1, switch_frames=1, freeze_speed=1.0)
         self._feed_swipe("right", [(0.3, 0.4)] * 3, shape="finger")   # 정지 — finger 고정
         # 이동 경로는 정지점(0.3)과 겹치지 않게 0.35부터 — 첫 점까지 전부 고속 유지
@@ -288,7 +289,7 @@ class FirstLineTest(GestureFilterTestBase):
 
     def test_hook_tail_does_not_override_first_direction(self):
         # 우로 출발(임계 미달) 후 위로 크게 꺾는 갈고리 궤적 — 종전엔 위가 주축이
-        # 되어 top 오발 소지. 첫 선이 right로 고정돼 위 이동은 무시된다(무발화)
+        # 되어 위 방향 오발 소지. 첫 선이 right로 고정돼 위 이동은 무시된다(무발화)
         self._use_first_line()
         points = [(0.2, 0.4)] * 4                                   # 정지 — 원점
         points += path(0.24, 0.38, 5, y_ratio=0.4)                  # 우 출발 — right 고정
@@ -319,7 +320,7 @@ class FirstLineTest(GestureFilterTestBase):
         self.assertEqual(event.class_name, "left")
 
     def test_still_rearm_moves_origin(self):
-        # 우로 나가다 멈추면 그 자리가 새 원점 — 이어지는 위 쓸기가 top으로
+        # 우로 나가다 멈추면 그 자리가 새 원점 — 이어지는 위 쓸기가 select로
         self._use_first_line()
         points = [(0.2, 0.4)] * 4
         points += path(0.24, 0.36, 3, y_ratio=0.4)                  # 우 출발(임계 미달)
@@ -327,7 +328,7 @@ class FirstLineTest(GestureFilterTestBase):
         points += [(0.36, 0.4 - 0.04 * i) for i in range(1, 9)]     # 위 쓸기
         event = self._feed_swipe("right", points)
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "top")
+        self.assertEqual(event.class_name, "select")
 
     def test_windup_lock_is_relocked_by_real_swipe(self):
         # 꺾임 재고정(2026-07-29): 예비 동작(살짝 들기)이 up을 선점 — 종전엔

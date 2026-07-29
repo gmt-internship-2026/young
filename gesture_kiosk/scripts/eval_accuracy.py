@@ -1,7 +1,8 @@
 """정확도 측정 세션 — 지시대로 동작하면 자동 채점해 리포트를 남긴다 (2026-07-29).
 
 KPI №5(정확도 85%) 산식 확보·튜닝 회귀 검증·cam_a/cam_b 비교의 공통 측정 도구.
-지시 창(cv2)에 동작이 큰 글씨로 표시되고(7종 × N회, 무작위 순서), 제한 시간 안에
+지시 창(cv2)에 동작이 큰 글씨로 표시되고(6종 × N회, 무작위 순서 — 2026-07-29
+top/bottom 제거·select/confirm 개편 반영), 제한 시간 안에
 나온 **첫** 이벤트로 채점한다 — 정답 / 오인식(무엇이 나갔는지) / 미인식.
 결과는 logs/eval_*.md 마크다운 리포트로 저장된다 (산식: src/utils/eval_metrics.py).
 
@@ -36,11 +37,10 @@ FEEDBACK_SEC = 1.0     # 채점 결과 표시 시간
 INSTRUCTIONS = [
     ("left", "FINGER  <--", "한 손가락 · 왼쪽"),
     ("right", "FINGER  -->", "한 손가락 · 오른쪽"),
-    ("top", "FINGER  UP", "한 손가락 · 위"),
-    ("bottom", "FINGER  DOWN", "한 손가락 · 아래"),
+    ("select", "FINGER  UP  [select]", "한 손가락 · 위 = 포커스 이동"),
     ("back", "FIST  <--   [back]", "주먹 · 왼쪽 = 이전"),
     ("home", "FIST  UP    [home]", "주먹 · 위 = 처음으로"),
-    ("ok", "FIST  -->   [ok]", "주먹 · 오른쪽 = 확인"),
+    ("confirm", "FIST  -->   [confirm]", "주먹 · 오른쪽 = 확인"),
 ]
 
 logger = get_logger("scripts")

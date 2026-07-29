@@ -1,9 +1,10 @@
 """postprocess 모듈 — 손 신호(손 모양 + 손 중심 궤적)를 동작 이벤트로 확정한다.
 
-동작 체계(2026-07-23 확정 — 「제스처 정의 보고서」 손 모양 기준 + 회사 합의 이벤트 명):
-- **한 손가락** + 좌/우/위/아래 쓸기 = left / right / top / bottom — 포커스 이동(탐색 계층)
-- **주먹** + 왼쪽 = back(이전) · 주먹 + 위 = home(처음으로) · 주먹 + 오른쪽 = ok(확인)
-- 주먹 + 아래 = 정의 없음 — 무시 (복귀 삼킴만 무장해 반동 오발을 막는다)
+동작 체계(2026-07-29 개편 — 사용자 결정: 상하 포커스(top/bottom) 제거, 위=select, ok→confirm):
+- **한 손가락** + 좌/우 쓸기 = left / right · 위 = select — 포커스 이동(탐색 계층)
+- **주먹** + 왼쪽 = back(이전) · 주먹 + 위 = home(처음으로) · 주먹 + 오른쪽 = confirm(확인)
+- 아래 방향 = 정의 없음(두 모양 공통 — 07-29 bottom 소멸) — 무시
+  (복귀 삼킴만 무장해 반동 오발을 막는다)
 
 손 모양이 계층을(탐색/명령), 이동 방향이 기능을 정한다 — 반복 횟수·화면 좌표는
 쓰지 않는다 (보고서 핵심 규칙). 방향은 이동량(경로 A)·플릭(경로 B)으로 확정하고,
@@ -12,9 +13,10 @@
 → 반대 모양이 연속 확인될 때만 전환 → 손 소실 시에만 해제. 키오스크 사용
 패턴("모양을 정하고 그 모드로 여러 번 쓸기")에 맞춘 구조다.
 
-구 스펙(위 1회=select · 아래 1회/2연속 분기)은 2026-07-23 제거 — 아래 방향
-보류·확정 지연이 함께 소멸했다. 쿨다운·반대 방향 복귀 삼킴·들어올리기 게이트
-(위 방향 = top/home 오발 방지)·소실 유예는 유지. 수치는 config (기획서 4.7).
+명칭 변천: 구 스펙(위 1회=select · 아래 1회/2연속 분기)은 07-23 제거(top/bottom/ok
+체계로) → 07-29 재개편으로 위 쓸기가 select 명칭을 되찾았다(판정은 쓸기 그대로 —
+보류·지연 없음). 쿨다운·반대 방향 복귀 삼킴·들어올리기 게이트(위 방향 =
+select/home 오발 방지)·소실 유예는 유지. 수치는 config (기획서 4.7).
 """
 import math
 import time
@@ -34,11 +36,12 @@ AXIS_SIGN_BY_DIRECTION = {"right": (0, 1.0), "left": (0, -1.0),
 RAISE_TRIM_PROGRESS = 0.5   # 들어올리기 중 위 방향 진행이 이 비율을 넘으면 궤적을 비운다 —
                             # 상승 꼬리가 창에 남아 직후의 아래/좌/우 쓸기를 상쇄(지연)하는 것 방지
 
-# 손 모양 × 이동 방향 -> 이벤트 (2026-07-23 회사 합의 명칭).
-# 주먹+아래는 의도적으로 없다 — 정의되지 않은 조합 (모듈 주석)
+# 손 모양 × 이동 방향 -> 이벤트 (2026-07-29 사용자 결정 — top/bottom 제거,
+# 위=select(포커스 이동), ok→confirm). 아래 방향은 두 모양 다 의도적으로 없다 —
+# 정의되지 않은 조합(무시 + 삼킴 무장, 모듈 주석)
 EVENT_BY_SHAPE = {
-    SHAPE_FINGER: {"left": "left", "right": "right", "up": "top", "down": "bottom"},
-    SHAPE_FIST: {"left": "back", "up": "home", "right": "ok"},
+    SHAPE_FINGER: {"left": "left", "right": "right", "up": "select"},
+    SHAPE_FIST: {"left": "back", "up": "home", "right": "confirm"},
 }
 
 
@@ -354,11 +357,11 @@ class GestureFilter:
             if point_filter.get("enabled") else None
         )
 
-        # 팔 들어올리기(예비 동작) 게이트(2026-07-20 실기): 위 방향 이벤트(top·home)를
+        # 팔 들어올리기(예비 동작) 게이트(2026-07-20 실기): 위 방향 이벤트(select·home)를
         # 하려면 먼저 팔을 올려야 하는데 그 동작 자체가 기하학적으로 위 쓸기와 같다.
         # 추적점이 **휴식 존**(어깨선 아래 어깨너비 raise_guard_below_shoulder배)에
         # 최근(raise_guard_grace_sec 안) 있었다면 위 방향을 이벤트로 치지 않는다 —
-        # 의도적 top/home은 손을 가슴께 들고 하므로 휴식 존 이력이 없다.
+        # 의도적 select/home은 손을 가슴께 들고 하므로 휴식 존 이력이 없다.
         # 키 미설정이면 게이트 없음(구 config 하위 호환)
         self._raise_guard_below_shoulder = swipe.get("raise_guard_below_shoulder")
         self._raise_guard_grace_sec = swipe.get("raise_guard_grace_sec", 0.6)
@@ -518,9 +521,10 @@ class GestureFilter:
 
         - 직전 동작의 반대 방향: 직전 획 끝을 지나온 복귀 스트로크면 삼킴
         - 위 방향 + 휴식 존 직후: 들어올리기(예비 동작) — 무시
-        - 모양 다수결: finger -> left/right/top/bottom · fist -> back/home/ok.
-          불명(표 없음·동수)·정의 없는 조합(주먹+아래)은 무시하되 삼킴은 무장한다 —
-          실제로 움직인 팔은 되돌아오므로 반동 오발을 막아야 한다
+        - 래치 모양: finger -> left/right/select · fist -> back/home/confirm.
+          불명(래치 없음)·정의 없는 조합(아래 방향 전부 — 07-29 bottom 제거)은
+          무시하되 삼킴은 무장한다 — 실제로 움직인 팔은 되돌아오므로 반동
+          오발을 막아야 한다
         """
         stroke_start = self._swipe_tracker.start_point()   # 이 획의 출발지 — 다음 복귀 판정 기준
         if (self._swallow_direction == direction
@@ -546,7 +550,7 @@ class GestureFilter:
 
         if direction == "up" and self._is_arm_raise(now_sec):
             # 팔 들어올리기(예비 동작) — 휴식 존(팔 처진 위치)에서 방금 올라온 위
-            # 방향은 top/home이 아니라 다음 동작 준비다 (2026-07-20 실기: 아래 쓸기
+            # 방향은 select/home이 아니라 다음 동작 준비다 (2026-07-20 실기: 아래 쓸기
             # 전 들어올리기가 확인으로 오발). 무시하고 궤적을 비워, 이어지는
             # 동작(아래 쓸기 등)이 올라간 위치 기준으로 새로 판정되게 한다
             self._raise_ignored_count += 1
@@ -565,7 +569,7 @@ class GestureFilter:
 
         event_name = EVENT_BY_SHAPE[shape].get(direction)
         if event_name is None:
-            # 정의 없는 조합(주먹+아래) — 보고서 스펙에 없다: 무시 + 삼킴 무장
+            # 정의 없는 조합(아래 방향 — 07-29 bottom 제거) — 스펙에 없다: 무시 + 삼킴 무장
             self._undefined_ignored_count += 1
             self._reset_stroke()
             self._set_swallow(direction, now_sec, point, stroke_start)

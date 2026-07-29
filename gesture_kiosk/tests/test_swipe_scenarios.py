@@ -1,7 +1,8 @@
 """실 config 제스처 시나리오 시뮬레이션 게이트 (작업내역서 §4.3 — 2026-07-20 영구화).
 
-2026-07-23 새 스펙 재작성: 손 모양(주먹/한 손가락) × 4방향 — 이벤트
-left/right/top/bottom/back/home/ok. 구 스펙 시나리오(아래 1회/2연속 분기)는 소멸.
+2026-07-29 개편 스펙: 손 모양(주먹/한 손가락) × 방향 — 이벤트
+left/right/select/back/home/confirm (상하(top/bottom) 제거·ok→confirm,
+아래 방향은 두 모양 다 정의 없음 = 무시).
 
 규칙(§4.3·§5): ① 좌표는 물리적으로 연속 ② 진폭은 임계의 2배쯤(플릭만 1.2배)
 ③ 동작 전 정지 프레임 공급(콜드 스타트 — 없으면 궤적 시작점이 이동 중간이 돼
@@ -112,20 +113,21 @@ class SwipeScenarioTest(unittest.TestCase):
             sim.move_by(-AMP_X, 0, 0.3)
         self._run(scenario, ["left"])
 
-    def test_03_finger_up_is_top(self):
+    def test_03_finger_up_is_select(self):
+        # 2026-07-29 개편: 한 손가락+위 = select(구 top — 포커스 이동).
         # 첫 hold 0.8초: 손 등장도 휴식 존 이력로 취급되므로(근거리 정정) 등장 직후
-        # 유예(0.6초)가 지나야 위 방향이 열린다 — 실사용에선 탐색 후 top이라 무영향
+        # 유예(0.6초)가 지나야 위 방향이 열린다 — 실사용에선 탐색 후 select라 무영향
         def scenario(sim):
             sim.hold(0.8)
             sim.move_by(0, -AMP_Y, 0.3)
-        self._run(scenario, ["top"])
+        self._run(scenario, ["select"])
 
-    def test_04_finger_down_is_bottom_immediately(self):
-        # 구 스펙의 아래 1회/2연속 분기·판정 창 지연은 제거됐다 — 즉시 발화
+    def test_04_finger_down_is_undefined(self):
+        # 2026-07-29 개편: 아래 방향 정의 없음(구 bottom 제거) — 무시 (오발 안전)
         def scenario(sim):
             sim.hold(0.5)
             sim.move_by(0, AMP_Y, 0.3)
-        self._run(scenario, ["bottom"])
+        self._run(scenario, [])
 
     # ----- 주먹(명령 계층) -----
 
@@ -136,12 +138,12 @@ class SwipeScenarioTest(unittest.TestCase):
             sim.move_by(-AMP_X, 0, 0.3)
         self._run(scenario, ["back"])
 
-    def test_06_fist_right_is_ok(self):
+    def test_06_fist_right_is_confirm(self):
         def scenario(sim):
             sim.shape = "fist"
             sim.hold(0.5)
             sim.move_by(AMP_X, 0, 0.3)
-        self._run(scenario, ["ok"])
+        self._run(scenario, ["confirm"])
 
     def test_07_fist_up_is_home(self):
         def scenario(sim):
@@ -186,7 +188,7 @@ class SwipeScenarioTest(unittest.TestCase):
             sim.shape = "finger"            # 끝부분 잠깐 판별 흔들림
             sim.move_by(AMP_X * 0.4, 0, 0.1)
             sim.hold(0.2)
-        self._run(scenario, ["ok"])
+        self._run(scenario, ["confirm"])
 
     # ----- 복귀 삼킴 · 의도적 반대 동작 -----
 
@@ -240,38 +242,39 @@ class SwipeScenarioTest(unittest.TestCase):
             sim.hold(0.4)
         self._run(scenario, ["right"])
 
-    # ----- 들어올리기 게이트 (top·home 오발 방지) -----
+    # ----- 들어올리기 게이트 (select·home 오발 방지) -----
 
-    def test_16_arm_raise_before_down_is_not_top(self):
-        # 손을 내리고 있다가 아래 쓸기를 하려면 먼저 들어올려야 하는데, 그
-        # 들어올리기가 top으로 오발되면 안 된다 — 휴식 존 이력 게이트 (2026-07-20)
+    def test_16_arm_raise_then_down_fires_nothing(self):
+        # 손을 내리고 있다가 들어올리는 동작이 select로 오발되면 안 된다 — 휴식 존
+        # 이력 게이트 (2026-07-20). 이어지는 아래 쓸기도 07-29 개편으로 정의 없음
         def scenario(sim):
             sim.position = HANG             # 손 축 처진 상태(휴식 존 안)에서 시작
             sim.hold(0.5)
-            sim.move_by(0, REST[1] - HANG[1], 0.4)   # 들어올리기 — top 금지
+            sim.move_by(0, REST[1] - HANG[1], 0.4)   # 들어올리기 — select 금지
             sim.hold(0.3)
-            sim.move_by(0, AMP_Y, 0.3)               # 의도한 아래 쓸기
-        self._run(scenario, ["bottom"])
+            sim.move_by(0, AMP_Y, 0.3)               # 아래 쓸기 — 정의 없음(무시)
+        self._run(scenario, [])
 
-    def test_17_top_after_settling_above_rest_zone(self):
-        # 들어올린 뒤 유예(0.6초)를 넘겨 자세가 안정되면 위 스냅은 정상 top
+    def test_17_select_after_settling_above_rest_zone(self):
+        # 들어올린 뒤 유예(0.6초)를 넘겨 자세가 안정되면 위 스냅은 정상 select
         def scenario(sim):
             sim.position = HANG
             sim.hold(0.5)
             sim.move_by(0, REST[1] - HANG[1], 0.4)   # 들어올리기 — 무시
             sim.hold(0.8)                            # 유예(0.6) 경과 — 손 든 채 안정
-            sim.move_by(0, -AMP_Y, 0.3)              # 위 스냅 = 의도적 top
-        self._run(scenario, ["top"])
+            sim.move_by(0, -AMP_Y, 0.3)              # 위 스냅 = 의도적 select
+        self._run(scenario, ["select"])
 
-    def test_18_raise_then_immediate_down_is_bottom(self):
-        # 들어올리기 직후 곧바로 아래 쓸기 — 상승 꼬리 트림이 없으면 꼬리가 창에
-        # 남아 아래 확정이 지연되거나 묻힌다 (2026-07-20 실증 → RAISE_TRIM)
+    def test_18_raise_then_immediate_down_fires_nothing(self):
+        # 들어올리기 직후 곧바로 아래로 내리는 동작 — 들어올리기(select 금지)도
+        # 아래(정의 없음)도 이벤트가 없어야 한다. 상승 꼬리 트림(RAISE_TRIM)은
+        # 좌/우 쓸기 지연 방지용으로 유지 (test_19가 검증)
         def scenario(sim):
             sim.position = HANG
             sim.hold(0.5)
             sim.move_by(0, REST[1] - HANG[1], 0.35)  # 들어올리기
-            sim.move_by(0, AMP_Y, 0.3)               # 쉼 없이 바로 아래 쓸기
-        self._run(scenario, ["bottom"])
+            sim.move_by(0, AMP_Y, 0.3)               # 쉼 없이 바로 아래 — 무시
+        self._run(scenario, [])
 
     def test_19_diagonal_raise_then_left_swipe(self):
         # 우측으로 호를 그리는 들어올리기 직후 좌 쓸기 — 호의 수평 꼬리가 좌 이동을
@@ -287,14 +290,14 @@ class SwipeScenarioTest(unittest.TestCase):
     def test_20_close_range_hand_appearance_then_down(self):
         # 근거리 실기 정정(2026-07-21): 내린 손은 화면 밖(휴식 존이 프레임 아래) —
         # 손이 어깨선 아래에서 "등장"해 올라오는 것 자체가 들어올리기 신호다.
-        # 등장→상승이 top으로 오발되지 않고, 이어지는 아래가 bottom이어야 한다
+        # 등장→상승이 select로 오발되지 않아야 한다 (아래는 07-29부터 정의 없음)
         def scenario(sim):
             sim.drop(0, 0, 0.6)                  # 손 부재(화면 밖 — 추적점 없음)
             sim.position = (0.5, 0.40)           # 화면 하단(존 밖·어깨선 아래)에서 등장
-            sim.move_by(0, -0.16, 0.25)          # 등장하며 올라옴 — top 금지
+            sim.move_by(0, -0.16, 0.25)          # 등장하며 올라옴 — select 금지
             sim.hold(0.2)
-            sim.move_by(0, AMP_Y, 0.3)           # 의도한 아래 쓸기
-        self._run(scenario, ["bottom"])
+            sim.move_by(0, AMP_Y, 0.3)           # 아래 — 정의 없음(무시)
+        self._run(scenario, [])
 
     def test_22_pointing_at_screen_navigates_via_memory(self):
         # v2 모양 기억(실기 사진 실증): 손가락을 세워 보인 뒤 화면을 가리키며
@@ -308,7 +311,7 @@ class SwipeScenarioTest(unittest.TestCase):
         self._run(scenario, ["right"])
 
     def test_23_pointing_without_prior_shape_is_safe(self):
-        # 처음부터 끝까지 판별 불가(기억 없음) — 오발(ok) 대신 무시가 정답
+        # 처음부터 끝까지 판별 불가(기억 없음) — 오발(confirm) 대신 무시가 정답
         def scenario(sim):
             sim.shape = None
             sim.hold(0.5)
@@ -320,7 +323,7 @@ class SwipeScenarioTest(unittest.TestCase):
         # 좌/우 라벨 플랩(2026-07-28 실기 — MediaPipe handedness가 주먹에서 불안정):
         # 왼쪽으로 쓸던 중 라벨이 좌→우로 튀어도 좌표가 연속이면 같은 손 — 궤적을
         # 이어 back이 정상 발화해야 한다. 보정 전에는 리셋으로 획이 유실되고
-        # 손을 되돌리는 반동(오른쪽)만 확정돼 ok로 오발됐다
+        # 손을 되돌리는 반동(오른쪽)만 확정돼 confirm(구 ok)으로 오발됐다
         def scenario(sim):
             sim.shape = "fist"
             sim.hold(0.5)

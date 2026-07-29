@@ -47,13 +47,17 @@ logger = get_logger("scripts")
 
 
 def read_git_branch():
-    """현재 브랜치 이름 — 리포트에 측정 대상(판)을 남긴다. 실패 시 '?'."""
+    """현재 브랜치 이름 — 리포트에 측정 대상(판)을 남긴다.
+
+    .git 없음(반출 폴더 — USB 반입 키오스크) 시 "unknown": '?'는 윈도우 파일명
+    금지 문자라 리포트 저장이 터진다 (2026-07-29 반출 검증에서 발견·수정).
+    """
     try:
         with open(os.path.join(ROOT_DIR, "..", ".git", "HEAD"), encoding="utf-8") as head_file:
             head = head_file.read().strip()
         return head.rsplit("/", 1)[-1] if head.startswith("ref:") else head[:8]
     except OSError:
-        return "?"
+        return "unknown"
 
 
 def draw_panel(main_text, sub_text, color, progress_text=""):

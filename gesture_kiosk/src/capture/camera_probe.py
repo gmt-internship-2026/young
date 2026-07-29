@@ -9,9 +9,13 @@
 전 장치 0점이라 config의 device_id를 그대로 쓴다(폴백). 설치 절차상 install/
 run 실행자는 카메라 앞에 있으므로 실사용에서 자연 충족된다.
 
-점수 = face_weight × 얼굴 감지율 + (1 - face_weight) × 손 감지율
-(감지율 = 채점 프레임 중 감지 성공 비율. score_probe_frames는 순수 함수라
-카메라 없이 단위 테스트된다 — tests/test_camera_probe.py)
+점수 = face_weight × 얼굴 감지율 + (1 - face_weight) × 손 품질 평균
+(2026-07-29 품질 채점 도입 — 실기: 손을 "보이냐"만 세면(이진) 앉은 사용자에서
+위·아래 카메라가 둘 다 만점 동점이 되고, 동점은 낮은 장치 번호가 이겨 구도
+나쁜 위 카메라가 메인이 됐다. 손 품질 = 손 크기(프레임 대비)×신뢰도로 채점해
+손이 크고 또렷하게 보이는 카메라 — 사람이 느끼는 "구도 좋은" 카메라 — 가
+이기게 한다. score_probe_frames·_hand_quality는 순수 함수라 카메라 없이
+단위 테스트된다 — tests/test_camera_probe.py)
 """
 import time
 
@@ -25,14 +29,32 @@ def score_probe_frames(face_frames, hand_frames, face_weight):
     """프레임별 감지 결과 -> 카메라 점수(0.0~1.0).
 
     face_frames: 프레임별 '얼굴 보임'(머리 키포인트 있는 사람 존재) 여부 목록.
-    hand_frames: 프레임별 '손 보임' 여부 목록 (face_frames와 같은 길이).
+    hand_frames: 프레임별 손 품질(0.0~1.0 — _hand_quality) 목록. 감지 없음 = 0.0.
+    (불리언을 넣어도 동작한다 — True=1.0. 구 이진 채점과의 호환)
     """
     if not face_frames:
         return 0.0
     face_rate = sum(1 for seen in face_frames if seen) / len(face_frames)
-    hand_rate = (sum(1 for seen in hand_frames if seen) / len(hand_frames)
-                 if hand_frames else 0.0)
+    hand_rate = (sum(hand_frames) / len(hand_frames) if hand_frames else 0.0)
     return face_weight * face_rate + (1.0 - face_weight) * hand_rate
+
+
+def _hand_quality(hands, frame_width_px, good_span_ratio):
+    """프레임의 손 품질(0.0~1.0) — 가장 좋은 손의 (크기/기준)×신뢰도.
+
+    크기 = 랜드마크 묶음의 최대 폭(px)/프레임 폭 — good_span_ratio에 도달하면
+    크기 만점. 가깝고 정면으로(크게) 보이는 손이 높은 점수를 받아, 구도 좋은
+    카메라가 이진 감지 동점을 깨고 이긴다 (2026-07-29 — 모듈 독스트링).
+    """
+    best_quality = 0.0
+    for hand in hands:
+        xs = hand.landmarks[:, 0]
+        ys = hand.landmarks[:, 1]
+        span_px = max(float(xs.max() - xs.min()), float(ys.max() - ys.min()))
+        span_ratio = span_px / frame_width_px if frame_width_px else 0.0
+        quality = min(1.0, span_ratio / good_span_ratio) * hand.conf
+        best_quality = max(best_quality, quality)
+    return best_quality
 
 
 def rank_cameras(config, pose_estimator, hand_tracker, preprocessor):
@@ -111,5 +133,6 @@ def _probe_device(config, device_id, probe_cfg,
         persons = pose_estimator.infer(frame)
         hands = hand_tracker.infer(frame)
         face_frames.append(any(person.head_points for person in persons))
-        hand_frames.append(bool(hands))
+        hand_frames.append(_hand_quality(
+            hands, frame.shape[1], probe_cfg.get("good_hand_span_ratio", 0.10)))
     return score_probe_frames(face_frames, hand_frames, probe_cfg["face_weight"]), cap

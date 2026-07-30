@@ -22,6 +22,7 @@ import time
 from src.capture.camera_probe import select_camera
 from src.capture.camera_stream import CameraStream
 from src.utils.env_report import log_environment
+from src.inference.face_detector import FaceDetector
 from src.inference.hand_tracker import HandTracker
 from src.inference.preprocessor import Preprocessor
 from src.pipeline.event_sender import create_event_sender
@@ -97,7 +98,11 @@ def run_pipeline(config):
     # A안: 모델을 먼저 만들고 손 인식 품질로 카메라를 프로브해 메인을 고른다
     # (2026-07-29 포즈 제거 — 프로브 채점도 손 품질 단독)
     preprocessor = Preprocessor(config)
-    hand_tracker = HandTracker(config)   # 유일한 추론 모델 (2026-07-29 포즈 제거)
+    hand_tracker = HandTracker(config)   # 주 추론 모델 (2026-07-29 포즈 제거)
+    # 얼굴 앵커(2026-07-30 사용자 결정): 가장 가까운 얼굴의 사람 손만 인식 —
+    # 옆 사람 손 난입 차단. config에 face_anchor 섹션이 없으면 비활성(종전)
+    face_cfg = config.get("face_anchor") or {}
+    face_detector = FaceDetector(config) if face_cfg else None
     main_device_id, main_cap = select_camera(config, hand_tracker, preprocessor)
     camera = CameraStream(config, device_id=main_device_id, cap=main_cap).start()
 
@@ -113,6 +118,9 @@ def run_pipeline(config):
         infer_fps_meter = FpsMeter()
         was_active = True   # 유휴↔활성 전환을 로그로 남기기 위한 직전 상태
         last_frame_seq = 0  # 새 프레임 동기화(2026-07-20) — 같은 프레임 중복 추론 방지
+        # 얼굴 앵커 추론은 상한 FPS로만 — 얼굴 위치는 천천히 변해 저FPS면 충분(CPU 절약)
+        last_face_infer_sec = 0.0
+        face_interval_sec = 1.0 / face_cfg.get("infer_fps", 10) if face_cfg else 0.0
         while state.is_running:
             loop_start_sec = time.monotonic()
 
@@ -120,7 +128,12 @@ def run_pipeline(config):
             input_tensor = preprocessor.preprocess_frame(frame)
 
             hands = hand_tracker.infer(input_tensor)
-            is_engaged = hand_selector.update(hands)
+            faces = None   # None = 이번 프레임 얼굴 관측 없음 — 앵커 유지(hand_select)
+            if (face_detector is not None
+                    and loop_start_sec - last_face_infer_sec >= face_interval_sec):
+                last_face_infer_sec = loop_start_sec
+                faces = face_detector.infer(input_tensor)
+            is_engaged = hand_selector.update(hands, faces)
             state.is_user_locked = is_engaged
 
             # 유휴 판정 — 손이 보이거나 최근 사용 중이면 활성 (idle_infer_fps 절감)

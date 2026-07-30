@@ -13,7 +13,15 @@ def draw_user_hands(frame, hand_selector):
 
     2026-07-29 포즈 제거: 잠금 몸 박스 대신 주 손 주변 박스(EMA 평활)를 표시한다.
     라벨: L/R + 손 모양 — 주먹 "(F)" / 한 손가락 "(1)" — 을 화면에서 확인할 수 있게.
+    2026-07-30 얼굴 앵커: 앵커 얼굴 상자("USER FACE")도 표시 — 누가 사용자로
+    잡혔는지 실기에서 바로 확인.
     """
+    if getattr(hand_selector, "anchor_face_box", None) is not None:
+        x1, y1, x2, y2 = hand_selector.anchor_face_box
+        cv2.rectangle(frame, (x1, y1), (x2, y2), LOCK_COLOR, 2)
+        cv2.putText(
+            frame, "USER FACE", (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, LOCK_COLOR, 2
+        )
     if hand_selector.locked_box is not None:
         x1, y1, x2, y2 = hand_selector.locked_box
         cv2.rectangle(frame, (x1, y1), (x2, y2), LOCK_COLOR, 2)

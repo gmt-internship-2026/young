@@ -1,7 +1,8 @@
-"""hand_select 단위 테스트 — 사용자 손 선별·거리 자 검증 (2026-07-29 포즈 제거).
+"""hand_select 단위 테스트 — 사용자 손 선별·거리 자·얼굴 앵커 검증.
 
-카메라·모델 없이 HandDetection 대역(hand_fixtures.make_hand)만으로 검증한다.
-포즈 잠금의 대체(크기+연속성 선별)와 손 실측 자(가상 어깨너비)가 검증 대상이다.
+카메라·모델 없이 HandDetection 대역(hand_fixtures.make_hand)과 FaceDetection
+대역만으로 검증한다. 포즈 잠금의 대체(크기+연속성 선별)·손 실측 자(가상
+어깨너비)·얼굴 앵커 게이트(2026-07-30 — 가장 가까운 사람 고정)가 검증 대상이다.
 """
 import os
 import sys
@@ -9,6 +10,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.inference.face_detector import FaceDetection
 from src.postprocess.hand_select import (
     STANDARD_SHOULDER_M, HandSelector, hand_span_px, hand_span_world_m,
 )
@@ -162,6 +164,76 @@ class HandScaleTest(unittest.TestCase):
         # 포즈 제거 — 어깨선 없음: 들어올리기 게이트는 하단 띠 폴백이 담당
         selector, _ = make_selector()
         self.assertIsNone(selector.shoulder_line_y_ratio())
+
+
+def make_face(center_x_px, center_y_px, width_px):
+    return FaceDetection(center_x_px=center_x_px, center_y_px=center_y_px,
+                         width_px=width_px, conf=1.0)
+
+
+class FaceAnchorTest(unittest.TestCase):
+    """얼굴 앵커(2026-07-30) — 가장 큰(가까운) 얼굴 고정 + 팔 도달 반경 게이트."""
+
+    def setUp(self):
+        config = make_config()
+        config["face_anchor"] = {
+            "reach_face_widths": 5.0,     # 얼굴 폭 100px → 반경 500px
+            "anchor_grace_sec": 1.0,
+            "switch_width_ratio": 1.3,
+        }
+        self.clock = FakeClock()
+        self.selector = HandSelector(config, FRAME_WIDTH_PX, FRAME_HEIGHT_PX,
+                                     clock=self.clock)
+
+    def test_far_hand_is_gated_out(self):
+        # 앵커 얼굴의 도달 반경(500px) 밖 손 — 옆 사람 손: 후보에서 제외
+        self.selector.update([make_hand("right", "finger", (60, 600))],
+                             faces=[make_face(640, 200, 100)])
+        self.assertIsNone(self.selector.user_swipe_points()["right"])
+
+    def test_near_hand_passes_gate(self):
+        self.selector.update([make_hand("right", "finger", (700, 400))],
+                             faces=[make_face(640, 200, 100)])
+        self.assertIsNotNone(self.selector.user_swipe_points()["right"])
+
+    def test_biggest_face_becomes_anchor(self):
+        # 큰 얼굴(가까운 사람) 기준 게이트 — 작은(뒷) 얼굴 옆 손은 제외
+        near_hand = make_hand("right", "finger", (500, 400))
+        far_hand = make_hand("left", "finger", (1150, 300))
+        self.selector.update([near_hand, far_hand],
+                             faces=[make_face(400, 200, 120), make_face(1000, 180, 50)])
+        signals = self.selector.user_swipe_points()
+        self.assertIsNotNone(signals["right"])
+        self.assertIsNone(signals["left"])
+
+    def test_passing_face_does_not_steal_anchor(self):
+        # 옆을 지나가는 사람 얼굴이 순간 더 커도(교체 문턱 1.3배 미만) 앵커 유지
+        self.selector.update([], faces=[make_face(640, 200, 100)])
+        self.selector.update([], faces=[make_face(640, 200, 100),
+                                        make_face(200, 220, 115)])
+        x1, _, x2, _ = self.selector.anchor_face_box
+        self.assertLess(abs((x1 + x2) / 2 - 640), 50)   # 원래 사용자 얼굴 유지
+
+    def test_clearly_bigger_face_takes_anchor(self):
+        # 확실히 큰(1.3배 이상 — 더 가까이 온) 얼굴은 새 사용자로 교체
+        self.selector.update([], faces=[make_face(640, 200, 100)])
+        self.selector.update([], faces=[make_face(640, 200, 100),
+                                        make_face(200, 220, 140)])
+        x1, _, x2, _ = self.selector.anchor_face_box
+        self.assertLess(abs((x1 + x2) / 2 - 200), 50)
+
+    def test_anchor_grace_then_gate_off(self):
+        # 얼굴 소실 — 유예(1초) 안엔 게이트 유지, 초과하면 해제(모든 손 통과):
+        # 얼굴 미검출로 키오스크가 먹통이 되는 것보다 방어 해제가 안전
+        far_hand = make_hand("right", "finger", (60, 600))
+        self.selector.update([far_hand], faces=[make_face(640, 200, 100)])
+        self.assertIsNone(self.selector.user_swipe_points()["right"])
+        self.clock.tick(0.5)
+        self.selector.update([far_hand], faces=[])   # 관측 실패 — 유예 안
+        self.assertIsNone(self.selector.user_swipe_points()["right"])
+        self.clock.tick(1.0)
+        self.selector.update([far_hand], faces=[])   # 유예 초과 — 게이트 해제
+        self.assertIsNotNone(self.selector.user_swipe_points()["right"])
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ models/weights/*.pt
 models/engines/*.engine
 models/**/*.onnx
 models/weights/*.task
+models/weights/*.tflite
 
 logs/*.log
 runs/

@@ -1,7 +1,8 @@
-"""모델 준비 — 손(HandLandmarker) 모델 다운로드.
+"""모델 준비 — 손(HandLandmarker)·얼굴(Face Detector) 모델 다운로드.
 
-2026-07-29 포즈 스택 제거로 내려받을 것이 hand_landmarker.task 하나뿐이다
-(mediapipe 1.0은 모델을 wheel에 담지 않는다). 내부망 반입 시에는 이 파일이
+2026-07-29 포즈 스택 제거 + 2026-07-30 얼굴 앵커 도입: 내려받을 것은
+hand_landmarker.task(8MB)와 blaze_face_short_range.tflite(0.2MB) 둘이다
+(mediapipe 1.0은 모델을 wheel에 담지 않는다). 내부망 반입 시에는 이 파일들이
 프로젝트 폴더(models/weights/)에 포함돼 있어 다운로드가 필요 없다.
 
 사용법:
@@ -23,23 +24,31 @@ HAND_MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
     "hand_landmarker/float16/1/hand_landmarker.task"
 )
+FACE_MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/face_detector/"
+    "blaze_face_short_range/float16/1/blaze_face_short_range.tflite"
+)
 
 
-def download_hand_model(config):
-    """hand_landmarker.task가 없으면 내려받는다 (있으면 그대로 둔다 — 오프라인 반입 존중)."""
-    model_path = os.path.join(ROOT_DIR, config["hand_tracker"]["model_path"])
+def download_model(model_path, model_url, korean_name, size_text):
+    """모델 파일이 없으면 내려받는다 (있으면 그대로 둔다 — 오프라인 반입 존중)."""
     if os.path.exists(model_path):
-        print(f"[INFO] 손 모델 있음 — {model_path}")
+        print(f"[INFO] {korean_name} 모델 있음 — {model_path}")
         return
     os.makedirs(os.path.dirname(model_path), exist_ok=True)
-    print("[INFO] 손 모델(MediaPipe HandLandmarker) 다운로드 — 약 8MB")
-    urllib.request.urlretrieve(HAND_MODEL_URL, model_path)
-    print(f"[DONE] 손 모델 저장 — {model_path}")
+    print(f"[INFO] {korean_name} 모델 다운로드 — 약 {size_text}")
+    urllib.request.urlretrieve(model_url, model_path)
+    print(f"[DONE] {korean_name} 모델 저장 — {model_path}")
 
 
 def main():
     config = load_config(DEFAULT_CONFIG_PATH)
-    download_hand_model(config)
+    download_model(os.path.join(ROOT_DIR, config["hand_tracker"]["model_path"]),
+                   HAND_MODEL_URL, "손(HandLandmarker)", "8MB")
+    face_cfg = config.get("face_anchor") or {}
+    if face_cfg.get("model_path"):
+        download_model(os.path.join(ROOT_DIR, face_cfg["model_path"]),
+                       FACE_MODEL_URL, "얼굴(Face Detector)", "0.2MB")
 
 
 if __name__ == "__main__":

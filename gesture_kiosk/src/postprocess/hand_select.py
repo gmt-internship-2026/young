@@ -77,6 +77,18 @@ class HandSelector:
         self._hand_min_valid_fingers = hand_cfg["min_valid_fingers"]
         self._hand_curl_confirm_ratio = hand_cfg.get("curl_confirm_ratio",
                                                      hand_cfg["extend_ratio"])
+        # 얼굴 앵커(2026-07-30 사용자 결정 — 옆 사람 손 난입·왔다갔다 재발 대응):
+        # 가장 크게 보이는(=가장 가까운) 얼굴을 사용자로 고정하고 그 얼굴의 팔 도달
+        # 반경 안 손만 후보로 남긴다. 개인 얼굴 크기 차(±15%)보다 거리 효과(사용자
+        # 0.5~1m vs 뒷사람 1.5m+ — 2~4배)가 압도적이라 "가장 큰 얼굴 = 사용자"가
+        # 성립한다. 섹션(face_anchor) 없으면 게이트 없음(종전)
+        face_cfg = config.get("face_anchor") or {}
+        self._face_reach_widths = face_cfg.get("reach_face_widths")
+        self._face_anchor_grace_sec = face_cfg.get("anchor_grace_sec", 2.0)
+        self._face_switch_ratio = face_cfg.get("switch_width_ratio", 1.3)
+        self._face_anchor = None        # (center_x, center_y, width) — EMA 평활
+        self._face_anchor_seen_sec = None
+        self.anchor_face_box = None     # 시각화용 — 앵커 얼굴 상자
         self._frame_width_px = frame_width_px
         self._frame_height_px = frame_height_px
         self._clock = clock
@@ -88,10 +100,18 @@ class HandSelector:
 
     # ----- 프레임 갱신 -----
 
-    def update(self, hands):
-        """이번 프레임의 손 목록을 반영한다. 사용 중 여부(engaged)를 돌려준다."""
-        self._hands = hands if hands is not None else []
+    def update(self, hands, faces=None):
+        """이번 프레임의 손(과 얼굴) 관측을 반영한다. 사용 중 여부(engaged)를 돌려준다.
+
+        faces: FaceDetection 목록 | None(이번 프레임 얼굴 추론 안 함 — 앵커 유지).
+        얼굴 추론은 손보다 낮은 FPS로 돌므로(realtime_loop) None 프레임이 정상이다.
+        """
         now_sec = self._clock()
+        if faces is not None:
+            self._update_face_anchor(faces, now_sec)
+        self._drop_expired_face_anchor(now_sec)
+        self._hands = self._filter_hands_by_anchor(
+            hands if hands is not None else [])
         if self._hands:
             self._last_any_hand_sec = now_sec
             self._update_display_box()
@@ -101,6 +121,84 @@ class HandSelector:
             self._selected_centers = {"left": None, "right": None}
             self.locked_box = None
         return self.is_engaged()
+
+    # ----- 얼굴 앵커 (2026-07-30 — 가장 가까운 사람 고정) -----
+
+    def _update_face_anchor(self, faces, now_sec):
+        """얼굴 관측 반영 — 가장 큰(가까운) 얼굴을 앵커로, 연속성 우선.
+
+        직전 앵커 근처의 얼굴이 있으면 유지하고, 다른 얼굴은 switch_width_ratio배
+        커야 교체 — 옆을 지나가는 사람 얼굴의 순간 우위로 앵커를 뺏기지 않는다.
+        같은 얼굴은 EMA 평활(떨림 흡수), 교체는 즉시 이동.
+        """
+        if self._face_reach_widths is None or not faces:
+            return   # 게이트 비활성 또는 관측 실패(앵커는 소실 유예가 관리)
+        chosen = max(faces, key=lambda face: face.width_px)
+        if self._face_anchor is not None:
+            anchor_x, anchor_y, anchor_width = self._face_anchor
+            continuous = [
+                face for face in faces
+                if math.dist((face.center_x_px, face.center_y_px), (anchor_x, anchor_y))
+                <= CONTINUITY_SPAN_RATIO * max(face.width_px, anchor_width)
+            ]
+            if continuous:
+                kept = max(continuous, key=lambda face: face.width_px)
+                if chosen.width_px < self._face_switch_ratio * kept.width_px:
+                    chosen = kept   # 새 얼굴이 확실히 크지 않으면 기존 사용자 유지
+        if self._face_anchor is None:
+            self._face_anchor = (chosen.center_x_px, chosen.center_y_px, chosen.width_px)
+        else:
+            anchor_x, anchor_y, anchor_width = self._face_anchor
+            is_same_face = (
+                math.dist((chosen.center_x_px, chosen.center_y_px), (anchor_x, anchor_y))
+                <= CONTINUITY_SPAN_RATIO * max(chosen.width_px, anchor_width)
+            )
+            if is_same_face:
+                alpha = BOX_SMOOTH_ALPHA
+                self._face_anchor = (
+                    anchor_x + alpha * (chosen.center_x_px - anchor_x),
+                    anchor_y + alpha * (chosen.center_y_px - anchor_y),
+                    anchor_width + alpha * (chosen.width_px - anchor_width),
+                )
+            else:
+                self._face_anchor = (chosen.center_x_px, chosen.center_y_px,
+                                     chosen.width_px)
+        self._face_anchor_seen_sec = now_sec
+        anchor_x, anchor_y, anchor_width = self._face_anchor
+        half_px = anchor_width / 2.0
+        self.anchor_face_box = (int(anchor_x - half_px), int(anchor_y - half_px),
+                                int(anchor_x + half_px), int(anchor_y + half_px))
+
+    def _drop_expired_face_anchor(self, now_sec):
+        """얼굴이 유예(anchor_grace_sec)를 넘겨 사라짐 — 게이트를 끈다(모든 손 통과).
+
+        얼굴 미검출(마스크·역광 등)로 키오스크가 먹통이 되는 것보다 방어가 잠시
+        꺼지는 쪽이 안전하다 — 종전(크기+연속성 선별) 동작으로 폴백.
+        """
+        if (self._face_anchor is not None and self._face_anchor_seen_sec is not None
+                and now_sec - self._face_anchor_seen_sec > self._face_anchor_grace_sec):
+            self._face_anchor = None
+            self._face_anchor_seen_sec = None
+            self.anchor_face_box = None
+
+    def _filter_hands_by_anchor(self, hands):
+        """앵커(가장 가까운 사람)의 팔 도달 반경 밖 손 제외 — 옆 사람 손 차단.
+
+        반경 = 앵커 얼굴 폭 × reach_face_widths (기본 5.0: 성인 얼굴 ≈ 0.15m ×
+        5 = 팔 도달 0.75m). 얼굴 폭에 비례하므로 카메라 거리와 무관하게 같은
+        실거리다 — 얼굴이 작은 사용자는 반경도 그 비율만큼 줄지만 팔 길이도
+        머리 크기와 대체로 비례해 여유(5.0)가 흡수한다.
+        """
+        if self._face_reach_widths is None or self._face_anchor is None:
+            return hands
+        anchor_x, anchor_y, anchor_width = self._face_anchor
+        reach_px = self._face_reach_widths * anchor_width
+        kept = []
+        for hand in hands:
+            center = hand_center_point(hand.landmarks)
+            if center is not None and math.dist(center, (anchor_x, anchor_y)) <= reach_px:
+                kept.append(hand)
+        return kept
 
     def is_engaged(self):
         """사용 중인가 — 손이 최근(release_sec 안) 보였는가. 유휴 전환 판단용."""

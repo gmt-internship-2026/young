@@ -323,12 +323,23 @@ class GestureFilter:
         # 팔 교체로 오인해 리셋하면 진행 중 획이 유실되고, 손을 되돌리는 반동만
         # 온전히 확정돼 반대 방향 오발이 난다 (back이 ok로 둔갑). 키 없으면 종전 동작
         self._side_flap_jump_shoulder = swipe.get("side_flap_jump_shoulder")
-        # 지시 손 고정(2026-07-29 사용자 결정 — 실기: 활성 팔이 높이 비교로
-        # 왔다갔다): 평상시엔 양손을 다 보다가, 모양이 래치된(=지시 중인) 손이
-        # 생기면 그 손만 계속 인식하고 반대 손은 후보에서 제외한다. 해제는 래치
-        # 해제(지시 손 소실 유예 초과)뿐 — 손을 바꾸려면 지시 손을 내려야 한다.
-        # 키 없으면 종전(상시 높이 비교)
-        self._is_command_hand_lock = swipe.get("command_hand_lock", False)
+        # 지시 손 고정(2026-07-29 v1 → 2026-07-30 v2 실기 정정): v1은 "지시"를
+        # 모양 래치로 판정했는데 쉬는 손도 정지 상태라 래치가 걸린다 — 쉬는 손이
+        # 먼저 활성(더 높음)이면 지시 안 하는 손에 잠금이 굳는 역효과(실기 보고).
+        # v2의 "지시" = **모양이 보이는 손의 실제 이동**(move_dist/window) — 양손의
+        # 이동을 활성 팔과 무관하게 항상 감시하다가 지시 손이 생기면 그 손만
+        # 인식하고, 반대 손·원거리 난입 손(rejoin_dist 밖 재등장 — 다른 사람)을
+        # 무시한다. 해제는 지시 손 소실 유예 초과뿐. 키 없으면 종전(높이 비교)
+        lock_cfg = swipe.get("command_hand_lock")
+        # 키가 있으면 켜짐 (빈 매핑 = 기본값 사용). false 명시만 예외적으로 끔
+        self._is_command_hand_lock = lock_cfg is not None and lock_cfg is not False
+        lock_cfg = lock_cfg if isinstance(lock_cfg, dict) else {}
+        self._command_move_dist = lock_cfg.get("move_dist_shoulder", 0.25)
+        self._command_window_sec = lock_cfg.get("window_sec", 0.5)
+        self._command_rejoin_dist = lock_cfg.get("rejoin_dist_shoulder", 1.2)
+        self._user_side = None         # 지시 손 — None이면 미지정(양손 관찰 모드)
+        self._user_last_point = None   # 지시 손 마지막 관측점 — 원거리 난입 대조
+        self._side_tracks = {"left": deque(), "right": deque()}  # 지시 판정용 (t,x,y,모양)
 
         # 손 모양 래치(2026-07-28 v3 — 다수결·모양 기억·주먹 우세 대체): 프레임별
         # 판별의 출렁임이 창 다수결을 오염시켜 계층 오발이 났다(실기 — 특히 이동 중
@@ -426,7 +437,7 @@ class GestureFilter:
         body_scale = self._update_body_scale(shoulder_width_ratio)
         if shoulder_line_y_ratio is not None:
             self._shoulder_line_y = shoulder_line_y_ratio   # 관측 없으면 마지막 값 유지
-        side, point_info = self._select_active_arm(swipe_points or {}, body_scale)
+        side, point_info = self._select_active_arm(swipe_points or {}, body_scale, now_sec)
 
         if self._is_in_cooldown(now_sec):
             # 쿨다운 중엔 궤적을 쌓지 않는다 — 다만 획이 계속 뻗는 중이면
@@ -448,16 +459,20 @@ class GestureFilter:
                 self._update_debug(body_scale, shoulder_width_ratio)
                 return None
             self._reset_stroke()   # 유예 초과 소실 — 끊긴 궤적을 이어 붙이지 않는다
-            if self._active_side is not None and self._latched_shape is not None:
+            if self._active_side is not None and (
+                    self._latched_shape is not None or self._user_side is not None):
                 if self._latch_release_sec > 0.0:
-                    # 소실 유예 시작 — 같은 쪽이 유예 안에 돌아오면 래치(모드) 승계
+                    # 소실 유예 시작 — 같은 쪽이 유예 안에 돌아오면 래치(모드) 승계.
+                    # 지시 손 고정도 같은 유예를 공유한다 (래치 없이 고정만 된 경우 포함)
                     self._latch_lost_side = self._active_side
                     self._latch_lost_sec = now_sec
                 else:
                     self._clear_shape_latch()   # 종전 — 즉시 해제
+                    self._release_user_side()
             elif (self._latch_lost_sec is not None
                     and now_sec - self._latch_lost_sec > self._latch_release_sec):
                 self._clear_shape_latch()   # 유예 만료 — 다음 손에 래치를 잇지 않는다
+                self._release_user_side()   # 지시 손도 해제 — 다음 지시 손을 새로 지정
                 self._latch_lost_side = None
                 self._latch_lost_sec = None
             self._active_side = None
@@ -746,6 +761,7 @@ class GestureFilter:
             "body_scale": round(body_scale, 3),               # 어깨너비/프레임폭 (평활 후)
             "shoulder_raw": None if shoulder_width_ratio is None else round(shoulder_width_ratio, 3),
             "active_side": self._active_side,
+            "user_side": self._user_side,                     # 지시 손 고정 상태 (None=관찰 모드)
             "hand_shape": self._active_shape,                 # 이번 프레임 원시 판별 (fist/finger/None)
             "latched_shape": self._latched_shape,             # 고정 모양 — 판정은 이것만 본다
             "latch_candidate": (                              # 전환 후보:연속 관측 수
@@ -779,7 +795,46 @@ class GestureFilter:
                 self._body_scale += self._scale_alpha * (clamped - self._body_scale)
         return self._body_scale if self._body_scale is not None else self._scale_fallback_ratio
 
-    def _select_active_arm(self, swipe_points, body_scale):
+    def _update_command_lock(self, available, now_sec, body_scale):
+        """지시 손 감지(v2 — 2026-07-30) — 모양이 보이는 손이 실제로 움직이면 고정한다.
+
+        판정 궤적(_side_tracks)은 활성 팔과 무관하게 양쪽을 항상 기록한다 —
+        쉬는 손이 활성일 때 반대 손이 지시를 시작해도 놓치지 않기 위해서다
+        (v1 역효과의 교정). 안 보이는 쪽은 궤적을 비운다: 소실 전후 점을 이으면
+        난입 손의 위치 점프가 "이동"으로 오인돼 지시로 잘못 승격된다.
+        """
+        for side, track in self._side_tracks.items():
+            info = available.get(side)
+            if info is None:
+                track.clear()
+                continue
+            track.append((now_sec, info[1][0], info[1][1], info[0]))
+            while track and now_sec - track[0][0] > self._command_window_sec:
+                track.popleft()
+        if self._user_side is not None:
+            return
+        best_side, best_travel_ratio = None, 0.0
+        min_travel_ratio = self._command_move_dist * body_scale
+        for side, track in self._side_tracks.items():
+            if len(track) < 2 or all(entry[3] is None for entry in track):
+                continue   # 정지·모양 없는 이동(블러 잔상)은 지시가 아니다
+            travel_ratio = math.dist((track[-1][1], track[-1][2]),
+                                     (track[0][1], track[0][2]))
+            if travel_ratio >= min_travel_ratio and travel_ratio > best_travel_ratio:
+                best_side, best_travel_ratio = side, travel_ratio
+        if best_side is not None:
+            self._user_side = best_side
+            self._user_last_point = (self._side_tracks[best_side][-1][1],
+                                     self._side_tracks[best_side][-1][2])
+            logger.info("지시 손 고정: %s (이동 %.2f 어깨너비)", best_side,
+                        best_travel_ratio / body_scale if body_scale else 0.0)
+
+    def _release_user_side(self):
+        """지시 손 해제 — 다음 지시 손은 모양+이동으로 다시 지정된다."""
+        self._user_side = None
+        self._user_last_point = None
+
+    def _select_active_arm(self, swipe_points, body_scale, now_sec):
         """이번 프레임의 활성 팔 1개를 고른다 -> (side, (손모양, 좌표)) 또는 (None, None).
 
         한 번에 한 팔만 인식한다 — 양팔이 다 보이면 **더 높이 든 팔**(화면 y가 작은 쪽)을
@@ -787,24 +842,32 @@ class GestureFilter:
         switch_margin_y_shoulder(어깨너비 배수) 미만이면 현재 활성 팔을 유지해
         잦은 교체(궤적 리셋)를 막는다.
 
-        지시 손 고정(2026-07-29): 모양이 래치된 손이 있으면 높이 비교 없이 그 손만 —
-        반대 손이 더 높아도 무시한다. 지시 손이 이 프레임에 없으면 같은 손의
-        재라벨(플랩)만 승계 후보로 허용하고, 다른 물리적 손은 래치가 풀릴 때까지
-        (소실 유예 초과) 없는 것으로 취급한다.
+        지시 손 고정(v2 — 2026-07-30): 모양이 보이는 손이 실제로 움직이면(지시)
+        그 손을 유저 손으로 고정 — 반대 손이 더 높아도, 먼저 잡혀 있었어도
+        지시 손이 자리를 가져간다. 고정 중엔 같은 손의 재라벨(플랩)만 승계를
+        허용하고, 반대 손과 마지막 관측점에서 먼 같은 라벨 손(다른 사람 난입)은
+        지시 손 소실 유예가 지날 때까지 없는 것으로 취급한다.
         """
         available = {s: info for s, info in swipe_points.items() if info is not None}
         if not available:
             return None, None
-        if self._is_command_hand_lock and self._latched_shape is not None:
-            locked_side = (self._active_side if self._active_side is not None
-                           else self._latch_lost_side)
-            if locked_side is not None:
-                if locked_side in available:
-                    return locked_side, available[locked_side]
+        if self._is_command_hand_lock:
+            self._update_command_lock(available, now_sec, body_scale)
+            if self._user_side is not None:
+                if self._user_side in available:
+                    point = available[self._user_side][1]
+                    if (self._user_last_point is not None
+                            and math.dist(point, self._user_last_point)
+                            > self._command_rejoin_dist * body_scale):
+                        return None, None   # 원거리 재등장(다른 사람 난입 의심) — 무시
+                    self._user_last_point = point
+                    return self._user_side, available[self._user_side]
                 other_side = next(iter(available))
                 if self._is_side_flap(swipe_points, available[other_side][1], body_scale):
-                    return other_side, available[other_side]   # 같은 손 재라벨 — 승계 경로로
-                return None, None   # 다른 물리적 손 — 지시 손이 돌아올 때까지 무시
+                    self._user_side = other_side   # 같은 손 재라벨 — 지시 손 라벨 승계
+                    self._user_last_point = available[other_side][1]
+                    return other_side, available[other_side]
+                return None, None   # 반대 손 — 지시 손이 돌아올 때까지 무시
         if len(available) == 1:
             side = next(iter(available))
             return side, available[side]

@@ -273,14 +273,15 @@ class HandShapeLatchTest(GestureFilterTestBase):
 
 
 class CommandHandLockTest(GestureFilterTestBase):
-    """지시 손 고정(2026-07-29 사용자 결정) — 래치된(지시 중인) 손이 있으면 반대 손 무시.
+    """지시 손 고정 v2(2026-07-30) — 모양 있는 손의 실제 이동이 "지시": 그 손만 인식.
 
-    실기 문제: 양손이 보일 때 활성 팔이 높이 비교로 왔다갔다 — 진행 중 획 유실.
+    v1(래치=지시)은 쉬는 손이 먼저 활성이면 그 모양이 래치돼 지시 안 하는 손에
+    고정되는 역효과(실기 보고) — v2는 이동으로 판정해 쉬는 손이 못 가져간다.
     """
 
     def _use_lock(self, shape_latch=None):
         config = make_config(shape_latch)
-        config["gestures"]["swipe"]["command_hand_lock"] = True
+        config["gestures"]["swipe"]["command_hand_lock"] = {}   # 기본값 사용
         self.filter = GestureFilter(config, clock=self.clock)
 
     def _feed_both(self, right_point, left_point):
@@ -288,14 +289,15 @@ class CommandHandLockTest(GestureFilterTestBase):
             "right": ("finger", right_point), "left": ("finger", left_point),
         })
 
-    def test_locked_hand_ignores_higher_other_hand(self):
-        # 오른손이 지시 중(래치) — 왼손이 더 높이 보여도 활성 팔을 못 뺏는다:
-        # 오른손 우 쓸기가 끊기지 않고 발화한다
+    def test_commanding_hand_takes_user_slot_from_resting_hand(self):
+        # 실기 보고(2026-07-30)의 핵심: 쉬는 왼손이 더 높아 먼저 활성으로 잡혀
+        # 있어도, 실제로 움직이며 지시하는 오른손이 유저 손이 되어야 한다
         self._use_lock()
-        self._feed_swipe("right", [(0.4, 0.45)] * 4)               # 래치(지시) 성립
+        for _ in range(6):                                  # 쉬는 왼손(높음)이 활성인 구간
+            self._feed_both((0.6, 0.45), (0.35, 0.2))
         event = None
-        for step_idx in range(1, 9):                               # 우 쓸기 + 왼손 난입
-            event = self._feed_both((0.4 + 0.04 * step_idx, 0.45), (0.3, 0.2))
+        for step_idx in range(1, 13):                       # 오른손 지시(우 쓸기) 시작
+            event = self._feed_both((0.6 + 0.03 * step_idx, 0.45), (0.35, 0.2))
             if event is not None:
                 break
         self.assertIsNotNone(event)
@@ -303,26 +305,40 @@ class CommandHandLockTest(GestureFilterTestBase):
         self.assertEqual(event.hand_side, "right")
 
     def test_without_lock_higher_hand_steals(self):
-        # 종전 동작 문서화 — 잠금 없으면 더 높은 반대 손이 활성 팔을 가져가
-        # 진행 중이던 우 쓸기가 유실된다 (실기 "왔다갔다"의 원인)
-        self._feed_swipe("right", [(0.4, 0.45)] * 4)
+        # 종전 동작 문서화 — 잠금 없으면 높은 쉬는 손이 활성 팔을 차지해
+        # 지시 손의 쓸기가 통째로 유실된다 (실기 문제의 원인)
+        for _ in range(6):
+            self._feed_both((0.6, 0.45), (0.35, 0.2))
         event = None
-        for step_idx in range(1, 9):
-            event = self._feed_both((0.4 + 0.04 * step_idx, 0.45), (0.3, 0.2))
+        for step_idx in range(1, 13):
+            event = self._feed_both((0.6 + 0.03 * step_idx, 0.45), (0.35, 0.2))
             if event is not None:
                 break
+        self.assertIsNone(event)
+
+    def test_far_same_side_hand_is_ignored_while_locked(self):
+        # 사용 도중 같은 라벨로 멀리서 등장한 손(다른 사람 난입) — 재등장 반경
+        # (rejoin_dist) 밖이라 무시된다: 난입 손의 쓸기가 이벤트를 만들지 못한다
+        self._use_lock(shape_latch={"latch_frames": 1, "switch_frames": 2,
+                                    "release_sec": 1.0})
+        self._feed_swipe("right", [(0.3, 0.4)] * 4)                  # 모양 각인(정지)
+        self._feed_swipe("right", path(0.33, 0.45, 3, y_ratio=0.4))  # 소폭 지시 — 고정
+        event = self._feed_swipe("right", path(0.72, 0.97, 8, y_ratio=0.1))  # 난입 손 쓸기
         self.assertIsNone(event)
 
     def test_lock_releases_after_loss_grace(self):
         # 지시 손이 사라지면: 유예 안엔 반대 손 무시, 유예가 지나면 정상 인수
         self._use_lock(shape_latch={"latch_frames": 1, "switch_frames": 2,
                                     "release_sec": 0.3})
-        self._feed_swipe("right", [(0.5, 0.4)] * 4)                # 오른손 래치(지시)
-        event = self._feed_swipe("left", path(0.7, 0.38, 8, y_ratio=0.3))  # 유예 안 — 무시
+        self._feed_swipe("right", [(0.3, 0.4)] * 4)                  # 모양 각인
+        event = self._feed_swipe("right", path(0.34, 0.62, 7, y_ratio=0.4))  # 지시+발화
+        self.assertIsNotNone(event)
+        self._feed(swipe_points={"right": None, "left": None}, frame_count=32)  # 쿨다운 소화
+        event = self._feed_swipe("left", path(0.7, 0.42, 7, y_ratio=0.3))  # 유예 안 — 무시
         self.assertIsNone(event)
-        self._feed(swipe_points={"right": None, "left": None}, frame_count=3)  # 유예 만료
-        self._feed_swipe("left", [(0.7, 0.3)] * 2)                 # 왼손 인수(새 래치)
-        event = self._feed_swipe("left", path(0.7, 0.38, 8, y_ratio=0.3))
+        self._feed(swipe_points={"right": None, "left": None}, frame_count=4)  # 유예 만료
+        self._feed_swipe("left", [(0.7, 0.3)] * 2)                   # 왼손 인수
+        event = self._feed_swipe("left", path(0.7, 0.42, 7, y_ratio=0.3))
         self.assertIsNotNone(event)
         self.assertEqual(event.class_name, "left")
 

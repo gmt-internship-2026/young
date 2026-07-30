@@ -132,7 +132,7 @@ def run_eval(state, reps_count, timeout_sec):
 def main():
     parser = argparse.ArgumentParser(description="gesture_kiosk 정확도 측정 세션")
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
-    parser.add_argument("--reps", type=int, default=3, help="이벤트당 시행 수 (7종 × N)")
+    parser.add_argument("--reps", type=int, default=3, help="이벤트당 시행 수 (6종 × N)")
     parser.add_argument("--timeout-sec", type=float, default=6.0, help="시행당 제한 시간")
     args = parser.parse_args()
 
@@ -142,7 +142,7 @@ def main():
     from src.pipeline.realtime_loop import run_pipeline
 
     state = run_pipeline(config)
-    logger.info("측정 세션 시작 — 지시 창을 보며 동작하세요 (7종 × %d회)", args.reps)
+    logger.info("측정 세션 시작 — 지시 창을 보며 동작하세요 (6종 × %d회)", args.reps)
     try:
         trials, stray_event_count = run_eval(state, args.reps, args.timeout_sec)
     finally:

@@ -272,6 +272,61 @@ class HandShapeLatchTest(GestureFilterTestBase):
         self.assertIsNone(event)
 
 
+class CommandHandLockTest(GestureFilterTestBase):
+    """지시 손 고정(2026-07-29 사용자 결정) — 래치된(지시 중인) 손이 있으면 반대 손 무시.
+
+    실기 문제: 양손이 보일 때 활성 팔이 높이 비교로 왔다갔다 — 진행 중 획 유실.
+    """
+
+    def _use_lock(self, shape_latch=None):
+        config = make_config(shape_latch)
+        config["gestures"]["swipe"]["command_hand_lock"] = True
+        self.filter = GestureFilter(config, clock=self.clock)
+
+    def _feed_both(self, right_point, left_point):
+        return self._feed(swipe_points={
+            "right": ("finger", right_point), "left": ("finger", left_point),
+        })
+
+    def test_locked_hand_ignores_higher_other_hand(self):
+        # 오른손이 지시 중(래치) — 왼손이 더 높이 보여도 활성 팔을 못 뺏는다:
+        # 오른손 우 쓸기가 끊기지 않고 발화한다
+        self._use_lock()
+        self._feed_swipe("right", [(0.4, 0.45)] * 4)               # 래치(지시) 성립
+        event = None
+        for step_idx in range(1, 9):                               # 우 쓸기 + 왼손 난입
+            event = self._feed_both((0.4 + 0.04 * step_idx, 0.45), (0.3, 0.2))
+            if event is not None:
+                break
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "right")
+        self.assertEqual(event.hand_side, "right")
+
+    def test_without_lock_higher_hand_steals(self):
+        # 종전 동작 문서화 — 잠금 없으면 더 높은 반대 손이 활성 팔을 가져가
+        # 진행 중이던 우 쓸기가 유실된다 (실기 "왔다갔다"의 원인)
+        self._feed_swipe("right", [(0.4, 0.45)] * 4)
+        event = None
+        for step_idx in range(1, 9):
+            event = self._feed_both((0.4 + 0.04 * step_idx, 0.45), (0.3, 0.2))
+            if event is not None:
+                break
+        self.assertIsNone(event)
+
+    def test_lock_releases_after_loss_grace(self):
+        # 지시 손이 사라지면: 유예 안엔 반대 손 무시, 유예가 지나면 정상 인수
+        self._use_lock(shape_latch={"latch_frames": 1, "switch_frames": 2,
+                                    "release_sec": 0.3})
+        self._feed_swipe("right", [(0.5, 0.4)] * 4)                # 오른손 래치(지시)
+        event = self._feed_swipe("left", path(0.7, 0.38, 8, y_ratio=0.3))  # 유예 안 — 무시
+        self.assertIsNone(event)
+        self._feed(swipe_points={"right": None, "left": None}, frame_count=3)  # 유예 만료
+        self._feed_swipe("left", [(0.7, 0.3)] * 2)                 # 왼손 인수(새 래치)
+        event = self._feed_swipe("left", path(0.7, 0.38, 8, y_ratio=0.3))
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "left")
+
+
 class FirstLineTest(GestureFilterTestBase):
     """첫 선 방향 고정(2026-07-28 사용자 제안) — 원점을 떠나는 첫 이동 벡터가 방향을 정한다.
 

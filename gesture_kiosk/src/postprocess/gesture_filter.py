@@ -323,6 +323,12 @@ class GestureFilter:
         # 팔 교체로 오인해 리셋하면 진행 중 획이 유실되고, 손을 되돌리는 반동만
         # 온전히 확정돼 반대 방향 오발이 난다 (back이 ok로 둔갑). 키 없으면 종전 동작
         self._side_flap_jump_shoulder = swipe.get("side_flap_jump_shoulder")
+        # 지시 손 고정(2026-07-29 사용자 결정 — 실기: 활성 팔이 높이 비교로
+        # 왔다갔다): 평상시엔 양손을 다 보다가, 모양이 래치된(=지시 중인) 손이
+        # 생기면 그 손만 계속 인식하고 반대 손은 후보에서 제외한다. 해제는 래치
+        # 해제(지시 손 소실 유예 초과)뿐 — 손을 바꾸려면 지시 손을 내려야 한다.
+        # 키 없으면 종전(상시 높이 비교)
+        self._is_command_hand_lock = swipe.get("command_hand_lock", False)
 
         # 손 모양 래치(2026-07-28 v3 — 다수결·모양 기억·주먹 우세 대체): 프레임별
         # 판별의 출렁임이 창 다수결을 오염시켜 계층 오발이 났다(실기 — 특히 이동 중
@@ -780,10 +786,25 @@ class GestureFilter:
         택한다: 제스처하는 팔은 들려 있고 쉬는 팔은 내려가 있다. 높이 차가
         switch_margin_y_shoulder(어깨너비 배수) 미만이면 현재 활성 팔을 유지해
         잦은 교체(궤적 리셋)를 막는다.
+
+        지시 손 고정(2026-07-29): 모양이 래치된 손이 있으면 높이 비교 없이 그 손만 —
+        반대 손이 더 높아도 무시한다. 지시 손이 이 프레임에 없으면 같은 손의
+        재라벨(플랩)만 승계 후보로 허용하고, 다른 물리적 손은 래치가 풀릴 때까지
+        (소실 유예 초과) 없는 것으로 취급한다.
         """
         available = {s: info for s, info in swipe_points.items() if info is not None}
         if not available:
             return None, None
+        if self._is_command_hand_lock and self._latched_shape is not None:
+            locked_side = (self._active_side if self._active_side is not None
+                           else self._latch_lost_side)
+            if locked_side is not None:
+                if locked_side in available:
+                    return locked_side, available[locked_side]
+                other_side = next(iter(available))
+                if self._is_side_flap(swipe_points, available[other_side][1], body_scale):
+                    return other_side, available[other_side]   # 같은 손 재라벨 — 승계 경로로
+                return None, None   # 다른 물리적 손 — 지시 손이 돌아올 때까지 무시
         if len(available) == 1:
             side = next(iter(available))
             return side, available[side]

@@ -202,6 +202,12 @@ class HandSelector:
         인식이 죽었다 — 반경 안 손이 없다는 것은 앵커가 틀렸거나 낡았다는
         신호이므로 인식을 우선한다. 옆 사람 방어는 "사용자 손(반경 안)과 옆
         사람 손(반경 밖)이 경합할 때"만 작동하면 충분하다.
+
+        ★연속 면제(2026-07-31 — 제스처 손 위치는 사람마다 천차만별): 반경은
+        **입장 심사**만 한다 — 반경 안에서 인식돼 추적 중인(직전 선택과 연속)
+        손은 밖으로 뻗어도 면제. 팔이 길거나 크게 쓸거나 화면 쪽으로 내밀어
+        (원근 확대) 반경을 벗어나도 획이 안 잘린다. 옆 사람 손은 추적 이력이
+        없어 여전히 반경 밖에서 차단된다.
         """
         if self._face_reach_widths is None or self._face_anchor is None:
             return hands
@@ -210,9 +216,21 @@ class HandSelector:
         in_reach = []
         for hand in hands:
             center = hand_center_point(hand.landmarks)
-            if center is not None and math.dist(center, (anchor_x, anchor_y)) <= reach_px:
+            if center is None:
+                continue
+            if (math.dist(center, (anchor_x, anchor_y)) <= reach_px
+                    or self._is_tracked_continuation(center, hand)):
                 in_reach.append(hand)
         return in_reach if in_reach else hands
+
+    def _is_tracked_continuation(self, center, hand):
+        """추적 중이던 손의 연장인가 — 직전 선택 중심과 연속(손 폭 N배 안)이면 참."""
+        for last_center in self._selected_centers.values():
+            if (last_center is not None
+                    and math.dist(center, last_center)
+                    <= CONTINUITY_SPAN_RATIO * hand_span_px(hand.landmarks)):
+                return True
+        return False
 
     def _relabel_sides_by_anchor(self, hands):
         """머리 기준 좌/우 재라벨(2026-07-31 사용자 제안 — 고정된 머리를 기준으로).

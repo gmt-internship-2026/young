@@ -229,6 +229,23 @@ class FaceAnchorTest(unittest.TestCase):
         x1, _, x2, _ = self.selector.anchor_face_box
         self.assertLess(abs((x1 + x2) / 2 - 200), 50)
 
+    def test_tracked_hand_exempt_beyond_reach(self):
+        # 연속 면제(2026-07-31): 반경 안에서 인식돼 추적 중인 손은 크게 뻗어
+        # 반경(500px)을 벗어나도 안 잘린다 — 반경은 입장 심사만 (제스처 손의
+        # 얼굴과의 거리는 사람마다 천차만별). 쉬는 손이 반경 안에 있어
+        # fail-open이 아닌 상태에서도 검증돼야 한다
+        face = make_face(640, 200, 100)
+        rest_hand = make_hand("left", "fist", (600, 440))     # 쉬는 손 — 반경 안 유지
+        stroke_xs = [(700, 400), (810, 440), (920, 480), (1030, 520)]  # 연속 확장
+        for stroke_x, stroke_y in stroke_xs:
+            self.selector.update(
+                [make_hand("right", "finger", (stroke_x, stroke_y)), rest_hand],
+                faces=[face])
+            signals = self.selector.user_swipe_points()       # 선별 기준점 기록
+        # 마지막 위치 (1030, 520)은 얼굴에서 반경 밖 — 추적 연속이라 면제
+        self.assertIsNotNone(signals["right"])
+        self.assertGreater(signals["right"][1][0], 950)
+
     def test_head_position_overrides_handedness_label(self):
         # 머리 기준 재라벨(2026-07-31 사용자 제안): 얼굴 중심보다 확실히 오른쪽
         # (중앙 띠 밖)에 있는 손은 모델 라벨이 "left"로 틀려도 오른손이다 —

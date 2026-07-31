@@ -185,16 +185,22 @@ class FaceAnchorTest(unittest.TestCase):
         self.selector = HandSelector(config, FRAME_WIDTH_PX, FRAME_HEIGHT_PX,
                                      clock=self.clock)
 
-    def test_far_hand_is_gated_out(self):
-        # 앵커 얼굴의 도달 반경(500px) 밖 손 — 옆 사람 손: 후보에서 제외
+    def test_far_hand_alone_passes_fail_open(self):
+        # fail-open(2026-07-31 실기 — 마스크 정확도 급락 정정): 반경 안 손이
+        # 하나도 없으면 거르지 않는다 — 낡은·엉뚱한 앵커가 사용자 손을 죽이는
+        # 것보다 인식이 우선 (옆 사람 방어는 경합이 있을 때만 작동하면 충분)
         self.selector.update([make_hand("right", "finger", (60, 600))],
                              faces=[make_face(640, 200, 100)])
-        self.assertIsNone(self.selector.user_swipe_points()["right"])
-
-    def test_near_hand_passes_gate(self):
-        self.selector.update([make_hand("right", "finger", (700, 400))],
-                             faces=[make_face(640, 200, 100)])
         self.assertIsNotNone(self.selector.user_swipe_points()["right"])
+
+    def test_far_hand_filtered_when_near_hand_exists(self):
+        # 반경 안 손(사용자)과 반경 밖 손(옆 사람)이 경합 — 밖 손만 제외
+        self.selector.update([make_hand("right", "finger", (700, 400)),
+                              make_hand("left", "finger", (60, 600))],
+                             faces=[make_face(640, 200, 100)])
+        signals = self.selector.user_swipe_points()
+        self.assertIsNotNone(signals["right"])
+        self.assertIsNone(signals["left"])
 
     def test_biggest_face_becomes_anchor(self):
         # 큰 얼굴(가까운 사람) 기준 게이트 — 작은(뒷) 얼굴 옆 손은 제외
@@ -223,17 +229,18 @@ class FaceAnchorTest(unittest.TestCase):
         self.assertLess(abs((x1 + x2) / 2 - 200), 50)
 
     def test_anchor_grace_then_gate_off(self):
-        # 얼굴 소실 — 유예(1초) 안엔 게이트 유지, 초과하면 해제(모든 손 통과):
-        # 얼굴 미검출로 키오스크가 먹통이 되는 것보다 방어 해제가 안전
-        far_hand = make_hand("right", "finger", (60, 600))
-        self.selector.update([far_hand], faces=[make_face(640, 200, 100)])
-        self.assertIsNone(self.selector.user_swipe_points()["right"])
+        # 얼굴 소실 — 유예(1초) 안엔 게이트 유지(경합 시 밖 손 제외), 초과하면
+        # 해제(모든 손 통과): 얼굴 미검출로 방어가 인식을 해치지 않게
+        near_hand = make_hand("right", "finger", (700, 400))
+        far_hand = make_hand("left", "finger", (60, 600))
+        self.selector.update([near_hand, far_hand], faces=[make_face(640, 200, 100)])
+        self.assertIsNone(self.selector.user_swipe_points()["left"])
         self.clock.tick(0.5)
-        self.selector.update([far_hand], faces=[])   # 관측 실패 — 유예 안
-        self.assertIsNone(self.selector.user_swipe_points()["right"])
+        self.selector.update([near_hand, far_hand], faces=[])   # 관측 실패 — 유예 안
+        self.assertIsNone(self.selector.user_swipe_points()["left"])
         self.clock.tick(1.0)
-        self.selector.update([far_hand], faces=[])   # 유예 초과 — 게이트 해제
-        self.assertIsNotNone(self.selector.user_swipe_points()["right"])
+        self.selector.update([near_hand, far_hand], faces=[])   # 유예 초과 — 게이트 해제
+        self.assertIsNotNone(self.selector.user_swipe_points()["left"])
 
 
 if __name__ == "__main__":

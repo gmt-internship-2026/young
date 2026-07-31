@@ -188,17 +188,24 @@ class HandSelector:
         5 = 팔 도달 0.75m). 얼굴 폭에 비례하므로 카메라 거리와 무관하게 같은
         실거리다 — 얼굴이 작은 사용자는 반경도 그 비율만큼 줄지만 팔 길이도
         머리 크기와 대체로 비례해 여유(5.0)가 흡수한다.
+
+        ★fail-open(2026-07-31 실기 정정 — 마스크 착용자 정확도 급락): 반경 안에
+        손이 **하나도 없으면 거르지 않고 전부 통과**시킨다. 경성 필터였을 땐
+        마스크로 얼굴이 안 잡히는 동안 낡은·엉뚱한 앵커가 사용자 손까지 걸러
+        인식이 죽었다 — 반경 안 손이 없다는 것은 앵커가 틀렸거나 낡았다는
+        신호이므로 인식을 우선한다. 옆 사람 방어는 "사용자 손(반경 안)과 옆
+        사람 손(반경 밖)이 경합할 때"만 작동하면 충분하다.
         """
         if self._face_reach_widths is None or self._face_anchor is None:
             return hands
         anchor_x, anchor_y, anchor_width = self._face_anchor
         reach_px = self._face_reach_widths * anchor_width
-        kept = []
+        in_reach = []
         for hand in hands:
             center = hand_center_point(hand.landmarks)
             if center is not None and math.dist(center, (anchor_x, anchor_y)) <= reach_px:
-                kept.append(hand)
-        return kept
+                in_reach.append(hand)
+        return in_reach if in_reach else hands
 
     def is_engaged(self):
         """사용 중인가 — 손이 최근(release_sec 안) 보였는가. 유휴 전환 판단용."""

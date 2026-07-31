@@ -88,7 +88,6 @@ class HandSelector:
         face_cfg = config.get("face_anchor") or {}
         self._face_reach_widths = face_cfg.get("reach_face_widths")
         self._face_anchor_grace_sec = face_cfg.get("anchor_grace_sec", 2.0)
-        self._face_switch_ratio = face_cfg.get("switch_width_ratio", 1.3)
         # 머리 기준 좌/우 재라벨(2026-07-31 사용자 제안)의 거울 방향 — 거울 프레임
         # 에서는 얼굴 중심보다 x가 큰 손이 사용자 오른손이다 (배포 기본 mirror=true)
         self._is_mirror = (config.get("camera") or {}).get("mirror", True)
@@ -113,9 +112,11 @@ class HandSelector:
         얼굴 추론은 손보다 낮은 FPS로 돌므로(realtime_loop) None 프레임이 정상이다.
         """
         now_sec = self._clock()
+        # 만료 확인을 관측 반영보다 먼저 — 유예가 끝난 그 프레임에서 새 얼굴이
+        # 바로 앵커를 인수할 수 있다 (sticky: 산 앵커는 비연속 얼굴을 무시하므로)
+        self._drop_expired_face_anchor(now_sec)
         if faces is not None:
             self._update_face_anchor(faces, now_sec)
-        self._drop_expired_face_anchor(now_sec)
         self._hands = self._filter_hands_by_anchor(
             hands if hands is not None else [])
         self._relabel_sides_by_anchor(self._hands)
@@ -132,44 +133,37 @@ class HandSelector:
     # ----- 얼굴 앵커 (2026-07-30 — 가장 가까운 사람 고정) -----
 
     def _update_face_anchor(self, faces, now_sec):
-        """얼굴 관측 반영 — 가장 큰(가까운) 얼굴을 앵커로, 연속성 우선.
+        """얼굴 관측 반영 — 앵커는 끈끈하다(sticky): 잡히면 그 사람만 따라간다.
 
-        직전 앵커 근처의 얼굴이 있으면 유지하고, 다른 얼굴은 switch_width_ratio배
-        커야 교체 — 옆을 지나가는 사람 얼굴의 순간 우위로 앵커를 뺏기지 않는다.
-        같은 얼굴은 EMA 평활(떨림 흡수), 교체는 즉시 이동.
+        2026-07-31 실기 정정(사용자 보고 — 인식 더 잘되는 얼굴로 앵커가 옮겨감):
+        구 로직은 ①다른 얼굴이 1.3배 크면 교체 허용 ②앵커 얼굴이 한 프레임
+        안 잡히면 그 순간 잡힌 다른 얼굴로 즉시 점프(문턱 미적용) — 두 경로
+        모두 삭제. 앵커가 살아 있는 동안 비연속 얼굴은 크기와 무관하게 무시하고,
+        교체는 앵커가 유예(anchor_grace_sec)를 넘겨 풀린 뒤(사용자가 떠난 뒤)
+        가장 큰 얼굴로만 일어난다. 같은 얼굴은 EMA 평활(떨림 흡수).
         """
         if self._face_reach_widths is None or not faces:
             return   # 게이트 비활성 또는 관측 실패(앵커는 소실 유예가 관리)
-        chosen = max(faces, key=lambda face: face.width_px)
-        if self._face_anchor is not None:
+        if self._face_anchor is None:
+            chosen = max(faces, key=lambda face: face.width_px)
+            self._face_anchor = (chosen.center_x_px, chosen.center_y_px, chosen.width_px)
+        else:
             anchor_x, anchor_y, anchor_width = self._face_anchor
             continuous = [
                 face for face in faces
                 if math.dist((face.center_x_px, face.center_y_px), (anchor_x, anchor_y))
                 <= CONTINUITY_SPAN_RATIO * max(face.width_px, anchor_width)
             ]
-            if continuous:
-                kept = max(continuous, key=lambda face: face.width_px)
-                if chosen.width_px < self._face_switch_ratio * kept.width_px:
-                    chosen = kept   # 새 얼굴이 확실히 크지 않으면 기존 사용자 유지
-        if self._face_anchor is None:
-            self._face_anchor = (chosen.center_x_px, chosen.center_y_px, chosen.width_px)
-        else:
-            anchor_x, anchor_y, anchor_width = self._face_anchor
-            is_same_face = (
-                math.dist((chosen.center_x_px, chosen.center_y_px), (anchor_x, anchor_y))
-                <= CONTINUITY_SPAN_RATIO * max(chosen.width_px, anchor_width)
+            if not continuous:
+                return   # 앵커 얼굴이 이번 관측에 없음 — 다른 얼굴로 옮기지 않는다
+                         # (seen_sec 미갱신 — 사용자가 정말 떠났으면 유예가 앵커를 푼다)
+            chosen = max(continuous, key=lambda face: face.width_px)
+            alpha = BOX_SMOOTH_ALPHA
+            self._face_anchor = (
+                anchor_x + alpha * (chosen.center_x_px - anchor_x),
+                anchor_y + alpha * (chosen.center_y_px - anchor_y),
+                anchor_width + alpha * (chosen.width_px - anchor_width),
             )
-            if is_same_face:
-                alpha = BOX_SMOOTH_ALPHA
-                self._face_anchor = (
-                    anchor_x + alpha * (chosen.center_x_px - anchor_x),
-                    anchor_y + alpha * (chosen.center_y_px - anchor_y),
-                    anchor_width + alpha * (chosen.width_px - anchor_width),
-                )
-            else:
-                self._face_anchor = (chosen.center_x_px, chosen.center_y_px,
-                                     chosen.width_px)
         self._face_anchor_seen_sec = now_sec
         anchor_x, anchor_y, anchor_width = self._face_anchor
         half_px = anchor_width / 2.0

@@ -179,7 +179,6 @@ class FaceAnchorTest(unittest.TestCase):
         config["face_anchor"] = {
             "reach_face_widths": 5.0,     # 얼굴 폭 100px → 반경 500px
             "anchor_grace_sec": 1.0,
-            "switch_width_ratio": 1.3,
         }
         self.clock = FakeClock()
         self.selector = HandSelector(config, FRAME_WIDTH_PX, FRAME_HEIGHT_PX,
@@ -213,19 +212,28 @@ class FaceAnchorTest(unittest.TestCase):
         self.assertIsNotNone(signals["right"])
         self.assertIsNone(signals["left"])
 
-    def test_passing_face_does_not_steal_anchor(self):
-        # 옆을 지나가는 사람 얼굴이 순간 더 커도(교체 문턱 1.3배 미만) 앵커 유지
-        self.selector.update([], faces=[make_face(640, 200, 100)])
-        self.selector.update([], faces=[make_face(640, 200, 100),
-                                        make_face(200, 220, 115)])
-        x1, _, x2, _ = self.selector.anchor_face_box
-        self.assertLess(abs((x1 + x2) / 2 - 640), 50)   # 원래 사용자 얼굴 유지
-
-    def test_clearly_bigger_face_takes_anchor(self):
-        # 확실히 큰(1.3배 이상 — 더 가까이 온) 얼굴은 새 사용자로 교체
+    def test_bigger_face_cannot_steal_live_anchor(self):
+        # sticky(2026-07-31 실기 정정 — 인식 잘되는 얼굴로 앵커가 옮겨감): 앵커가
+        # 살아 있는 동안 다른 얼굴은 크기와 무관하게 무시 — 훨씬 커도 못 뺏는다
         self.selector.update([], faces=[make_face(640, 200, 100)])
         self.selector.update([], faces=[make_face(640, 200, 100),
                                         make_face(200, 220, 140)])
+        x1, _, x2, _ = self.selector.anchor_face_box
+        self.assertLess(abs((x1 + x2) / 2 - 640), 50)   # 원래 사용자 얼굴 유지
+
+    def test_other_face_alone_does_not_hijack_anchor(self):
+        # 앵커 얼굴이 한 프레임 안 잡히고 다른 얼굴만 잡혀도 — 즉시 점프 금지
+        # (구 로직의 구멍: 이 순간 문턱 없이 옮겨가던 것이 실기 "옮겨감"의 정체)
+        self.selector.update([], faces=[make_face(640, 200, 100)])
+        self.selector.update([], faces=[make_face(200, 220, 140)])   # 앵커 얼굴 미관측
+        x1, _, x2, _ = self.selector.anchor_face_box
+        self.assertLess(abs((x1 + x2) / 2 - 640), 50)   # 앵커 그대로 (유예가 수명 관리)
+
+    def test_new_face_anchors_after_grace_expiry(self):
+        # 교체는 사용자가 떠나 유예(1초)가 앵커를 푼 뒤에만 — 다음 사용자 정상 인수
+        self.selector.update([], faces=[make_face(640, 200, 100)])
+        self.clock.tick(1.5)
+        self.selector.update([], faces=[make_face(200, 220, 90)])    # 유예 만료 후 새 얼굴
         x1, _, x2, _ = self.selector.anchor_face_box
         self.assertLess(abs((x1 + x2) / 2 - 200), 50)
 

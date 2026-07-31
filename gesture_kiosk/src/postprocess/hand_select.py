@@ -34,6 +34,9 @@ STANDARD_SHOULDER_M = 0.4     # 가상 어깨 자 환산용 표준 어깨너비 
                               #   배수) 체계를 숫자 그대로 유지하기 위한 고정 상수
 SWITCH_SPAN_RATIO = 1.3       # 선별 교체 문턱 — 경쟁 손이 현재 선택보다 이 배수 이상
                               #   커야 교체 (옆 사람 손의 순간 우위로 뺏기지 않게)
+SIDE_RELABEL_MARGIN_FACE_WIDTHS = 0.5   # 머리 기준 좌/우 재라벨의 중앙 모호 띠 —
+                              #   얼굴 중심 ±이 폭 안의 손은 위치로 단정하지 않고
+                              #   모델 라벨 유지 (획이 중앙을 스칠 때 경계 진동 방지)
 CONTINUITY_SPAN_RATIO = 1.5   # 연속 판정 반경 — 직전 선택 중심에서 손 폭의 N배 안이면
                               #   같은 손 (프레임 간 이동보다 넉넉, 옆 사람 손보다 좁게)
 BOX_SMOOTH_ALPHA = 0.4        # 표시 박스 EMA — 랜드마크 떨림 노이즈 저감 (1.0=평활 없음)
@@ -86,6 +89,9 @@ class HandSelector:
         self._face_reach_widths = face_cfg.get("reach_face_widths")
         self._face_anchor_grace_sec = face_cfg.get("anchor_grace_sec", 2.0)
         self._face_switch_ratio = face_cfg.get("switch_width_ratio", 1.3)
+        # 머리 기준 좌/우 재라벨(2026-07-31 사용자 제안)의 거울 방향 — 거울 프레임
+        # 에서는 얼굴 중심보다 x가 큰 손이 사용자 오른손이다 (배포 기본 mirror=true)
+        self._is_mirror = (config.get("camera") or {}).get("mirror", True)
         self._face_anchor = None        # (center_x, center_y, width) — EMA 평활
         self._face_anchor_seen_sec = None
         self.anchor_face_box = None     # 시각화용 — 앵커 얼굴 상자
@@ -112,6 +118,7 @@ class HandSelector:
         self._drop_expired_face_anchor(now_sec)
         self._hands = self._filter_hands_by_anchor(
             hands if hands is not None else [])
+        self._relabel_sides_by_anchor(self._hands)
         if self._hands:
             self._last_any_hand_sec = now_sec
             self._update_display_box()
@@ -206,6 +213,33 @@ class HandSelector:
             if center is not None and math.dist(center, (anchor_x, anchor_y)) <= reach_px:
                 in_reach.append(hand)
         return in_reach if in_reach else hands
+
+    def _relabel_sides_by_anchor(self, hands):
+        """머리 기준 좌/우 재라벨(2026-07-31 사용자 제안 — 고정된 머리를 기준으로).
+
+        MediaPipe handedness는 주먹에서 불안정해 같은 손의 라벨이 좌↔우로
+        왔다갔다 한다(실기 — 손만 보고 정하는 라벨의 한계). 앵커 얼굴이 있으면
+        좌/우를 **머리 기준 위치**로 정한다: 거울 프레임에서 얼굴 중심보다
+        오른쪽(x 큼)에 있는 손 = 사용자 오른손. 위치는 라벨과 달리 프레임
+        사이에 튀지 않아 왔다갔다가 구조적으로 사라진다.
+
+        얼굴 중심 ±0.5 얼굴폭의 중앙 띠는 모호 — 모델 라벨을 유지한다(획이
+        중앙을 스칠 때 경계 진동 방지). 획이 중앙을 크게 넘어가면 라벨이 1회
+        바뀌는데, 그 교체는 gesture_filter의 라벨 플랩 보정(좌표 연속 확인)이
+        궤적을 잇는다. 앵커 없으면(마스크 등) 종전 라벨 그대로.
+        """
+        if self._face_anchor is None:
+            return
+        anchor_x, _, anchor_width = self._face_anchor
+        margin_px = SIDE_RELABEL_MARGIN_FACE_WIDTHS * anchor_width
+        for hand in hands:
+            center = hand_center_point(hand.landmarks)
+            if center is None:
+                continue
+            offset_px = center[0] - anchor_x
+            if abs(offset_px) <= margin_px:
+                continue   # 중앙 모호 띠 — 모델 라벨 유지
+            hand.user_side = ("right" if (offset_px > 0) == self._is_mirror else "left")
 
     def is_engaged(self):
         """사용 중인가 — 손이 최근(release_sec 안) 보였는가. 유휴 전환 판단용."""

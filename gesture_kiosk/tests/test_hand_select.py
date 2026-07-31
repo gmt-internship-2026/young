@@ -188,8 +188,9 @@ class FaceAnchorTest(unittest.TestCase):
     def test_far_hand_alone_passes_fail_open(self):
         # fail-open(2026-07-31 실기 — 마스크 정확도 급락 정정): 반경 안 손이
         # 하나도 없으면 거르지 않는다 — 낡은·엉뚱한 앵커가 사용자 손을 죽이는
-        # 것보다 인식이 우선 (옆 사람 방어는 경합이 있을 때만 작동하면 충분)
-        self.selector.update([make_hand("right", "finger", (60, 600))],
+        # 것보다 인식이 우선 (옆 사람 방어는 경합이 있을 때만 작동하면 충분).
+        # 좌표는 얼굴 오른편 — 머리 기준 재라벨과 모델 라벨이 일치하는 자리
+        self.selector.update([make_hand("right", "finger", (1200, 600))],
                              faces=[make_face(640, 200, 100)])
         self.assertIsNotNone(self.selector.user_swipe_points()["right"])
 
@@ -227,6 +228,28 @@ class FaceAnchorTest(unittest.TestCase):
                                         make_face(200, 220, 140)])
         x1, _, x2, _ = self.selector.anchor_face_box
         self.assertLess(abs((x1 + x2) / 2 - 200), 50)
+
+    def test_head_position_overrides_handedness_label(self):
+        # 머리 기준 재라벨(2026-07-31 사용자 제안): 얼굴 중심보다 확실히 오른쪽
+        # (중앙 띠 밖)에 있는 손은 모델 라벨이 "left"로 틀려도 오른손이다 —
+        # handedness 왔다갔다(주먹 불안정)가 위치 기준으로 구조 제거된다
+        self.selector.update([make_hand("left", "finger", (900, 400))],
+                             faces=[make_face(640, 200, 100)])
+        signals = self.selector.user_swipe_points()
+        self.assertIsNotNone(signals["right"])
+        self.assertIsNone(signals["left"])
+
+    def test_central_band_keeps_model_label(self):
+        # 얼굴 중심 ±0.5 얼굴폭(50px)의 모호 띠 — 위치로 단정하지 않고 모델
+        # 라벨 유지 (획이 중앙을 스칠 때 경계 진동 방지)
+        self.selector.update([make_hand("left", "finger", (660, 400))],
+                             faces=[make_face(640, 200, 100)])
+        self.assertIsNotNone(self.selector.user_swipe_points()["left"])
+
+    def test_no_anchor_keeps_model_label(self):
+        # 앵커 없음(마스크 등 얼굴 미검출) — 종전대로 모델 라벨 신뢰
+        self.selector.update([make_hand("left", "finger", (900, 400))])
+        self.assertIsNotNone(self.selector.user_swipe_points()["left"])
 
     def test_anchor_grace_then_gate_off(self):
         # 얼굴 소실 — 유예(1초) 안엔 게이트 유지(경합 시 밖 손 제외), 초과하면

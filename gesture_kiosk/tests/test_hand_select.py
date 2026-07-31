@@ -184,14 +184,30 @@ class FaceAnchorTest(unittest.TestCase):
         self.selector = HandSelector(config, FRAME_WIDTH_PX, FRAME_HEIGHT_PX,
                                      clock=self.clock)
 
-    def test_far_hand_alone_passes_fail_open(self):
-        # fail-open(2026-07-31 실기 — 마스크 정확도 급락 정정): 반경 안 손이
-        # 하나도 없으면 거르지 않는다 — 낡은·엉뚱한 앵커가 사용자 손을 죽이는
-        # 것보다 인식이 우선 (옆 사람 방어는 경합이 있을 때만 작동하면 충분).
-        # 좌표는 얼굴 오른편 — 머리 기준 재라벨과 모델 라벨이 일치하는 자리
+    def test_far_new_hand_blocked_while_anchor_alive(self):
+        # 경성 게이트(2026-07-31 2차 — 실기: 내린 손 자리에 옆 사람 손이 잡힘):
+        # 앵커가 살아 있으면(사용자 얼굴 관측 중) 반경 밖의 새 손은 사용자 손이
+        # 하나도 안 들려 있어도 차단된다 — 옆 사람 손이 통과되던 구멍 봉쇄
         self.selector.update([make_hand("right", "finger", (1200, 600))],
                              faces=[make_face(640, 200, 100)])
-        self.assertIsNotNone(self.selector.user_swipe_points()["right"])
+        self.assertIsNone(self.selector.user_swipe_points()["right"])
+
+    def test_stale_exemption_not_inherited_by_new_hand(self):
+        # 면제 신선도(2026-07-31 2차): 반경 밖으로 뻗었던 손을 내리고 0.5초가
+        # 지나면 그 자리의 기준점은 만료 — 거기 나타난 새 손(옆 사람)은 면제를
+        # 승계하지 못하고 차단된다
+        face = make_face(640, 200, 100)
+        rest_hand = make_hand("left", "fist", (600, 440))
+        for stroke_x, stroke_y in [(700, 400), (790, 435), (880, 470), (970, 505),
+                                   (1060, 540), (1150, 575)]:
+            self.selector.update(
+                [make_hand("right", "finger", (stroke_x, stroke_y)), rest_hand],
+                faces=[face])
+            self.selector.user_swipe_points()          # 기준점 기록 (반경 밖 면제 상태)
+        self.clock.tick(0.7)                           # 손 내림 — 신선도(0.5초) 만료
+        self.selector.update(
+            [make_hand("right", "finger", (1150, 575)), rest_hand], faces=[face])
+        self.assertIsNone(self.selector.user_swipe_points()["right"])
 
     def test_far_hand_filtered_when_near_hand_exists(self):
         # 반경 안 손(사용자)과 반경 밖 손(옆 사람)이 경합 — 밖 손만 제외
@@ -244,15 +260,16 @@ class FaceAnchorTest(unittest.TestCase):
         # fail-open이 아닌 상태에서도 검증돼야 한다
         face = make_face(640, 200, 100)
         rest_hand = make_hand("left", "fist", (600, 440))     # 쉬는 손 — 반경 안 유지
-        stroke_xs = [(700, 400), (810, 440), (920, 480), (1030, 520)]  # 연속 확장
-        for stroke_x, stroke_y in stroke_xs:
+        stroke_points = [(700, 400), (790, 435), (880, 470), (970, 505),
+                         (1060, 540), (1150, 575)]            # 연속 확장 — 끝은 반경 밖
+        for stroke_x, stroke_y in stroke_points:
             self.selector.update(
                 [make_hand("right", "finger", (stroke_x, stroke_y)), rest_hand],
                 faces=[face])
             signals = self.selector.user_swipe_points()       # 선별 기준점 기록
-        # 마지막 위치 (1030, 520)은 얼굴에서 반경 밖 — 추적 연속이라 면제
+        # 마지막 위치는 얼굴에서 반경(500px) 밖 — 추적 연속이라 면제
         self.assertIsNotNone(signals["right"])
-        self.assertGreater(signals["right"][1][0], 950)
+        self.assertGreater(signals["right"][1][0], 1100)
 
     def test_head_position_overrides_handedness_label(self):
         # 머리 기준 재라벨(2026-07-31 사용자 제안): 얼굴 중심보다 확실히 오른쪽

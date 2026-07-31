@@ -37,6 +37,9 @@ SWITCH_SPAN_RATIO = 1.3       # 선별 교체 문턱 — 경쟁 손이 현재 �
 SIDE_RELABEL_MARGIN_FACE_WIDTHS = 0.5   # 머리 기준 좌/우 재라벨의 중앙 모호 띠 —
                               #   얼굴 중심 ±이 폭 안의 손은 위치로 단정하지 않고
                               #   모델 라벨 유지 (획이 중앙을 스칠 때 경계 진동 방지)
+EXEMPT_FRESH_SEC = 0.5        # 반경 면제의 신선도 — 직전 선택이 이 시간 안일 때만
+                              #   추적 연속으로 인정 (모션 블러 소실 0.35초는 덮고,
+                              #   내린 손 자리에 나타난 옆 사람 손의 면제 승계는 차단)
 CONTINUITY_SPAN_RATIO = 1.5   # 연속 판정 반경 — 직전 선택 중심에서 손 폭의 N배 안이면
                               #   같은 손 (프레임 간 이동보다 넉넉, 옆 사람 손보다 좁게)
 BOX_SMOOTH_ALPHA = 0.4        # 표시 박스 EMA — 랜드마크 떨림 노이즈 저감 (1.0=평활 없음)
@@ -100,6 +103,8 @@ class HandSelector:
 
         self._hands = []                # 이번 프레임 HandDetection 목록
         self._selected_centers = {"left": None, "right": None}   # 연속성 기준점
+        self._selected_center_secs = {"left": None, "right": None}  # 기준점 기록 시각 —
+                                        # 반경 면제 신선도(EXEMPT_FRESH_SEC) 판정용
         self._last_any_hand_sec = None  # 마지막으로 손이 보인 시각 — engaged 판정
         self.locked_box = None          # 시각화용 — 주 손 주변 박스(EMA)
 
@@ -127,6 +132,7 @@ class HandSelector:
             # 유예까지 지나 손이 완전히 떠남 — 선별 상태를 비워 다음 사용자에
             # 이전 사용자 기준점·표시를 승계하지 않는다
             self._selected_centers = {"left": None, "right": None}
+            self._selected_center_secs = {"left": None, "right": None}
             self.locked_box = None
         return self.is_engaged()
 
@@ -190,18 +196,18 @@ class HandSelector:
         실거리다 — 얼굴이 작은 사용자는 반경도 그 비율만큼 줄지만 팔 길이도
         머리 크기와 대체로 비례해 여유(5.0)가 흡수한다.
 
-        ★fail-open(2026-07-31 실기 정정 — 마스크 착용자 정확도 급락): 반경 안에
-        손이 **하나도 없으면 거르지 않고 전부 통과**시킨다. 경성 필터였을 땐
-        마스크로 얼굴이 안 잡히는 동안 낡은·엉뚱한 앵커가 사용자 손까지 걸러
-        인식이 죽었다 — 반경 안 손이 없다는 것은 앵커가 틀렸거나 낡았다는
-        신호이므로 인식을 우선한다. 옆 사람 방어는 "사용자 손(반경 안)과 옆
-        사람 손(반경 밖)이 경합할 때"만 작동하면 충분하다.
+        ★경성 게이트 재정립(2026-07-31 2차 — 실기: 내린 왼손 자리에 옆 사람
+        오른손이 잡힘): 앵커가 **살아 있는 동안**(sticky — 사용자 얼굴이 1초 안에
+        관측됨)은 반경 밖 새 손을 통과시키지 않는다 — 사용자 손이 하나도 안
+        들려 있을 때 옆 사람 손이 fail-open으로 새어들던 구멍 봉쇄. 마스크
+        등으로 앵커가 아예 없으면 전부 통과(인식 우선 폴백)는 유지 — 구
+        fail-open의 마스크 보호는 sticky+짧은 유예가 앵커 위치를 신뢰할 수
+        있게 만들어 "앵커 부재" 경로로 옮겨졌다.
 
         ★연속 면제(2026-07-31 — 제스처 손 위치는 사람마다 천차만별): 반경은
-        **입장 심사**만 한다 — 반경 안에서 인식돼 추적 중인(직전 선택과 연속)
-        손은 밖으로 뻗어도 면제. 팔이 길거나 크게 쓸거나 화면 쪽으로 내밀어
-        (원근 확대) 반경을 벗어나도 획이 안 잘린다. 옆 사람 손은 추적 이력이
-        없어 여전히 반경 밖에서 차단된다.
+        **입장 심사**만 한다 — 반경 안에서 인식돼 추적 중인(직전 선택과 연속 +
+        신선) 손은 밖으로 뻗어도 면제. 팔이 길거나 크게 쓸거나 화면 쪽으로
+        내밀어(원근 확대) 반경을 벗어나도 획이 안 잘린다.
         """
         if self._face_reach_widths is None or self._face_anchor is None:
             return hands
@@ -215,12 +221,21 @@ class HandSelector:
             if (math.dist(center, (anchor_x, anchor_y)) <= reach_px
                     or self._is_tracked_continuation(center, hand)):
                 in_reach.append(hand)
-        return in_reach if in_reach else hands
+        return in_reach
 
     def _is_tracked_continuation(self, center, hand):
-        """추적 중이던 손의 연장인가 — 직전 선택 중심과 연속(손 폭 N배 안)이면 참."""
-        for last_center in self._selected_centers.values():
-            if (last_center is not None
+        """추적 중이던 손의 연장인가 — 직전 선택과 연속(손 폭 N배 안) + 신선할 때만.
+
+        신선도(EXEMPT_FRESH_SEC — 2026-07-31 2차): 면제는 프레임 연속으로
+        추적되던 손의 것이다. 내린 손의 오래된 기준점 근처에 나중에 나타난
+        손(옆 사람)이 면제를 승계하던 실기 구멍을 막는다.
+        """
+        now_sec = self._clock()
+        for user_side in ("left", "right"):
+            last_center = self._selected_centers.get(user_side)
+            last_sec = self._selected_center_secs.get(user_side)
+            if (last_center is not None and last_sec is not None
+                    and now_sec - last_sec <= EXEMPT_FRESH_SEC
                     and math.dist(center, last_center)
                     <= CONTINUITY_SPAN_RATIO * hand_span_px(hand.landmarks)):
                 return True
@@ -287,6 +302,7 @@ class HandSelector:
                 signals[user_side] = None
                 continue
             self._selected_centers[user_side] = center
+            self._selected_center_secs[user_side] = self._clock()
             shape = classify_hand_shape(selected.world_landmarks, self._hand_extend_ratio,
                                         self._hand_min_valid_fingers,
                                         self._hand_curl_confirm_ratio)

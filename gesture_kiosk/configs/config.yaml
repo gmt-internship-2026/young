@@ -276,10 +276,17 @@ event_output:
   # CRLF 종료 — docs/델파이7_연동가이드.md). 로그는 stderr·파일로만 나가 stdout이
   # 이벤트 전용 채널로 유지된다
   mode: stdio             # stdio(파이프 연동 — 배포 기본) | console(로그만 — 개발)
+  format: name            # 출력 규격(2026-07-31 사용자 요청 — cmd 창은 이벤트명만):
+                          #   name = 이벤트명 한 줄(left/right/select/back/home/confirm)
+                          #   text = GESTURE|이벤트|손|신뢰도|시각 (델파이 가이드 §3 규격)
+                          #   키 삭제 시 text(종전). 델파이가 손·신뢰도까지 쓰면 text로
 
 logging:
   level: INFO             # DEBUG면 손 판별 계측(hand_measure — 손가락별 3D 비율·판정)이
                           #   로그 파일에 남는다: 실측 튜닝 세션용 (2026-07-28 신설)
+  console_level: WARNING  # 콘솔(stderr)은 이 레벨부터만(2026-07-31 사용자 요청 — cmd 창
+                          #   이벤트 한 줄 유지): 시작 리포트·전환·이벤트 INFO 줄은
+                          #   파일(level)에만 남는다. 콘솔에서도 보려면 INFO로
   save_dir: logs/
 
 runtime:                  # 배포 기준 명세 — 설치가이드.md와 일치해야 한다

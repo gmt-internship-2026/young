@@ -11,7 +11,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.pipeline.event_sender import (
-    ConsoleEventSender, StdioEventSender, build_text_payload, create_event_sender,
+    ConsoleEventSender, StdioEventSender, build_name_payload, build_text_payload,
+    create_event_sender,
 )
 from src.postprocess.gesture_filter import GestureEvent
 
@@ -37,6 +38,10 @@ class PayloadFormatTest(unittest.TestCase):
         line = build_text_payload(_event("home", "right"))
         self.assertTrue(line.endswith(b"\r\n"))
         self.assertEqual(line.count(b"\n"), 1)      # 이벤트 1건 = 한 줄
+
+    def test_name_payload_is_event_name_only(self):
+        # 간소 규격(2026-07-31 사용자 요청) — cmd 창에 이벤트명 한 줄만
+        self.assertEqual(build_name_payload(_event("left")), b"left\r\n")
 
 
 class _FakeStdout:
@@ -66,6 +71,12 @@ class StdioSenderTest(unittest.TestCase):
         lines = sys.stdout.buffer.getvalue().split(b"\r\n")
         self.assertEqual(lines[0], b"GESTURE|right|right|1.00|12345.679")
         self.assertEqual(lines[1], b"GESTURE|confirm|left|1.00|12345.679")
+
+    def test_name_format_sender_writes_event_name_only(self):
+        # config format: name — stdout에 이벤트명 한 줄만 (현행 배포 설정)
+        sender = create_event_sender({"event_output": {"mode": "stdio", "format": "name"}})
+        sender.send(_event("confirm", "left"))
+        self.assertEqual(sys.stdout.buffer.getvalue(), b"confirm\r\n")
 
 
 class CreateSenderTest(unittest.TestCase):

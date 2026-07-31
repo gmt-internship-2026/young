@@ -31,6 +31,18 @@ def build_text_payload(gesture_event):
     ).encode("ascii")
 
 
+def build_name_payload(gesture_event):
+    """간소 규격(2026-07-31 사용자 요청) — 이벤트명 한 줄만 (예: b"left\\r\\n").
+
+    cmd 창 확인·간단한 수신기에 맞춘 최소 출력 — 손·신뢰도·시각이 필요하면
+    config event_output.format을 text(GESTURE| 규격)로 되돌린다.
+    """
+    return (gesture_event.class_name + "\r\n").encode("ascii")
+
+
+PAYLOAD_BUILDERS = {"text": build_text_payload, "name": build_name_payload}
+
+
 class ConsoleEventSender:
     """개발용 — 이벤트를 로그로만 기록한다 (stdout 미사용)."""
 
@@ -50,18 +62,27 @@ class StdioEventSender:
     발생하므로 사실상 무한 지연). 바이트로 직접 써서 인코딩 변수도 제거한다.
     """
 
+    def __init__(self, build_payload=build_text_payload):
+        self._build_payload = build_payload
+
     def send(self, gesture_event):
-        sys.stdout.buffer.write(build_text_payload(gesture_event))
+        sys.stdout.buffer.write(self._build_payload(gesture_event))
         sys.stdout.buffer.flush()
+        # INFO 기록은 파일 로그 몫 — 콘솔은 WARNING부터라 이벤트 한 줄만 보인다
+        # (2026-07-31 사용자 요청: cmd 창 중복 출력 제거, logger.py console_level)
         logger.info("event_output(stdio): %s (conf=%.2f)",
                     gesture_event.class_name, gesture_event.conf)
 
 
 def create_event_sender(config):
-    """config의 event_output.mode에 맞는 Sender를 만든다."""
-    mode = config["event_output"]["mode"]
+    """config의 event_output(mode·format)에 맞는 Sender를 만든다."""
+    output_cfg = config["event_output"]
+    mode = output_cfg["mode"]
+    format_name = output_cfg.get("format", "text")   # 키 없으면 종전(GESTURE| 규격)
+    if format_name not in PAYLOAD_BUILDERS:
+        raise ValueError(f"지원하지 않는 event_output.format: {format_name}")
     if mode == "stdio":
-        return StdioEventSender()
+        return StdioEventSender(PAYLOAD_BUILDERS[format_name])
     if mode == "console":
         return ConsoleEventSender()
     raise ValueError(f"지원하지 않는 event_output.mode: {mode}")

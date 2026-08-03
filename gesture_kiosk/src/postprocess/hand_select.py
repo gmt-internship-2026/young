@@ -22,6 +22,8 @@ handedness 라벨은 이벤트의 정보용 필드(hand_side)로만 전달한다
 - 어깨선 → 앵커(머리) 기준 몸 비례 추정 (2026-07-31 — 카메라 거치 무관)
 """
 import math
+import os
+import sys
 import time
 
 from src.postprocess.hand_shape import (SHAPE_FINGER, SHAPE_FIST, SHAPE_OPEN,
@@ -31,6 +33,25 @@ from src.utils.logger import get_logger
 import logging
 
 logger = get_logger("postprocess")
+
+
+def _resolve_classifier_path(config_path):
+    """분류기 가중치 경로 — exe 배포판에서 **재빌드 없이** 재학습 가중치를
+    바로 반영할 수 있게 한다(2026-08-03 — 재학습 반복 실기 편의).
+
+    exe(onedir)로 얼릴 때 config의 상대 경로는 번들 안(_internal\\...)의
+    스냅샷을 가리켜, 재학습해도 재빌드 전엔 반영이 안 된다(실기: 재학습했는데
+    체감 그대로 — 재빌드 누락이 원인이었다). 얼린 상태(sys.frozen)에서는
+    exe와 **같은 폭**에 같은 파일명이 있으면 그걸 우선 쓴다 — 개발 PC에서
+    scripts/train_hand_shape_classifier.py로 만든 .npz를 그 폴더에 복사만
+    하면 다음 실행부터 바로 반영된다. 없으면(기본) 번들된 스냅샷을 쓴다.
+    """
+    if getattr(sys, "frozen", False):
+        override_path = os.path.join(os.path.dirname(sys.executable),
+                                     os.path.basename(config_path))
+        if os.path.exists(override_path):
+            return override_path
+    return config_path
 
 # 학습 분류기(2026-08-03 CPU 브랜치 이식) 클래스명 -> 판정용 SHAPE_* 매핑.
 # "point"는 옛 CPU 브랜치 라벨(현재는 finger로 통일했지만 구 가중치 호환용 유지),
@@ -110,11 +131,13 @@ class HandSelector:
         self._hand_curl_confirm_ratio = hand_cfg.get("curl_confirm_ratio",
                                                      hand_cfg["extend_ratio"])
         # 학습 분류기(2026-08-03 CPU 브랜치 이식 — 실기: 손가락 개수 판별이 기하
-        # 임계값만으론 흔들림). 키 없으면 종전(기하 판정 단독). 있으면 fist/finger
-        # 경계는 분류기가 대신하고(이진 분류라 "불명"이 없다 — 항상 둘 중 하나로
-        # 확정), open(손바닥)은 분류기가 그 클래스를 학습하기 전까지 기하 판정을
-        # 계속 쓴다(_classify_shape 참고) — open 데이터는 아직 없다(2026-08-03)
+        # 임계값만으론 흔들림). 키 없으면 종전(기하 판정 단독). open(손바닥)은
+        # 분류기가 그 클래스를 학습하기 전까지만 기하 판정을 쓴다(_classify_shape
+        # 참고) — 3클래스(finger/fist/open) 재학습 이후엔 전부 분류기가 판정
         classifier_path = hand_cfg.get("classifier_weights_path")
+        if classifier_path:
+            classifier_path = _resolve_classifier_path(classifier_path)
+            logger.info("손 모양 분류기 로딩: %s", classifier_path)
         self._shape_classifier = HandShapeClassifier(classifier_path) if classifier_path else None
         # 머리 앵커(2026-07-31 몸통판 — 얼굴 검출 교체, 사용자 결정): 포즈가 몸
         # 실루엣으로 잡은 머리 위치의 사람 손만 후보 — 마스크·모자 무관.

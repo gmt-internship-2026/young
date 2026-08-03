@@ -24,11 +24,22 @@ handedness 라벨은 이벤트의 정보용 필드(hand_side)로만 전달한다
 import math
 import time
 
-from src.postprocess.hand_shape import classify_hand_shape, finger_states, hand_center_point
+from src.postprocess.hand_shape import (SHAPE_FINGER, SHAPE_FIST, SHAPE_OPEN,
+                                        classify_hand_shape, finger_states, hand_center_point)
+from src.postprocess.hand_shape_classifier import HandShapeClassifier
 from src.utils.logger import get_logger
 import logging
 
 logger = get_logger("postprocess")
+
+# 학습 분류기(2026-08-03 CPU 브랜치 이식) 클래스명 -> 판정용 SHAPE_* 매핑.
+# "point"는 옛 CPU 브랜치 라벨(현재는 finger로 통일했지만 구 가중치 호환용 유지),
+# "none"/미지 라벨은 None(불명 — 삼킴만 무장, gesture_filter 규약 유지)
+CLASSIFIER_LABEL_TO_SHAPE = {
+    "finger": SHAPE_FINGER, "point": SHAPE_FINGER,
+    "fist": SHAPE_FIST,
+    "open": SHAPE_OPEN,
+}
 
 STANDARD_SHOULDER_M = 0.4     # 가상 어깨 자 환산용 표준 어깨너비 — 기존 임계(어깨너비
                               #   배수) 체계를 숫자 그대로 유지하기 위한 고정 상수
@@ -98,6 +109,13 @@ class HandSelector:
         self._hand_min_valid_fingers = hand_cfg["min_valid_fingers"]
         self._hand_curl_confirm_ratio = hand_cfg.get("curl_confirm_ratio",
                                                      hand_cfg["extend_ratio"])
+        # 학습 분류기(2026-08-03 CPU 브랜치 이식 — 실기: 손가락 개수 판별이 기하
+        # 임계값만으론 흔들림). 키 없으면 종전(기하 판정 단독). 있으면 fist/finger
+        # 경계는 분류기가 대신하고(이진 분류라 "불명"이 없다 — 항상 둘 중 하나로
+        # 확정), open(손바닥)은 분류기가 그 클래스를 학습하기 전까지 기하 판정을
+        # 계속 쓴다(_classify_shape 참고) — open 데이터는 아직 없다(2026-08-03)
+        classifier_path = hand_cfg.get("classifier_weights_path")
+        self._shape_classifier = HandShapeClassifier(classifier_path) if classifier_path else None
         # 머리 앵커(2026-07-31 몸통판 — 얼굴 검출 교체, 사용자 결정): 포즈가 몸
         # 실루엣으로 잡은 머리 위치의 사람 손만 후보 — 마스크·모자 무관.
         # 섹션(head_anchor) 없으면 게이트 없음(종전)
@@ -348,6 +366,28 @@ class HandSelector:
 
     # ----- 판정 신호 (gesture_filter 입력) -----
 
+    def _classify_shape(self, world_landmarks):
+        """손 모양 판정 — 기하 규칙(hand_shape.classify_hand_shape) 우선, 학습
+        분류기가 설정돼 있으면 fist/finger 경계를 그것으로 대체한다.
+
+        분류기는 이진(fist/finger)이라 "불명"이 없다 — 항상 둘 중 하나로 확정
+        한다. open(손바닥)은 분류기가 그 클래스를 학습(classes에 포함)하기
+        전까지는 기하 판정 결과를 그대로 쓴다 — 폄 개수 임계값 규칙이라 이미
+        안정적이고, 이진 분류기에 억지로 끼워 넣으면 오히려 fist/finger 둘 중
+        하나로 오분류될 뿐이다. open 데이터를 모아 재학습하면(scripts/
+        train_hand_shape_classifier.py) classes에 "open"이 들어가고, 그
+        순간부터 이 함수가 자동으로 open 판정도 분류기에 맡긴다.
+        """
+        geometric = classify_hand_shape(world_landmarks, self._hand_extend_ratio,
+                                        self._hand_min_valid_fingers,
+                                        self._hand_curl_confirm_ratio)
+        if self._shape_classifier is None:
+            return geometric
+        if geometric == SHAPE_OPEN and SHAPE_OPEN not in self._shape_classifier.classes:
+            return geometric
+        predicted = self._shape_classifier.classify(world_landmarks)
+        return CLASSIFIER_LABEL_TO_SHAPE.get(predicted)
+
     def user_hand_signal(self):
         """사용자 손 신호 — (손모양, (x_px, y_px), 라벨, 검지비율) | None(미관측).
 
@@ -363,9 +403,7 @@ class HandSelector:
         hand = self._tracked_hand
         states = finger_states(hand.world_landmarks, self._hand_extend_ratio,
                               self._hand_curl_confirm_ratio)
-        shape = classify_hand_shape(hand.world_landmarks, self._hand_extend_ratio,
-                                    self._hand_min_valid_fingers,
-                                    self._hand_curl_confirm_ratio)
+        shape = self._classify_shape(hand.world_landmarks)
         index_ratio = float(states[0][0]) if states else None   # HAND_FINGERS[0] = 검지
         if logger.isEnabledFor(logging.DEBUG):
             # 판별 계측(hand_measure) — 실측 튜닝 세션용
@@ -384,9 +422,7 @@ class HandSelector:
 
     def classify_hand(self, hand):
         """HandDetection 1건의 모양 판별 — 획득 판정·보조 카메라 표(B안)용."""
-        return classify_hand_shape(hand.world_landmarks, self._hand_extend_ratio,
-                                   self._hand_min_valid_fingers,
-                                   self._hand_curl_confirm_ratio)
+        return self._classify_shape(hand.world_landmarks)
 
     # ----- 거리 자(尺) -----
 

@@ -27,7 +27,12 @@ if not exist models\weights\hand_landmarker.task (
 
 venv_win\Scripts\python.exe -m PyInstaller --noconfirm gesture_kiosk.spec || goto :fail
 
+:: exe와 같은 폭으로 복사(2026-08-03) — spec datas로 넣으면 PyInstaller 6.x onedir이
+:: _internal\ 밑에 넣어버려 더블클릭 런처로 못 쓴다 (gesture_kiosk.spec 주석 참고)
+copy /Y gesture_kiosk_debug.bat dist\gesture_kiosk\ >nul
+
 echo [DONE] 빌드 완료 — dist\gesture_kiosk\gesture_kiosk.exe
+echo        (카메라 창 자동 실행: dist\gesture_kiosk\gesture_kiosk_debug.bat)
 pause
 exit /b 0
 

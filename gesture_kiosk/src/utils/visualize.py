@@ -34,7 +34,9 @@ def draw_user_hands(frame, hand_selector):
         cv2.circle(frame, (int(point[0]), int(point[1])), 5, CANDIDATE_COLOR, 1)
     signal = hand_selector.user_hand_signal()
     if signal is not None:
-        shape, point, _ = signal
+        # 2026-08-03 탭 클릭 신설로 검지비율이 4번째 값으로 추가됨(hand_select.py) —
+        # 여기선 안 쓰므로 버린다
+        shape, point, _label, _index_ratio = signal
         x_px, y_px = int(point[0]), int(point[1])
         cv2.circle(frame, (x_px, y_px), 10, TRACKED_COLOR, 2)
         cv2.putText(

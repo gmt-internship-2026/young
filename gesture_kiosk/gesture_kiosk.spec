@@ -7,7 +7,7 @@
 # 확인 — hooks-contrib 미포함) 서브모듈·데이터 누락을 안전하게 전부 담는다.
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('configs/config.yaml', 'configs'), ('models/weights/hand_landmarker.task', 'models/weights'), ('models/weights/pose_landmarker_lite.task', 'models/weights')]
+datas = [('configs/config.yaml', 'configs'), ('models/weights/hand_landmarker.task', 'models/weights'), ('models/weights/pose_landmarker_lite.task', 'models/weights'), ('models/weights/hand_shape_classifier.npz', 'models/weights')]
 # 카메라 창 자동 실행용 gesture_kiosk_debug.exe(debug_launcher.py)는 여기 담지 않는다
 # — PyInstaller 6.x onedir은 datas를 _internal\ 밑에 넣어(exe와 같은 폭에 안 옴)
 # 더블클릭 런처로 못 쓴다. build_exe.bat이 별도의 --onefile --distpath 빌드로

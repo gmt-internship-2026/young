@@ -367,8 +367,18 @@ class HandSelector:
     # ----- 판정 신호 (gesture_filter 입력) -----
 
     def _classify_shape(self, world_landmarks):
-        """손 모양 판정 — 기하 규칙(hand_shape.classify_hand_shape) 우선, 학습
-        분류기가 설정돼 있으면 fist/finger 경계를 그것으로 대체한다.
+        """손 모양 판정 -> (최종 모양, 기하 모양) — 학습 분류기가 설정돼 있으면
+        fist/finger 경계는 최종 모양에서만 그것으로 대체하고, 기하 모양은 항상
+        hand_shape.classify_hand_shape() 결과 그대로 돌려준다.
+
+        기하 모양을 별도로 돌려주는 이유(2026-08-03 실기): 탭 클릭(gesture_filter.
+        _update_tap_click)은 "한 손가락 모드"를 기하 판정으로만 확인해야 한다 —
+        curl_confirm_ratio(0.85)가 정확히 "탭 중 검지 비율은 0.97까지만 내려가
+        주먹으로 안 잡히게" 실측 조정된 값인데, 학습 분류기는 이런 탭 중간
+        자세를 학습한 적이 없어(주먹/검지 완전한 자세만 2255건) 탭 도중 순간
+        주먹으로 오판해 래치가 깨질 수 있다(실기 보고 — click 인식률 저하).
+        분류기는 fist/finger 완전한 자세 판별(스와이프 방향)에는 쓰고, 탭
+        클릭의 모드 확인은 항상 안정적인 기하 판정을 쓰게 분리한다.
 
         분류기는 이진(fist/finger)이라 "불명"이 없다 — 항상 둘 중 하나로 확정
         한다. open(손바닥)은 분류기가 그 클래스를 학습(classes에 포함)하기
@@ -382,14 +392,15 @@ class HandSelector:
                                         self._hand_min_valid_fingers,
                                         self._hand_curl_confirm_ratio)
         if self._shape_classifier is None:
-            return geometric
+            return geometric, geometric
         if geometric == SHAPE_OPEN and SHAPE_OPEN not in self._shape_classifier.classes:
-            return geometric
+            return geometric, geometric
         predicted = self._shape_classifier.classify(world_landmarks)
-        return CLASSIFIER_LABEL_TO_SHAPE.get(predicted)
+        return CLASSIFIER_LABEL_TO_SHAPE.get(predicted), geometric
 
     def user_hand_signal(self):
-        """사용자 손 신호 — (손모양, (x_px, y_px), 라벨, 검지비율) | None(미관측).
+        """사용자 손 신호 — (손모양, (x_px, y_px), 라벨, 검지비율, 기하손모양) |
+        None(미관측).
 
         라벨은 handedness(정보용 — 이벤트 hand_side로만 전달)다. 정체성은
         연속성 추적이 보장하므로 판정은 라벨을 쓰지 않는다 (모듈 독스트링).
@@ -397,19 +408,21 @@ class HandSelector:
         탭 클릭이 이 값의 **일시적 하강**으로 까딱을 읽는다. 모양 판별이
         "주먹"에 도달하지 않는 작은 까딱까지 잡기 위한 별도 채널이다
         (gesture_filter._update_tap_click). 판별 불가면 None.
+        기하손모양(2026-08-03 추가): 학습 분류기와 무관한 순수 기하 판정 —
+        탭 클릭의 "한 손가락 모드" 확인 전용(_classify_shape 독스트링 참고).
         """
         if self._tracked_hand is None:
             return None
         hand = self._tracked_hand
         states = finger_states(hand.world_landmarks, self._hand_extend_ratio,
                               self._hand_curl_confirm_ratio)
-        shape = self._classify_shape(hand.world_landmarks)
+        shape, geometric_shape = self._classify_shape(hand.world_landmarks)
         index_ratio = float(states[0][0]) if states else None   # HAND_FINGERS[0] = 검지
         if logger.isEnabledFor(logging.DEBUG):
             # 판별 계측(hand_measure) — 실측 튜닝 세션용
             logger.debug("hand_measure shape=%s conf=%.2f f=%s", shape, hand.conf,
                          "|".join(f"{ratio:.2f}:{state}" for ratio, state in states))
-        return (shape, self._tracked_center, hand.user_side, index_ratio)
+        return (shape, self._tracked_center, hand.user_side, index_ratio, geometric_shape)
 
     def candidate_points(self):
         """게이트 통과 후보 손 중심 목록 — 시각화용(획득 전 상황 확인)."""
@@ -422,7 +435,8 @@ class HandSelector:
 
     def classify_hand(self, hand):
         """HandDetection 1건의 모양 판별 — 획득 판정·보조 카메라 표(B안)용."""
-        return self._classify_shape(hand.world_landmarks)
+        shape, _geometric_shape = self._classify_shape(hand.world_landmarks)
+        return shape
 
     # ----- 거리 자(尺) -----
 

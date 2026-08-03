@@ -372,6 +372,15 @@ class GestureFilter:
         self._latched_shape = None           # 고정된 모양 — 판정은 이것만 본다
         self._latch_candidate_shape = None   # 전환 후보 모양 (연속 관측 세는 중)
         self._latch_candidate_count = 0
+        # 기하 전용 래치(2026-08-03 — 학습 분류기 도입에 따른 분리): 탭 클릭의
+        # "한 손가락 모드" 확인은 항상 이것만 본다. 학습 분류기가 활성이어도
+        # 무관하게 순수 기하 판정(hand_select._classify_shape의 두 번째 반환값)
+        # 만으로 고정/전환 — hand_shape_classifier.py 독스트링·
+        # hand_select._classify_shape 독스트링 참고 (탭 중 자세는 분류기 학습
+        # 데이터에 없어 순간 오판할 수 있다)
+        self._geo_latched_shape = None
+        self._geo_latch_candidate_shape = None
+        self._geo_latch_candidate_count = 0
         self._latch_lost_sec = None          # 신호 소실 시각 — 래치 유예 대조.
                                              #   정체성은 hand_select가 보장하므로
                                              #   쪽 대조는 소멸 (2026-07-31 라벨 제거)
@@ -489,6 +498,9 @@ class GestureFilter:
         else:
             shape, point, label = hand_signal[0], hand_signal[1], hand_signal[2]
             index_ratio = hand_signal[3] if len(hand_signal) > 3 else None
+            # 기하 손모양(2026-08-03) — 없으면(구 4-튜플·테스트) shape 그대로 대체:
+            # 학습 분류기 미사용과 동등해 기존 동작·테스트에 영향 없다
+            geometric_shape = hand_signal[4] if len(hand_signal) > 4 else shape
             self._hand_label = label
             prev_point = self._swipe_tracker.last_point()   # 래치 동결(속도)용 — update 전 좌표
             prev_point_sec = self._last_point_sec
@@ -511,9 +523,11 @@ class GestureFilter:
             self._active_shape = shape
             if self._point_filter is not None:
                 point = self._point_filter.filter(point, now_sec)   # 떨림 저감 (One Euro)
-            if shape is not None and self._is_latch_observable(
-                    point, prev_point, prev_point_sec, now_sec, body_scale):
-                self._update_shape_latch(shape)
+            if self._is_latch_observable(point, prev_point, prev_point_sec, now_sec, body_scale):
+                if shape is not None:
+                    self._update_shape_latch(shape)
+                if geometric_shape is not None:
+                    self._update_geo_shape_latch(geometric_shape)
             tap_event = self._update_tap_click(point, now_sec, body_scale, index_ratio)
             if tap_event is not None:
                 self._update_debug(body_scale, shoulder_width_ratio)
@@ -622,14 +636,18 @@ class GestureFilter:
           하강 = 기준선 × (1 - dip_drop_ratio) 이하로 내려감
           복귀 = 그 절반 지점 위로 되돌아옴 (히스테리시스 — 떨림 중복 계수 방지)
         오발 방어 4중:
-        ① 계층 — 래치가 한 손가락일 때만 (주먹·손바닥 모드에선 탭 없음)
+        ① 계층 — **기하 전용** 래치가 한 손가락일 때만(주먹·손바닥 모드에선 탭
+           없음). 학습 분류기(hand_select._classify_shape)가 활성이어도 이
+           확인은 항상 순수 기하 판정을 쓴다(_geo_latched_shape) — 탭 중간
+           자세는 분류기 학습 데이터에 없어 순간 주먹으로 오판, 래치가
+           깨져 탭이 씹힐 수 있다(2026-08-03 실기 보고로 분리)
         ② 제자리 — 첫 까딱 직전 위치에서 max_move 반경 안 (실측: 탭 중 이동 0.023)
         ③ 시간 창 — 두 까딱이 window_sec 안
         ④ 까딱 길이·간격 상한 — 길면 의도적 모양 전환, 너무 촘촘하면 떨림
         """
         if self._tap_window_sec is None or index_ratio is None:
             return None
-        if self._latched_shape != SHAPE_FINGER:
+        if self._geo_latched_shape != SHAPE_FINGER:
             self._reset_tap()   # 탐색 계층(한 손가락)에서만 탭을 읽는다
             return None
         if self._tap_baseline is None or index_ratio > self._tap_baseline:
@@ -717,11 +735,35 @@ class GestureFilter:
             self._latch_candidate_shape = None
             self._latch_candidate_count = 0
 
+    def _update_geo_shape_latch(self, shape):
+        """기하 전용 래치(2026-08-03) — _update_shape_latch와 같은 알고리즘,
+        학습 분류기를 절대 거치지 않는 순수 기하 판정만 관측으로 받는다.
+        같은 latch_frames/switch_frames를 공유해 고정·전환 속도는 동일하다.
+        """
+        if shape == self._geo_latched_shape:
+            self._geo_latch_candidate_shape = None
+            self._geo_latch_candidate_count = 0
+            return
+        if shape == self._geo_latch_candidate_shape:
+            self._geo_latch_candidate_count += 1
+        else:
+            self._geo_latch_candidate_shape = shape
+            self._geo_latch_candidate_count = 1
+        needed = (self._latch_frames if self._geo_latched_shape is None
+                  else self._switch_frames)
+        if self._geo_latch_candidate_count >= needed:
+            self._geo_latched_shape = shape
+            self._geo_latch_candidate_shape = None
+            self._geo_latch_candidate_count = 0
+
     def _clear_shape_latch(self):
         """래치 해제 — 손 소실·팔 교체 시에만 (다음 손에 승계 금지)."""
         self._latched_shape = None
         self._latch_candidate_shape = None
         self._latch_candidate_count = 0
+        self._geo_latched_shape = None
+        self._geo_latch_candidate_shape = None
+        self._geo_latch_candidate_count = 0
 
     def _reset_stroke(self):
         """궤적 단절(팔 교체·소실·확정·삼킴) — 트래커를 비운다.
@@ -835,6 +877,9 @@ class GestureFilter:
             "latch_candidate": (                              # 전환 후보:연속 관측 수
                 None if self._latch_candidate_shape is None
                 else f"{self._latch_candidate_shape}:{self._latch_candidate_count}"),
+            "geo_latched_shape": self._geo_latched_shape,     # 기하 전용 래치 — 탭 클릭의
+                                                              #   "한 손가락 모드" 판정 기준
+                                                              #   (2026-08-03, 학습 분류기 무관)
             "swallow": self._swallow_direction,               # 이 방향은 복귀로 무시 예정
             "swipe_progress_x": round(tracker.progress_x, 2), # ±1.0 도달 시 좌/우 확정
             "swipe_progress_y": round(tracker.progress_y, 2), # ±1.0 도달 시 상/하 판정

@@ -79,20 +79,24 @@ class GestureFilterTestBase(unittest.TestCase):
         return None
 
     def _feed_swipe(self, points, shape="finger", shapes=None, label="right",
-                    dt_sec=FRAME_DT_SEC, shoulder_width_ratio=None, index_ratios=None):
+                    dt_sec=FRAME_DT_SEC, shoulder_width_ratio=None, index_ratios=None,
+                    geo_shapes=None):
         """추적 손 궤적 점들을 순서대로 공급 — 첫 확정 이벤트를 돌려준다.
 
         shape: 전체 프레임 공통 손 모양 ("finger"/"fist"/"open"/None=불명).
         shapes: 점별 손 모양 목록 (지정 시 shape 무시).
         label: handedness 정보용 라벨 — 이벤트 hand_side로만 전달된다.
         index_ratios: 점별 검지 비율(탭 판정용) — 미지정 시 폄 상태 고정값.
+        geo_shapes: 점별 기하 손 모양(2026-08-03, 학습 분류기와 다른 값을 줄 때만
+        지정 — 미지정 시 shapes/shape와 동일해 종전 4-튜플 신호와 동등하다).
         """
         for point_idx, point in enumerate(points):
             frame_shape = shapes[point_idx] if shapes is not None else shape
             ratio = (index_ratios[point_idx] if index_ratios is not None
                      else TAP_EXTENDED_RATIO)
+            geo_shape = geo_shapes[point_idx] if geo_shapes is not None else frame_shape
             event = self._feed(
-                hand_signal=(frame_shape, point, label, ratio), dt_sec=dt_sec,
+                hand_signal=(frame_shape, point, label, ratio, geo_shape), dt_sec=dt_sec,
                 shoulder_width_ratio=shoulder_width_ratio,
             )
             if event is not None:
@@ -258,6 +262,23 @@ class TapClickTest(GestureFilterTestBase):
         # 키 없음 = 기능 없음 (하위 호환) — 더블 탭에도 click이 나가지 않는다
         self.filter = GestureFilter(make_config(), clock=self.clock)
         self.assertIsNone(self._tap_sequence())
+
+    def test_classifier_misreading_dip_as_fist_does_not_break_tap(self):
+        # 2026-08-03 회귀 방지: 학습 분류기가 탭 도중(하강 프레임)을 "fist"로
+        # 오판해도(shape) 기하 판정(geo_shape)이 계속 "finger"면 탭은 그대로
+        # 인식돼야 한다 — hand_select._classify_shape 분리 이유와 동일 사유
+        ratios = [TAP_EXTENDED_RATIO] * 5
+        shapes, geo_shapes = [], []
+        for _ in range(2):
+            shapes += ["fist"] * 2 + ["finger"] * 4       # 분류기: 하강 중 오판
+            geo_shapes += ["finger"] * 6                  # 기하: 계속 finger(실측대로)
+            ratios += [TAP_DIPPED_RATIO] * 2 + [TAP_EXTENDED_RATIO] * 4
+        points = [(0.5, 0.4)] * len(ratios)
+        event = self._feed_swipe(points, shapes=["finger"] * 5 + shapes,
+                                 geo_shapes=["finger"] * 5 + geo_shapes,
+                                 index_ratios=ratios)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "click")
 
 
 class HandShapeLatchTest(GestureFilterTestBase):

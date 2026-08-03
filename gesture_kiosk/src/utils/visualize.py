@@ -34,9 +34,9 @@ def draw_user_hands(frame, hand_selector):
         cv2.circle(frame, (int(point[0]), int(point[1])), 5, CANDIDATE_COLOR, 1)
     signal = hand_selector.user_hand_signal()
     if signal is not None:
-        # 2026-08-03 탭 클릭 신설로 검지비율이 4번째 값으로 추가됨(hand_select.py) —
-        # 여기선 안 쓰므로 버린다
-        shape, point, _label, _index_ratio = signal
+        # *_rest로 나머지를 흡수 — hand_select.user_hand_signal()의 튜플 길이가
+        # 늘어나도(검지비율·기하손모양 등, 2026-08-03) 여기서 다시 안 깨지게
+        shape, point, *_rest = signal
         x_px, y_px = int(point[0]), int(point[1])
         cv2.circle(frame, (x_px, y_px), 10, TRACKED_COLOR, 2)
         cv2.putText(
@@ -53,6 +53,8 @@ def draw_debug_panel(frame, debug):
     SCALE=어깨 스케일 / ARM=활성 팔+손 모양(원시 판별) / RET=복귀 삼킴 예약 방향 /
     SWIPE=진행도(±1.0 판정) / LATCH=고정 모양(F=주먹, 1=한 손가락, -=없음)과
     전환 후보(cand 모양:연속 수) — 판정은 래치만 본다 (2026-07-28 v3).
+    GEO=기하 전용 래치(2026-08-03) — 탭 클릭 "한 손가락 모드" 판정 기준.
+    학습 분류기 활성 시 LATCH와 달라질 수 있다(그게 정상 — 분류기 미적용).
     """
     if not debug:
         return frame
@@ -61,14 +63,15 @@ def draw_debug_panel(frame, debug):
     swallow_tag = f" [RET:{swallow}]" if swallow else ""
     side = debug.get("active_side") or "-"
     shape_tag = SHAPE_TAG.get(debug.get("hand_shape"), "")
-    latch_label = {"fist": "F", "finger": "1", "open": "5"}.get(
-        debug.get("latched_shape"), "-")
+    latch_map = {"fist": "F", "finger": "1", "open": "5"}
+    latch_label = latch_map.get(debug.get("latched_shape"), "-")
     candidate = debug.get("latch_candidate")
     latch_tag = latch_label + (f" cand:{candidate}" if candidate else "")
+    geo_latch_tag = latch_map.get(debug.get("geo_latched_shape"), "-")
     lines = [
         f"SCALE {debug.get('body_scale', 0):.2f}  ARM {side}{shape_tag}{swallow_tag}",
         f"SWIPE x{debug.get('swipe_progress_x', 0):+.2f} y{debug.get('swipe_progress_y', 0):+.2f}"
-        f"  LATCH {latch_tag}",
+        f"  LATCH {latch_tag}  GEO {geo_latch_tag}",
     ]
     for line_idx, line in enumerate(lines):
         y_px = h_px - 14 - 24 * (len(lines) - 1 - line_idx)

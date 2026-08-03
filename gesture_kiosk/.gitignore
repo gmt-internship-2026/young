@@ -22,3 +22,8 @@ bundle_models/
 .vscode/
 !models/weights/YOLOv10n_gestures.onnx
 models/weights/trt_cache/
+
+# PyInstaller exe 빌드 산출물 (2026-08-03) — 수백MB, Git에 올리지 않는다.
+# *.spec(빌드 레시피)은 재현성을 위해 추적한다 — 여기서 제외하지 않는다
+build/
+dist/

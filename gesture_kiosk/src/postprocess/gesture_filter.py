@@ -45,8 +45,12 @@ EVENT_BY_SHAPE = {
     SHAPE_FIST: {"left": "back", "up": "home", "right": "confirm"},
     SHAPE_OPEN: {"left": "temp_left", "right": "temp_right", "up": "temp_top"},
 }
-TAP_DIP_MAX_SEC = 0.35   # 탭 까딱(fist 구간) 길이 상한 — 이보다 길면 의도적 모양
-                         #   전환(주먹 명령 진입)이지 탭이 아니다 (tap_click)
+TAP_DIP_MAX_SEC = 0.35   # 탭 까딱 1회의 길이 상한 — 이보다 길면 의도적 모양
+                         #   전환(주먹 명령 진입)이지 탭이 아니다 (tap_click).
+                         #   실측(2026-08-03): 실제 까딱은 0.06초 — 여유 충분
+TAP_MIN_GAP_SEC = 0.10   # 까딱 사이 최소 간격 — 한 번의 까딱이 되튀며 두 번으로
+                         #   세어지는 것 차단 (실측 2026-08-03: 하강선 20%에서
+                         #   8회 동작이 12회로 과다 계수됐다)
 
 
 @dataclass
@@ -336,9 +340,14 @@ class GestureFilter:
         self._tap_window_sec = (tap_cfg.get("window_sec", 1.2)
                                 if tap_cfg is not None else None)
         self._tap_max_move = (tap_cfg or {}).get("max_move_shoulder", 0.25)
-        self._tap_anchor_point = None    # 첫 까딱 직전 위치 — 제자리 반경의 기준
+        # 검지 비율 하강 폭(2026-08-03 실측 보정) — 기준선 대비 이만큼 내려갔다
+        # 돌아오면 까딱 1회. 모양 판별(주먹)에 의존하지 않는다 — 함수 독스트링
+        self._tap_dip_drop = (tap_cfg or {}).get("dip_drop_ratio", 0.20)
+        self._tap_anchor_point = None    # 첫 까딱 위치 — 제자리 반경의 기준
         self._tap_anchor_sec = None
-        self._tap_dip_start_sec = None   # 진행 중인 까딱(fist)의 시작 시각
+        self._tap_dip_start_sec = None   # 진행 중인 까딱의 시작 시각
+        self._tap_last_dip_sec = None    # 직전 까딱 완료 시각 — 되튐 중복 계수 차단
+        self._tap_baseline = None        # 폄 상태 검지 비율 최대 — 하강선의 기준
         self._is_tap_dipped = False
         self._tap_dip_count = 0
 
@@ -427,9 +436,10 @@ class GestureFilter:
                        shoulder_line_y_ratio=None):
         """손 신호 -> gesture_event | None (기획서 4.6 계약).
 
-        hand_signal: (손모양, (x_ratio, y_ratio), 라벨) | None — 추적 손의 신호
-        (hand_select.user_hand_signal — 손모양 = fist/finger/open/None(불명),
-        라벨 = handedness 정보용 — 이벤트 hand_side로만 전달).
+        hand_signal: (손모양, (x_ratio, y_ratio), 라벨[, 검지비율]) | None — 추적
+        손의 신호 (hand_select.user_hand_signal — 손모양 = fist/finger/open/
+        None(불명), 라벨 = handedness 정보용(이벤트 hand_side), 검지비율 =
+        탭 클릭 판정용(2026-08-03 — 없으면 탭만 비활성, 나머지 판정은 동일)).
         2026-07-31 라벨 제거: 손 정체성(획득·이음·해제)은 hand_select가 공간
         연속성으로 보장한다 — 신호가 있으면 같은 물리적 손이다. 좌표는 x·y 모두
         프레임 폭으로 나눈 비율(등방 단위 — 어깨너비 정규화와 단위 일치).
@@ -477,7 +487,8 @@ class GestureFilter:
             if self._point_filter is not None:
                 self._point_filter.reset()
         else:
-            shape, point, label = hand_signal
+            shape, point, label = hand_signal[0], hand_signal[1], hand_signal[2]
+            index_ratio = hand_signal[3] if len(hand_signal) > 3 else None
             self._hand_label = label
             prev_point = self._swipe_tracker.last_point()   # 래치 동결(속도)용 — update 전 좌표
             prev_point_sec = self._last_point_sec
@@ -503,7 +514,7 @@ class GestureFilter:
             if shape is not None and self._is_latch_observable(
                     point, prev_point, prev_point_sec, now_sec, body_scale):
                 self._update_shape_latch(shape)
-            tap_event = self._update_tap_click(shape, point, now_sec, body_scale)
+            tap_event = self._update_tap_click(point, now_sec, body_scale, index_ratio)
             if tap_event is not None:
                 self._update_debug(body_scale, shoulder_width_ratio)
                 return tap_event
@@ -599,57 +610,67 @@ class GestureFilter:
 
     # ----- 탭 클릭 (2026-07-31 — 한 손가락 제자리 더블 탭) -----
 
-    def _update_tap_click(self, shape, point, now_sec, body_scale):
-        """한 손가락 제자리 더블 탭 -> "click" 이벤트 | None (2026-07-31 사용자 요청).
+    def _update_tap_click(self, point, now_sec, body_scale, index_ratio):
+        """한 손가락 제자리 더블 탭 -> "click" 이벤트 | None.
 
-        탭 = 검지를 까딱하는 순간 raw 판별이 finger→fist→finger로 잠깐 출렁이는
-        것 — 래치(전환 8프레임)는 이 잠깐의 fist를 무시하므로 래치·쓸기 판정과
-        간섭 없이 raw 흐름에서만 읽는다. 오발 방어 3중:
-        ① 제자리 — 첫 까딱 직전 위치에서 max_move 반경 안 (이동 중 블러 출렁임 차단)
-        ② 시간 창 — 두 탭이 window_sec 안 (우연한 출렁임 2회 누적 차단)
-        ③ 까딱 길이 상한(TAP_DIP_MAX_SEC) — 길면 의도적 주먹 전환이지 탭이 아니다
-        기권(None) 프레임은 상태 유지 — 까딱 전환 중 블러로 흔하다.
+        ★2026-08-03 판정 방식 교체(보정 세션 실측 + 사용자 결정): 종전엔 손
+        전체가 "주먹"으로 읽히는 순간을 셌는데, 검지만 까딱하면 비율이
+        1.35→0.97까지만 내려가 주먹 기준선(0.85)에 **도달하지 않는다** —
+        감지율 0/8·3/6으로 사실상 미동작이었다(현장: 손목을 크게 두 번 해야
+        인식). 이제 **검지 비율의 일시적 하강**으로 읽는다:
+          기준선 = 폄 상태에서 관측된 최대 비율(사람·거리마다 달라 고정 불가)
+          하강 = 기준선 × (1 - dip_drop_ratio) 이하로 내려감
+          복귀 = 그 절반 지점 위로 되돌아옴 (히스테리시스 — 떨림 중복 계수 방지)
+        오발 방어 4중:
+        ① 계층 — 래치가 한 손가락일 때만 (주먹·손바닥 모드에선 탭 없음)
+        ② 제자리 — 첫 까딱 직전 위치에서 max_move 반경 안 (실측: 탭 중 이동 0.023)
+        ③ 시간 창 — 두 까딱이 window_sec 안
+        ④ 까딱 길이·간격 상한 — 길면 의도적 모양 전환, 너무 촘촘하면 떨림
         """
-        if self._tap_window_sec is None or shape is None:
+        if self._tap_window_sec is None or index_ratio is None:
             return None
+        if self._latched_shape != SHAPE_FINGER:
+            self._reset_tap()   # 탐색 계층(한 손가락)에서만 탭을 읽는다
+            return None
+        if self._tap_baseline is None or index_ratio > self._tap_baseline:
+            self._tap_baseline = index_ratio   # 폄 상태 최대 = 기준선
+        low = self._tap_baseline * (1.0 - self._tap_dip_drop)
+        high = self._tap_baseline * (1.0 - self._tap_dip_drop * 0.5)
+
         if self._is_tap_dipped or self._tap_dip_count > 0:   # 탭 진행 중
             if (now_sec - self._tap_anchor_sec > self._tap_window_sec
-                    or (body_scale > 0.0
+                    or (body_scale > 0.0 and self._tap_anchor_point is not None
                         and math.dist(point, self._tap_anchor_point)
                         > self._tap_max_move * body_scale)
                     or (self._is_tap_dipped
                         and now_sec - self._tap_dip_start_sec > TAP_DIP_MAX_SEC)):
                 self._reset_tap()   # 이동·시간 초과·긴 까딱 — 탭 아님
                 return None
-            if shape == SHAPE_FIST:
-                if not self._is_tap_dipped:
-                    self._is_tap_dipped = True   # 둘째 까딱 시작
-                    self._tap_dip_start_sec = now_sec
-            elif shape == SHAPE_FINGER and self._is_tap_dipped:
-                self._is_tap_dipped = False
-                self._tap_dip_count += 1         # 복귀 = 탭 1회 완성
-                if self._tap_dip_count >= 2:
-                    self._reset_tap()
-                    return self._confirm("click", 1.0, now_sec,
-                                         hand_side=self._hand_label)
-            elif shape not in (SHAPE_FINGER, SHAPE_FIST):
-                self._reset_tap()                # 손바닥 등 — 탭 문맥 아님
-            return None
-        # 대기 — 한 손가락이면 롤링 앵커(첫 까딱 직전 위치·시각), 주먹 등장이 시작 신호
-        if shape == SHAPE_FINGER:
-            self._tap_anchor_point = point
-            self._tap_anchor_sec = now_sec
-        elif shape == SHAPE_FIST and self._tap_anchor_point is not None:
+        if not self._is_tap_dipped and index_ratio <= low:
+            if (self._tap_last_dip_sec is not None
+                    and now_sec - self._tap_last_dip_sec < TAP_MIN_GAP_SEC):
+                return None   # 같은 까딱의 되튐 — 중복 계수 금지
+            if self._tap_dip_count == 0:
+                self._tap_anchor_point = point   # 첫 까딱 위치·시각이 제자리 기준
+                self._tap_anchor_sec = now_sec
             self._is_tap_dipped = True
             self._tap_dip_start_sec = now_sec
-        else:
-            self._reset_tap()
+        elif self._is_tap_dipped and index_ratio >= high:
+            self._is_tap_dipped = False
+            self._tap_dip_count += 1             # 복귀 = 까딱 1회 완성
+            self._tap_last_dip_sec = now_sec
+            if self._tap_dip_count >= 2:
+                self._reset_tap()
+                return self._confirm("click", 1.0, now_sec,
+                                     hand_side=self._hand_label)
         return None
 
     def _reset_tap(self):
         self._tap_anchor_point = None
         self._tap_anchor_sec = None
         self._tap_dip_start_sec = None
+        self._tap_last_dip_sec = None
+        self._tap_baseline = None
         self._is_tap_dipped = False
         self._tap_dip_count = 0
 

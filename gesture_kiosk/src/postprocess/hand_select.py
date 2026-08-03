@@ -349,24 +349,29 @@ class HandSelector:
     # ----- 판정 신호 (gesture_filter 입력) -----
 
     def user_hand_signal(self):
-        """사용자 손 신호 — (손모양, (x_px, y_px), 라벨) | None(추적 손 미관측).
+        """사용자 손 신호 — (손모양, (x_px, y_px), 라벨, 검지비율) | None(미관측).
 
         라벨은 handedness(정보용 — 이벤트 hand_side로만 전달)다. 정체성은
         연속성 추적이 보장하므로 판정은 라벨을 쓰지 않는다 (모듈 독스트링).
+        검지비율(2026-08-03 추가): 검지 손끝-뿌리 3D 거리 / PIP-뿌리 거리 —
+        탭 클릭이 이 값의 **일시적 하강**으로 까딱을 읽는다. 모양 판별이
+        "주먹"에 도달하지 않는 작은 까딱까지 잡기 위한 별도 채널이다
+        (gesture_filter._update_tap_click). 판별 불가면 None.
         """
         if self._tracked_hand is None:
             return None
         hand = self._tracked_hand
+        states = finger_states(hand.world_landmarks, self._hand_extend_ratio,
+                              self._hand_curl_confirm_ratio)
         shape = classify_hand_shape(hand.world_landmarks, self._hand_extend_ratio,
                                     self._hand_min_valid_fingers,
                                     self._hand_curl_confirm_ratio)
+        index_ratio = float(states[0][0]) if states else None   # HAND_FINGERS[0] = 검지
         if logger.isEnabledFor(logging.DEBUG):
             # 판별 계측(hand_measure) — 실측 튜닝 세션용
-            states = finger_states(hand.world_landmarks, self._hand_extend_ratio,
-                                   self._hand_curl_confirm_ratio)
             logger.debug("hand_measure shape=%s conf=%.2f f=%s", shape, hand.conf,
                          "|".join(f"{ratio:.2f}:{state}" for ratio, state in states))
-        return (shape, self._tracked_center, hand.user_side)
+        return (shape, self._tracked_center, hand.user_side, index_ratio)
 
     def candidate_points(self):
         """게이트 통과 후보 손 중심 목록 — 시각화용(획득 전 상황 확인)."""

@@ -1,4 +1,4 @@
-# 추론(윈도우, Python 3.11.5) 고정 버전 — 타 PC 재현성 보장 (설치가이드.md 참고)
+﻿# 추론(윈도우, Python 3.11.5) 고정 버전 — 타 PC 재현성 보장 (설치가이드.md 참고)
 # 2026-07-29 포즈 스택 제거(사용자 결정): 추론 = MediaPipe HandLandmarker 단독
 #   (내장 TFLite/XNNPACK, CPU). onnxruntime·rtmlib·GPU 스택(torch) 소멸 —
 #   제스처 판정(손 모양·궤적)은 손 데이터만으로 끝난다 (hand_select.py 참고).

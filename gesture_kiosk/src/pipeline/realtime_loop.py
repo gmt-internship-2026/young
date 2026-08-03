@@ -251,6 +251,7 @@ def run_pipeline(config):
                 signal[0],
                 (signal[1][0] / frame_width_px, signal[1][1] / frame_width_px),
                 signal[2],
+                signal[3],   # 검지 비율 — 탭 클릭 판정용 (2026-08-03, 스케일 무관)
             )
             gesture_event = gesture_filter.filter_signals(
                 signal_ratio, hand_selector.hand_scale_ratio(),   # 손 실측 자

@@ -52,12 +52,8 @@ class HeadDetector:
         from mediapipe.tasks.python import vision
 
         self._mp = mp
-        # model_asset_path가 아니라 buffer로 넘긴다 — 비ASCII 경로 미개봉 버그
-        # 우회(2026-08-03, hand_tracker.py와 동일 사유)
-        with open(self._model_path, "rb") as weights_file:
-            model_bytes = weights_file.read()
         options = vision.PoseLandmarkerOptions(
-            base_options=mp_python.BaseOptions(model_asset_buffer=model_bytes),
+            base_options=mp_python.BaseOptions(model_asset_path=self._model_path),
             running_mode=vision.RunningMode.VIDEO,
             num_poses=1,   # 가장 두드러진(가까운) 1인 — 앵커 목적과 일치
             min_pose_detection_confidence=detector_cfg.get("min_detection_conf", 0.5),

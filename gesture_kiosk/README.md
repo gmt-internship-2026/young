@@ -19,21 +19,24 @@
 
 ```bat
 install.bat        :: 설치 (인터넷) — CPU 전용, 내부망은 설치가이드.md B절
-venv_win\Scripts\python.exe main.py   :: 실행 — 이벤트가 stdout에 한 줄씩 (델파이 연동 동일)
-run_debug.bat                        :: + 로컬 디버그 창 (카메라·판정 계기판)
+py main.py                          :: 실행 — 이벤트가 stdout에 한 줄씩 (델파이 연동 동일)
+py main.py --debug                  :: + 카메라·판정 계기판 창을 켠 채 시작
+:: 실행 중에는 콘솔에 cam on / cam off 로 창을 켜고 끌 수 있다
 ```
 
 > 상세 절차·내부망(오프라인) 반입·문제 해결: **[설치가이드.md](설치가이드.md)**
 > 델파이7 UI 연동(수신부 완성 코드 포함): **[docs/델파이7_연동가이드.md](docs/델파이7_연동가이드.md)**
 
-## 인식 동작 (2026-07-29 개편 스펙 — 상하 포커스 제거, 위=select, ok→confirm)
+## 인식 동작 (이벤트 10종 — 2026-07-29 개편 + 07-31 손바닥·탭 추가)
 
-| 이벤트 | 손 모양 | 이동 방향 | 키오스크 명령 |
+| 이벤트 | 손 모양 | 동작 | 키오스크 명령 |
 |---|---|---|---|
-| left / right / select | **한 손가락** (종류 무관) | 좌 / 우 / 위 | 포커스 1칸 이동 |
-| back | **주먹** | 왼쪽 | 이전 화면 |
-| home | **주먹** | 위 | 처음 화면 |
-| confirm | **주먹** | 오른쪽 | 현재 항목 실행 |
+| left / right / select | **한 손가락** (종류 무관) | 좌 / 우 / 위 쓸기 | 포커스 1칸 이동 |
+| back | **주먹** | 왼쪽 쓸기 | 이전 화면 |
+| home | **주먹** | 위 쓸기 | 처음 화면 |
+| confirm | **주먹** | 오른쪽 쓸기 | 현재 항목 실행 |
+| temp_left / temp_right / temp_top | **손바닥**(전부 폄) | 좌 / 우 / 위 쓸기 | 회사 정의 예정 (2026-07-31 추가) |
+| click | **한 손가락** | 제자리 검지 까딱 2회 | 클릭 (회사 정의 예정) |
 
 - **핵심 규칙**: 손 모양이 계층을(탐색/명령), 이동 방향이 기능을 정한다 —
   반복 횟수·화면 좌표는 쓰지 않는다. 탐색(한 손가락)은 아무리 반복해도 화면이
@@ -43,18 +46,21 @@ run_debug.bat                        :: + 로컬 디버그 창 (카메라·판�
   방향은 **첫 선 고정**(07-28) — 원점을 떠나는 첫 이동 벡터가 방향을 정한다
 - 아래 방향은 정의 없음(두 모양 공통 — 07-29 bottom 제거) — 무시. 위 방향
   (select·home)은 팔 들어올리기(예비 동작) 오발을 휴식 존 게이트가 막는다
-- 사용자 손 선별(hand_select, 07-29 포즈 잠금 대체): 쪽별 가장 큰 손 + 연속성
-  우선 — 옆 사람 손의 순간 난입을 막는다. **★한 명 사용 가정** (상시 다중 인원
-  구도면 포즈 잠금 구판(2ea58a5 이전) 검토 — docs/TODO.md №1-2)
+- 사용자 손 선별(hand_select): **단일 손 추적**(07-31 라벨 제거) — 움직여서
+  지시한 손 하나를 공간 연속성으로 고정하고, 교체는 그 손을 내린 뒤에만.
+  앞단에 **머리 앵커 게이트**(포즈 기반 — 마스크·모자 무관)가 가장 가까운
+  사람의 팔 도달 반경 밖 손을 차단한다. **★한 명 사용 가정** (docs/TODO.md №1-2)
 - 스펙 변천: 주먹→펴기(07-15 제거) → 손등/팔등(07-15 2차 제거) → 고개 꾸벅(07-16
   제거) → 쓸기 일원화(07-16) → **현행: 손 모양 기준(07-23 — 보고서 개정 반영)**
 
 ## 처리 흐름
 
 ```
-카메라(스레드) → 거울 반전 → 손 랜드마크(MediaPipe HandLandmarker — 유일한 모델)
-  → 사용자 손 선별(hand_select: 크기+연속성, 손 실측 거리 자) → 손 모양(hand_shape)
-  → 동작 판정(gesture_filter: 손 모양 래치 + 첫 선 궤적 4방향) → 이벤트 print(stdio)
+카메라(스레드) → 거울 반전 → 손 랜드마크(MediaPipe HandLandmarker — 주 추론 모델)
+  → 사용자 손 선별(hand_select: 머리 앵커 게이트 + 단일 손 추적, 손 실측 거리 자)
+  → 손 모양(hand_shape: 주먹/한 손가락/손바닥) → 동작 판정(gesture_filter:
+     모양 래치 + 첫 선 궤적 + 탭) → 이벤트 print(stdio)
+  ※머리 앵커(포즈)는 별도 스레드에서 초당 10회 — 손 루프 비차단
 ```
 
 ## 폴더 구조 (기획서 2.3 + 신규 모듈)
@@ -62,19 +68,21 @@ run_debug.bat                        :: + 로컬 디버그 창 (카메라·판�
 ```
 gesture_kiosk/
 ├─ main.py                  # 공식 진입점 — 델파이가 직접 실행 (2026-08-03)
-├─ install.bat / run_debug.bat / make_offline_bundle.bat  # 설치·현장 진단·번들 제작 (설치가이드.md)
+├─ install.bat              # 설치 — wheelhouse 있으면 오프라인, 없으면 받아서 번들 생성
 ├─ configs/config.yaml      # 모든 설정값의 단일 출처 — 튜닝은 여기서만
-├─ models/weights/          # hand_landmarker.task (8MB — download_weights.py가 받는다)
+├─ models/weights/          # hand_landmarker.task · pose_landmarker_lite.task (배포 zip 포함)
 ├─ src/
 │   ├─ capture/camera_stream.py      # USB 카메라 캡처 스레드 (윈도우 MSMF 기본)
 │   ├─ inference/hand_tracker.py     # 손 랜드마크 (MediaPipe) — 유일한 추론 모델
-│   ├─ postprocess/hand_select.py    # 사용자 손 선별(크기+연속성) + 손 실측 거리 자
-│   ├─ postprocess/hand_shape.py     # 손 모양 판별 — 주먹/한 손가락 (손 21점 기하 규칙)
-│   ├─ postprocess/gesture_filter.py # 동작 판정 — 손 모양 래치 + 첫 선 궤적 4방향
+│   ├─ inference/head_detector.py    # 머리 앵커 관측 (MediaPipe 포즈 — 마스크 무관)
+│   ├─ postprocess/hand_select.py    # 앵커 게이트 + 단일 손 추적 + 손 실측 거리 자
+│   ├─ postprocess/hand_shape.py     # 손 모양 — 주먹/한 손가락/손바닥 (21점 기하 규칙)
+│   ├─ postprocess/gesture_filter.py # 동작 판정 — 모양 래치 + 첫 선 궤적 + 탭 클릭
 │   ├─ pipeline/realtime_loop.py     # 실시간 루프 조립 (멀티스레딩)
 │   └─ pipeline/event_sender.py      # ★ 회사 프로그램 연동 접점 (stdio/console)
 ├─ scripts/                 # pipe_listen · download_weights · benchmark · smoke_test · eval_accuracy
-├─ tests/                   # 단위 테스트 126건 (카메라·모델 없이 실행 가능)
+├─ tests/                   # 단위 테스트 176건 (카메라·모델 없이 실행 가능)
+├─ docs/코드설명서.md       # 코드 지도 — 어디서 무엇을 하는지 (2026-08-03)
 └─ docs/TODO.md             # 작업 분해 및 회사 확인 필요 항목
 ```
 
@@ -84,18 +92,19 @@ gesture_kiosk/
 
 | 명령 | 용도 |
 |---|---|
-| `venv_win\Scripts\python.exe main.py` | 엔진 — 이벤트가 stdout에 한 줄씩 (공식 실행) |
+| `py main.py` | 엔진 — 이벤트가 stdout에 한 줄씩 (공식 실행 — 시스템 파이썬) |
 | 실행 중 `cam on` / `cam off` (+Enter) | 카메라·계기판 창 켜기/끄기 — 재실행 불필요 |
-| `main.py --debug` (= `run_debug.bat`) | 창을 켠 채 시작 |
-| `python scripts/pipe_listen.py` | 델파이 대역 — 파이프 수신 규격 자가 검증 |
-| `python scripts/benchmark.py` | 추론 단독 FPS 측정 (기획서 6.1 — KPI 30 FPS) |
-| `python -m unittest discover tests -v` | 판정·잠금·손모양·시나리오 단위 테스트 |
+| `py main.py --debug` | 창을 켠 채 시작 |
+| `py scripts\pipe_listen.py` | 델파이 대역 — 파이프 수신 규격 자가 검증 |
+| `py scriptsenchmark.py` | 추론 단독 FPS 측정 (기획서 6.1 — KPI 30 FPS) |
+| `py -m unittest discover tests -v` | 판정·손 추적·손모양·시나리오 단위 테스트 |
 
 ## 회사 프로그램(UI) 연동 계약
 
 1. 델파이가 엔진을 자식 프로세스로 실행 → stdout 파이프에서 줄 단위 수신 —
    규격·수신 코드는 **[docs/델파이7_연동가이드.md](docs/델파이7_연동가이드.md)**
-2. 이벤트 6종: `left` `right` `select` `back` `home` `confirm` (2026-07-29 개편)
+2. 이벤트 **10종**: `left` `right` `select` `back` `home` `confirm` +
+   `temp_left` `temp_right` `temp_top` `click` (07-29 개편 + 07-31 추가 — UI 분기문 갱신 필요)
 3. 새 수신 규격 확정 시 `event_sender.py`에 Sender 1개 추가 — 파이프라인 수정 불필요
 
 ## 개인정보·라이선스 주의

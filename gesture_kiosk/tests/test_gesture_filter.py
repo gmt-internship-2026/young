@@ -54,6 +54,9 @@ def make_config(shape_latch=None):
 
 
 FRAME_DT_SEC = 1.0 / 30.0  # 30 FPS 가정
+# 탭 판정용 검지 비율 — 실측 기준(2026-08-03 보정 세션): 폄 1.35, 까딱 바닥 0.97
+TAP_EXTENDED_RATIO = 1.35
+TAP_DIPPED_RATIO = 0.97
 
 
 class GestureFilterTestBase(unittest.TestCase):
@@ -76,17 +79,20 @@ class GestureFilterTestBase(unittest.TestCase):
         return None
 
     def _feed_swipe(self, points, shape="finger", shapes=None, label="right",
-                    dt_sec=FRAME_DT_SEC, shoulder_width_ratio=None):
+                    dt_sec=FRAME_DT_SEC, shoulder_width_ratio=None, index_ratios=None):
         """추적 손 궤적 점들을 순서대로 공급 — 첫 확정 이벤트를 돌려준다.
 
         shape: 전체 프레임 공통 손 모양 ("finger"/"fist"/"open"/None=불명).
         shapes: 점별 손 모양 목록 (지정 시 shape 무시).
         label: handedness 정보용 라벨 — 이벤트 hand_side로만 전달된다.
+        index_ratios: 점별 검지 비율(탭 판정용) — 미지정 시 폄 상태 고정값.
         """
         for point_idx, point in enumerate(points):
             frame_shape = shapes[point_idx] if shapes is not None else shape
+            ratio = (index_ratios[point_idx] if index_ratios is not None
+                     else TAP_EXTENDED_RATIO)
             event = self._feed(
-                hand_signal=(frame_shape, point, label), dt_sec=dt_sec,
+                hand_signal=(frame_shape, point, label, ratio), dt_sec=dt_sec,
                 shoulder_width_ratio=shoulder_width_ratio,
             )
             if event is not None:
@@ -187,25 +193,30 @@ class OpenPalmTempTest(GestureFilterTestBase):
 
 
 class TapClickTest(GestureFilterTestBase):
-    """탭 클릭(2026-07-31 사용자 요청) — 한 손가락 제자리 더블 탭 = click.
+    """탭 클릭 — 한 손가락 제자리 더블 탭 = click.
 
-    탭 1회 = raw 판별 finger→fist(짧게)→finger. 제자리·시간 창·까딱 길이
-    상한으로 오발을 막는다 (gesture_filter._update_tap_click).
+    ★2026-08-03 판정 방식 교체(보정 세션 실측): 손 전체 "주먹" 대신 **검지
+    비율의 일시적 하강**으로 읽는다 — 실제 까딱은 비율이 1.35→0.97까지만
+    내려가 주먹 기준선(0.85)에 도달하지 않아 종전 방식은 감지율 0~50%였다.
+    제자리·시간 창·까딱 길이/간격으로 오발을 막는다.
     """
 
     def setUp(self):
         super().setUp()
         config = make_config()
         config["gestures"]["tap_click"] = {"window_sec": 1.2,
-                                           "max_move_shoulder": 0.25}
+                                           "max_move_shoulder": 0.25,
+                                           "dip_drop_ratio": 0.20}
         self.filter = GestureFilter(config, clock=self.clock)
 
-    def _tap_sequence(self, dip_frames=3, taps=2, point=(0.5, 0.4)):
-        """정지 상태 더블 탭 raw 모양열 — finger 정지 후 (fist×N → finger×N)×taps."""
-        shapes = ["finger"] * 5
+    def _tap_sequence(self, dip_frames=2, taps=2, point=(0.5, 0.4),
+                      dip_ratio=TAP_DIPPED_RATIO, gap_frames=4):
+        """정지 상태 더블 탭 — 검지 비율이 폄↔하강을 taps회 왕복 (모양은 계속 finger)."""
+        ratios = [TAP_EXTENDED_RATIO] * 5
         for _ in range(taps):
-            shapes += ["fist"] * dip_frames + ["finger"] * dip_frames
-        return self._feed_swipe([point] * len(shapes), shapes=shapes)
+            ratios += [dip_ratio] * dip_frames + [TAP_EXTENDED_RATIO] * gap_frames
+        return self._feed_swipe([point] * len(ratios), shape="finger",
+                                index_ratios=ratios)
 
     def test_double_tap_fires_click(self):
         event = self._tap_sequence()
@@ -216,16 +227,32 @@ class TapClickTest(GestureFilterTestBase):
     def test_single_tap_does_not_fire(self):
         self.assertIsNone(self._tap_sequence(taps=1))
 
+    def test_shallow_tremor_does_not_fire(self):
+        # 떨림 수준의 얕은 출렁임(실측 p10 1.14 — 하강 15%) — 20%선을 못 넘어 무시
+        self.assertIsNone(self._tap_sequence(dip_ratio=1.15))
+
     def test_long_dip_is_shape_switch_not_tap(self):
-        # 까딱이 길면(0.35초 초과 — 주먹 12프레임) 의도적 모양 전환 — 탭 아님
+        # 까딱이 길면(0.35초 초과 — 12프레임) 의도적 모양 전환 — 탭 아님
         self.assertIsNone(self._tap_sequence(dip_frames=12))
 
-    def test_moving_flicker_does_not_click(self):
-        # 이동 중 finger↔fist 출렁임(모션 블러) — 제자리 반경 초과라 click 오발 없음
-        shapes = ["finger"] * 3 + ["fist"] * 3 + ["finger"] * 3 + ["fist"] * 3 + ["finger"] * 3
-        points = path(0.2, 0.65, len(shapes) - 1, y_ratio=0.4)
-        event = self._feed_swipe(points, shapes=shapes)
+    def test_moving_dip_does_not_click(self):
+        # 이동 중 검지 비율 출렁임(모션 블러) — 제자리 반경 초과라 click 오발 없음
+        ratios = ([TAP_EXTENDED_RATIO] * 3 + [TAP_DIPPED_RATIO] * 2
+                  + [TAP_EXTENDED_RATIO] * 3 + [TAP_DIPPED_RATIO] * 2
+                  + [TAP_EXTENDED_RATIO] * 3)
+        points = path(0.2, 0.65, len(ratios) - 1, y_ratio=0.4)
+        event = self._feed_swipe(points, shape="finger", index_ratios=ratios)
         self.assertNotEqual(getattr(event, "class_name", None), "click")
+
+    def test_fist_mode_does_not_tap(self):
+        # 명령 계층(주먹 래치) 중엔 탭을 읽지 않는다 — 계층 혼선 차단
+        self._feed_swipe([(0.5, 0.4)] * 4, shape="fist")   # 주먹 래치 고정
+        ratios = [TAP_EXTENDED_RATIO] * 3
+        for _ in range(2):
+            ratios += [TAP_DIPPED_RATIO] * 2 + [TAP_EXTENDED_RATIO] * 4
+        event = self._feed_swipe([(0.5, 0.4)] * len(ratios), shape="fist",
+                                 index_ratios=ratios)
+        self.assertIsNone(event)
 
     def test_disabled_without_key(self):
         # 키 없음 = 기능 없음 (하위 호환) — 더블 탭에도 click이 나가지 않는다

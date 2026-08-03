@@ -22,11 +22,3 @@ bundle_models/
 .vscode/
 !models/weights/YOLOv10n_gestures.onnx
 models/weights/trt_cache/
-
-# PyInstaller exe 빌드 산출물 (2026-08-03) — 수백MB, Git에 올리지 않는다.
-# gesture_kiosk.spec(수동 주석·재현 레시피)은 추적하되, gesture_kiosk_debug.spec은
-# build_exe.bat이 CLI 옵션(--distpath 등)으로 매번 자동 재생성하는 산출물이라 제외
-# — 이것만 따로 실행하면 옵션 없이 잘못된 경로에 빌드된다(build_exe.bat이 진짜 레시피)
-build/
-dist/
-gesture_kiosk_debug.spec

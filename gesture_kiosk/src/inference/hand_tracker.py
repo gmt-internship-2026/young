@@ -92,8 +92,14 @@ class HandTracker:
         from mediapipe.tasks.python import vision
 
         self._mp = mp
+        # model_asset_path가 아니라 buffer로 넘긴다(2026-08-03 실기) — mediapipe
+        # 네이티브 로더가 비ASCII(한글 등) 경로에서 파일을 못 연다(errno=-1).
+        # 파이썬 open()은 유니코드 경로를 문제없이 읽으므로, 바이트를 직접 넘겨
+        # 우회한다 — 배포 PC 계정명이 한글이어도(흔한 사례) 깨지지 않는다
+        with open(self._model_path, "rb") as weights_file:
+            model_bytes = weights_file.read()
         options = vision.HandLandmarkerOptions(
-            base_options=mp_python.BaseOptions(model_asset_path=self._model_path),
+            base_options=mp_python.BaseOptions(model_asset_buffer=model_bytes),
             running_mode=vision.RunningMode.VIDEO,
             num_hands=tracker_cfg["max_num_hands"],
             min_hand_detection_confidence=tracker_cfg["min_detection_conf"],

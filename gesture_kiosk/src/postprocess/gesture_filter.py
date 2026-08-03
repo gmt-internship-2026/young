@@ -3,9 +3,7 @@
 동작 체계(2026-07-29 개편 — 사용자 결정: 상하 포커스(top/bottom) 제거, 위=select, ok→confirm):
 - **한 손가락** + 좌/우 쓸기 = left / right · 위 = select — 포커스 이동(탐색 계층)
 - **주먹** + 왼쪽 = back(이전) · 주먹 + 위 = home(처음으로) · 주먹 + 오른쪽 = confirm(확인)
-- **편 손**(손가락 전부 폄) + 왼쪽 = temp_left · 위 = temp_top · 오른쪽 = temp_right
-  (2026-08-03 신설 — 기능 미정, 임시 실험용 제스처)
-- 아래 방향 = 정의 없음(세 모양 공통 — 07-29 bottom 소멸) — 무시
+- 아래 방향 = 정의 없음(두 모양 공통 — 07-29 bottom 소멸) — 무시
   (복귀 삼킴만 무장해 반동 오발을 막는다)
 
 손 모양이 계층을(탐색/명령), 이동 방향이 기능을 정한다 — 반복 횟수·화면 좌표는
@@ -25,7 +23,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 
-from src.postprocess.hand_shape import SHAPE_FINGER, SHAPE_FIST, SHAPE_PALM
+from src.postprocess.hand_shape import SHAPE_FINGER, SHAPE_FIST, SHAPE_OPEN
 from src.postprocess.point_filter import PointFilter
 from src.utils.logger import get_logger
 
@@ -39,14 +37,16 @@ RAISE_TRIM_PROGRESS = 0.5   # 들어올리기 중 위 방향 진행이 이 비�
                             # 상승 꼬리가 창에 남아 직후의 아래/좌/우 쓸기를 상쇄(지연)하는 것 방지
 
 # 손 모양 × 이동 방향 -> 이벤트 (2026-07-29 사용자 결정 — top/bottom 제거,
-# 위=select(포커스 이동), ok→confirm). 아래 방향은 세 모양 다 의도적으로 없다 —
-# 정의되지 않은 조합(무시 + 삼킴 무장, 모듈 주석)
-# SHAPE_PALM(편 손): 기능 미정 — 임시 실험용 temp_* 이벤트 (2026-08-03 신설)
+# 위=select(포커스 이동), ok→confirm. 2026-07-31 손바닥(temp 계층) 추가 —
+# 사용자 요청). 아래 방향은 전 모양 의도적으로 없다 — 정의되지 않은 조합
+# (무시 + 삼킴 무장, 모듈 주석)
 EVENT_BY_SHAPE = {
     SHAPE_FINGER: {"left": "left", "right": "right", "up": "select"},
     SHAPE_FIST: {"left": "back", "up": "home", "right": "confirm"},
-    SHAPE_PALM: {"left": "temp_left", "right": "temp_right", "up": "temp_top"},
+    SHAPE_OPEN: {"left": "temp_left", "right": "temp_right", "up": "temp_top"},
 }
+TAP_DIP_MAX_SEC = 0.35   # 탭 까딱(fist 구간) 길이 상한 — 이보다 길면 의도적 모양
+                         #   전환(주먹 명령 진입)이지 탭이 아니다 (tap_click)
 
 
 @dataclass
@@ -100,6 +100,8 @@ class _SwipeTracker:
         self._first_line_origin = None    # 원점 — 마지막 정지 위치 (x_ratio, y_ratio)
         self._first_line_far_point = None  # 고정 방향 진행 극점 — 꺾임 재고정의 기준점
         self.locked_direction = None     # 고정된 첫 선 방향 ("left"/... | None=대기)
+        self.went_still = False          # 이번 update에서 정지(재장전)가 확인됐는가 —
+                                         #   들어올리기 게이트 해제 신호 (2026-07-31 근거리)
         self._track = deque()   # (ts_sec, x_ratio, y_ratio)
         # 계기판 노출용(2026-07-16 실기 튜닝) — 부호 있는 진행도: ±1.0 도달 시 확정
         self.progress_x = 0.0
@@ -118,6 +120,7 @@ class _SwipeTracker:
         self._track.append((now_sec, x_ratio, y_ratio))
         while self._track and now_sec - self._track[0][0] > self._window_sec:
             self._track.popleft()
+        self.went_still = False
         if self._first_line_lock_dist is not None:
             self._update_first_line(x_ratio, y_ratio, now_sec, body_scale, prev)
         if len(self._track) < self._min_track_frames:
@@ -195,6 +198,7 @@ class _SwipeTracker:
                     self._first_line_origin = (x_ratio, y_ratio)
                     self.locked_direction = None
                     self._first_line_far_point = None
+                    self.went_still = True   # 들어올리기 게이트 해제 신호 (GestureFilter)
                     return
         dx = x_ratio - self._first_line_origin[0]
         dy = y_ratio - self._first_line_origin[1]
@@ -305,45 +309,38 @@ class GestureFilter:
         self._clock = clock
 
         swipe = gestures["swipe"]
-        self._switch_margin_y_shoulder = swipe["switch_margin_y_shoulder"]
         body_scale = swipe["body_scale"]
         self._scale_fallback_ratio = body_scale["fallback_ratio"]
         self._scale_min_ratio = body_scale["min_ratio"]
         self._scale_max_ratio = body_scale["max_ratio"]
         self._scale_alpha = body_scale["alpha"]
         self._body_scale = None      # 평활된 어깨너비/프레임폭 — 카메라 거리 무관 판정의 자(尺)
-        # 한 번에 한 팔만 인식(2026-07-16 사용자 결정) — 양팔 동시 추적은 쉬는 팔의
-        # 잡음이 간섭한다. 활성 팔 = 더 높이 든 팔(제스처 팔은 들려 있다), 트래커는 1개
+        # 단일 손 추적(2026-07-31 사용자 결정 — 라벨 제거): 손 정체성(획득·이음·
+        # 해제)은 hand_select가 공간 연속성으로 보장한다 — 이 필터는 손 신호
+        # **하나**만 받는다. 구 좌/우 활성 팔 선정·지시 손 고정·라벨 플랩 보정은
+        # 라벨을 정체성 키로 쓰던 시절의 장치라 통째로 소멸 (배구 토스·획 씹힘의
+        # 구조적 원인 제거). 트래커는 원래 1개였다(한 번에 한 팔 — 2026-07-16)
         self._swipe_tracker = _SwipeTracker(
             swipe["window_sec"], swipe["min_dist_x_shoulder"], swipe["min_dist_y_shoulder"],
             swipe["axis_dominance"], swipe["min_track_frames"],
             swipe.get("flick_window_sec"), swipe.get("flick_min_dist_shoulder", 0.0),
             first_line_cfg=swipe.get("first_line"),
         )
-        self._active_side = None     # 현재 인식 중인 팔 ("left"/"right")
+        self._is_hand_absent = True  # 직전 프레임 신호 부재 — 등장(휴식 존 스탬프) 판정
+        self._hand_label = None      # 추적 손의 handedness 라벨 — 정보용(이벤트 hand_side)
         self._active_shape = None    # 이번 프레임의 원시 손 모양 판별 (계기판용)
-        # 좌/우 라벨 플랩 보정(2026-07-28 실기): MediaPipe handedness는 주먹에서
-        # 불안정해 같은 물리적 손이 프레임 사이 좌↔우로 재라벨된다 — 라벨 교체를
-        # 팔 교체로 오인해 리셋하면 진행 중 획이 유실되고, 손을 되돌리는 반동만
-        # 온전히 확정돼 반대 방향 오발이 난다 (back이 ok로 둔갑). 키 없으면 종전 동작
-        self._side_flap_jump_shoulder = swipe.get("side_flap_jump_shoulder")
-        # 지시 손 고정(2026-07-29 v1 → 2026-07-30 v2 실기 정정): v1은 "지시"를
-        # 모양 래치로 판정했는데 쉬는 손도 정지 상태라 래치가 걸린다 — 쉬는 손이
-        # 먼저 활성(더 높음)이면 지시 안 하는 손에 잠금이 굳는 역효과(실기 보고).
-        # v2의 "지시" = **모양이 보이는 손의 실제 이동**(move_dist/window) — 양손의
-        # 이동을 활성 팔과 무관하게 항상 감시하다가 지시 손이 생기면 그 손만
-        # 인식하고, 반대 손·원거리 난입 손(rejoin_dist 밖 재등장 — 다른 사람)을
-        # 무시한다. 해제는 지시 손 소실 유예 초과뿐. 키 없으면 종전(높이 비교)
-        lock_cfg = swipe.get("command_hand_lock")
-        # 키가 있으면 켜짐 (빈 매핑 = 기본값 사용). false 명시만 예외적으로 끔
-        self._is_command_hand_lock = lock_cfg is not None and lock_cfg is not False
-        lock_cfg = lock_cfg if isinstance(lock_cfg, dict) else {}
-        self._command_move_dist = lock_cfg.get("move_dist_shoulder", 0.25)
-        self._command_window_sec = lock_cfg.get("window_sec", 0.5)
-        self._command_rejoin_dist = lock_cfg.get("rejoin_dist_shoulder", 1.2)
-        self._user_side = None         # 지시 손 — None이면 미지정(양손 관찰 모드)
-        self._user_last_point = None   # 지시 손 마지막 관측점 — 원거리 난입 대조
-        self._side_tracks = {"left": deque(), "right": deque()}  # 지시 판정용 (t,x,y,모양)
+
+        # 탭 클릭(2026-07-31 사용자 요청) — 한 손가락 제자리 더블 탭 = click.
+        # 키(tap_click) 없으면 기능 없음
+        tap_cfg = config["gestures"].get("tap_click")
+        self._tap_window_sec = (tap_cfg.get("window_sec", 1.2)
+                                if tap_cfg is not None else None)
+        self._tap_max_move = (tap_cfg or {}).get("max_move_shoulder", 0.25)
+        self._tap_anchor_point = None    # 첫 까딱 직전 위치 — 제자리 반경의 기준
+        self._tap_anchor_sec = None
+        self._tap_dip_start_sec = None   # 진행 중인 까딱(fist)의 시작 시각
+        self._is_tap_dipped = False
+        self._tap_dip_count = 0
 
         # 손 모양 래치(2026-07-28 v3 — 다수결·모양 기억·주먹 우세 대체): 프레임별
         # 판별의 출렁임이 창 다수결을 오염시켜 계층 오발이 났다(실기 — 특히 이동 중
@@ -366,8 +363,9 @@ class GestureFilter:
         self._latched_shape = None           # 고정된 모양 — 판정은 이것만 본다
         self._latch_candidate_shape = None   # 전환 후보 모양 (연속 관측 세는 중)
         self._latch_candidate_count = 0
-        self._latch_lost_side = None         # 소실 시점의 활성 팔 — 유예 대조용
-        self._latch_lost_sec = None
+        self._latch_lost_sec = None          # 신호 소실 시각 — 래치 유예 대조.
+                                             #   정체성은 hand_select가 보장하므로
+                                             #   쪽 대조는 소멸 (2026-07-31 라벨 제거)
 
         # One Euro 필터(2026-07-20 정확도) — 추적점 떨림 저감. 궤적 단절 시 트래커와
         # 함께 리셋한다. 키 미설정 브랜치는 종전대로 무필터 (point_filter.py 주석 참고)
@@ -425,108 +423,103 @@ class GestureFilter:
         self._last_event_ts_sec = None
         self.debug = {}   # 실기 튜닝 계기판 — 디버그 창 오버레이로 노출 (판정에 미사용)
 
-    def filter_signals(self, swipe_points, shoulder_width_ratio=None,
+    def filter_signals(self, hand_signal, shoulder_width_ratio=None,
                        shoulder_line_y_ratio=None):
         """손 신호 -> gesture_event | None (기획서 4.6 계약).
 
-        swipe_points: {"left": (손모양, (x_ratio, y_ratio)) | None, ...} — 잠긴 사용자의
-        손 신호(person_lock.user_swipe_points — 손모양 = fist/finger/None(불명)).
-        사용자 기준 좌/우, **x·y 모두 프레임 폭으로 나눈** 비율 좌표(등방 단위 —
-        어깨너비 정규화와 단위를 맞추기 위해, 2026-07-16).
-        shoulder_width_ratio: 어깨너비/프레임폭(person_lock.user_shoulder_width_ratio)
-        — 쓸기 임계를 몸 크기 기준으로 환산. 없으면 마지막 값, 최초부터 없으면 기본값.
-        모든 이벤트는 방향 확정 즉시 발화한다 (구 아래 1회/2연속 분기·지연 제거).
+        hand_signal: (손모양, (x_ratio, y_ratio), 라벨) | None — 추적 손의 신호
+        (hand_select.user_hand_signal — 손모양 = fist/finger/open/None(불명),
+        라벨 = handedness 정보용 — 이벤트 hand_side로만 전달).
+        2026-07-31 라벨 제거: 손 정체성(획득·이음·해제)은 hand_select가 공간
+        연속성으로 보장한다 — 신호가 있으면 같은 물리적 손이다. 좌표는 x·y 모두
+        프레임 폭으로 나눈 비율(등방 단위 — 어깨너비 정규화와 단위 일치).
+        shoulder_width_ratio: 어깨너비/프레임폭 — 쓸기 임계를 몸 크기 기준으로
+        환산. 없으면 마지막 값, 최초부터 없으면 기본값.
         """
         now_sec = self._clock()
         body_scale = self._update_body_scale(shoulder_width_ratio)
         if shoulder_line_y_ratio is not None:
             self._shoulder_line_y = shoulder_line_y_ratio   # 관측 없으면 마지막 값 유지
-        side, point_info = self._select_active_arm(swipe_points or {}, body_scale, now_sec)
 
         if self._is_in_cooldown(now_sec):
             # 쿨다운 중엔 궤적을 쌓지 않는다 — 다만 획이 계속 뻗는 중이면
             # 삼킴 기준점(직전 획의 끝)은 따라가야 복귀 판정이 정확하고,
             # 휴식 존 체류(팔 내리기)도 기록해야 이후 들어올리기를 알아본다
-            if point_info is not None:
-                self._update_swallow_origin(point_info[1])
-                self._stamp_rest_zone(point_info[1], now_sec, body_scale)
+            if hand_signal is not None:
+                self._update_swallow_origin(hand_signal[1])
+                self._stamp_rest_zone(hand_signal[1], now_sec, body_scale)
             return None
 
         event = None
-        if side is None:
+        if hand_signal is None:
             if (self._dropout_grace_sec is not None
-                    and self._active_side is not None
+                    and not self._is_hand_absent
                     and self._last_point_sec is not None
                     and now_sec - self._last_point_sec <= self._dropout_grace_sec):
-                # 순간 소실(모션 블러) — 유예 안의 공백은 궤적·활성 팔을 유지한 채
+                # 순간 소실(모션 블러) — 유예 안의 공백은 궤적을 유지한 채
                 # 재등장을 기다린다 (즉시 리셋하면 빠른 쓸기가 통째로 유실 — 실증)
                 self._update_debug(body_scale, shoulder_width_ratio)
                 return None
             self._reset_stroke()   # 유예 초과 소실 — 끊긴 궤적을 이어 붙이지 않는다
-            if self._active_side is not None and (
-                    self._latched_shape is not None or self._user_side is not None):
+            if not self._is_hand_absent and self._latched_shape is not None:
                 if self._latch_release_sec > 0.0:
-                    # 소실 유예 시작 — 같은 쪽이 유예 안에 돌아오면 래치(모드) 승계.
-                    # 지시 손 고정도 같은 유예를 공유한다 (래치 없이 고정만 된 경우 포함)
-                    self._latch_lost_side = self._active_side
-                    self._latch_lost_sec = now_sec
+                    self._latch_lost_sec = now_sec   # 소실 유예 시작 — 유예 안 복귀면 래치 승계
                 else:
                     self._clear_shape_latch()   # 종전 — 즉시 해제
-                    self._release_user_side()
             elif (self._latch_lost_sec is not None
                     and now_sec - self._latch_lost_sec > self._latch_release_sec):
                 self._clear_shape_latch()   # 유예 만료 — 다음 손에 래치를 잇지 않는다
-                self._release_user_side()   # 지시 손도 해제 — 다음 지시 손을 새로 지정
-                self._latch_lost_side = None
+                                            #   (hand_select 해제 2.0초 > 래치 유예 1.5초 —
+                                            #   새 손 신호가 오기 전에 래치가 먼저 비워진다)
                 self._latch_lost_sec = None
-            self._active_side = None
+            self._is_hand_absent = True
             self._active_shape = None
             if self._point_filter is not None:
                 self._point_filter.reset()
         else:
-            shape, point = point_info
+            shape, point, label = hand_signal
+            self._hand_label = label
             prev_point = self._swipe_tracker.last_point()   # 래치 동결(속도)용 — update 전 좌표
             prev_point_sec = self._last_point_sec
-            if side != self._active_side:
-                if self._is_side_flap(swipe_points, point, body_scale):
-                    # 같은 물리적 손의 라벨 플랩 — 팔 교체가 아니다: 궤적·래치를
-                    # 유지한 채 라벨만 승계한다 (2026-07-28 실기 — 주먹 handedness 불안정)
-                    self._active_side = side
-                else:
-                    self._reset_stroke()   # 팔 교체 — 궤적 연결 금지. 손 모양 전환은 리셋
-                    #   대상이 아니다: 추적점(손 중심)은 주먹↔한 손가락에서 좌표가 연속이다
-                    was_absent = self._active_side is None
-                    is_latch_resume = (   # 소실 유예 안의 같은 쪽 재등장 — 래치(모드) 승계
-                        was_absent and self._latch_lost_side == side
-                        and self._latch_lost_sec is not None
-                        and now_sec - self._latch_lost_sec <= self._latch_release_sec
-                    )
-                    if not is_latch_resume:
-                        self._clear_shape_latch()   # 다른 손·유예 만료 — 래치 승계 금지
-                    self._latch_lost_side = None
-                    self._latch_lost_sec = None
-                    self._active_side = side
-                    prev_point, prev_point_sec = None, None   # 새 손 — 속도 연속성 없음
-                    if self._point_filter is not None:
-                        self._point_filter.reset()   # 다른 점의 잔상으로 새 궤적 오염 금지
-                    # 팔의 "등장"도 휴식 존 이력로 취급(2026-07-21 실기 정정): 근거리에선
-                    # 내린 팔이 화면 밖이라 휴식 존(어깨선+N배)이 프레임 아래로 나가 존
-                    # 스탬프가 불가능하다 — 어깨선 아래에서 새로 나타난 팔은 들어올리기
-                    # 도중일 가능성이 높으므로 등장 시각을 스탬프한다 (위 방향만 유예)
-                    if (was_absent and self._raise_guard_below_shoulder is not None
-                            and (self._shoulder_line_y is None
-                                 or point[1] > self._shoulder_line_y)):
-                        self._last_rest_zone_sec = now_sec
+            if self._is_hand_absent:
+                # 재등장/새 손 — 정체성 판단은 hand_select 몫: 유예 안 복귀는 같은
+                # 손(래치 승계), 유예 밖 신호는 새 획득(래치는 위 소실 경로가 이미
+                # 비웠다). 궤적은 어느 쪽이든 새로 시작 (소실 유예는 위에서 처리)
+                self._is_hand_absent = False
+                self._latch_lost_sec = None
+                prev_point, prev_point_sec = None, None   # 공백 후 — 속도 연속성 없음
+                if self._point_filter is not None:
+                    self._point_filter.reset()   # 잔상으로 새 궤적 오염 금지
+                # 손의 "등장"도 휴식 존 이력로 취급(2026-07-21 실기 정정): 근거리에선
+                # 내린 손이 화면 밖이라 어깨선 아래에서 새로 나타난 손은 들어올리기
+                # 도중일 가능성이 높다 — 등장 시각을 스탬프한다 (위 방향만 유예)
+                if (self._raise_guard_below_shoulder is not None
+                        and (self._shoulder_line_y is None
+                             or point[1] > self._shoulder_line_y)):
+                    self._last_rest_zone_sec = now_sec
             self._active_shape = shape
             if self._point_filter is not None:
                 point = self._point_filter.filter(point, now_sec)   # 떨림 저감 (One Euro)
             if shape is not None and self._is_latch_observable(
                     point, prev_point, prev_point_sec, now_sec, body_scale):
                 self._update_shape_latch(shape)
+            tap_event = self._update_tap_click(shape, point, now_sec, body_scale)
+            if tap_event is not None:
+                self._update_debug(body_scale, shoulder_width_ratio)
+                return tap_event
             self._last_point_sec = now_sec   # 소실 유예의 기준 시각
             self._stamp_rest_zone(point, now_sec, body_scale)
             self._update_swallow_origin(point)
             direction = self._swipe_tracker.update(point[0], point[1], now_sec, body_scale)
+            if (self._swipe_tracker.went_still
+                    and self._raise_guard_below_shoulder is not None
+                    and point[1] <= self._rest_zone_top_y(body_scale)):
+                # 존 밖 정지 = 들어올리기 종료(2026-07-31 키오스크 실기 — 근거리에서
+                # 위 쓸기 무반응): 근거리에선 내린 손이 화면 밖이라 손의 "등장"마다
+                # 휴식 존이 스탬프되고, 유예(0.6초) 안의 위 플릭이 전부 들어올리기로
+                # 삼켜졌다. 존 밖 정지가 확인되면 들어올리기는 끝난 것 — 스탬프를
+                # 지워 다음 위 플릭을 살린다 (존 안 정지는 스탬프 유지 — 진짜 휴식)
+                self._last_rest_zone_sec = None
             if (direction is None and self._is_arm_raise(now_sec)
                     and self._swipe_tracker.progress_y <= -RAISE_TRIM_PROGRESS
                     and abs(self._swipe_tracker.progress_y) >= abs(self._swipe_tracker.progress_x)):
@@ -536,18 +529,17 @@ class GestureFilter:
                 # 수평 쓸기(허리 높이 포함)는 위 진행이 없어 영향받지 않는다
                 self._reset_stroke()
             if direction is not None:
-                event = self._judge_swipe(direction, side, now_sec, point, body_scale)
+                event = self._judge_swipe(direction, label, now_sec, point, body_scale)
 
         self._update_debug(body_scale, shoulder_width_ratio)
         return event
 
-    def _judge_swipe(self, direction, side, now_sec, point, body_scale):
+    def _judge_swipe(self, direction, label, now_sec, point, body_scale):
         """쓸기 방향 1건 + 손 모양 다수결 -> 이벤트 | None.
 
         - 직전 동작의 반대 방향: 직전 획 끝을 지나온 복귀 스트로크면 삼킴
         - 위 방향 + 휴식 존 직후: 들어올리기(예비 동작) — 무시
-        - 래치 모양: finger -> left/right/select · fist -> back/home/confirm ·
-          palm -> temp_left/temp_top/temp_right (2026-08-03 신설, 기능 미정).
+        - 래치 모양: finger -> left/right/select · fist -> back/home/confirm.
           불명(래치 없음)·정의 없는 조합(아래 방향 전부 — 07-29 bottom 제거)은
           무시하되 삼킴은 무장한다 — 실제로 움직인 팔은 되돌아오므로 반동
           오발을 막아야 한다
@@ -601,26 +593,65 @@ class GestureFilter:
             self._set_swallow(direction, now_sec, point, stroke_start)
             return None
 
-        event = self._confirm(event_name, 1.0, now_sec, hand_side=side)
+        event = self._confirm(event_name, 1.0, now_sec, hand_side=label)
         self._set_swallow(direction, now_sec, point, stroke_start)
         return event
 
-    def _is_side_flap(self, swipe_points, new_point, body_scale):
-        """활성 팔의 라벨 교체가 실은 같은 손의 재라벨(플랩)인가 (2026-07-28).
+    # ----- 탭 클릭 (2026-07-31 — 한 손가락 제자리 더블 탭) -----
 
-        조건: ①보정 켜짐 ②활성 팔이 있었고 이번 프레임 그 라벨이 사라짐(두 손이
-        다 보이면 진짜 교체일 수 있어 종전 동작) ③새 라벨의 좌표가 직전 추적점과
-        연속(어깨너비 N배 안 — 프레임 사이 손 이동보다 넉넉하고 반대쪽 실제 손보다
-        좁은 반경). 셋 다 참이면 라벨이 아니라 좌표를 믿는다.
+    def _update_tap_click(self, shape, point, now_sec, body_scale):
+        """한 손가락 제자리 더블 탭 -> "click" 이벤트 | None (2026-07-31 사용자 요청).
+
+        탭 = 검지를 까딱하는 순간 raw 판별이 finger→fist→finger로 잠깐 출렁이는
+        것 — 래치(전환 8프레임)는 이 잠깐의 fist를 무시하므로 래치·쓸기 판정과
+        간섭 없이 raw 흐름에서만 읽는다. 오발 방어 3중:
+        ① 제자리 — 첫 까딱 직전 위치에서 max_move 반경 안 (이동 중 블러 출렁임 차단)
+        ② 시간 창 — 두 탭이 window_sec 안 (우연한 출렁임 2회 누적 차단)
+        ③ 까딱 길이 상한(TAP_DIP_MAX_SEC) — 길면 의도적 주먹 전환이지 탭이 아니다
+        기권(None) 프레임은 상태 유지 — 까딱 전환 중 블러로 흔하다.
         """
-        if self._side_flap_jump_shoulder is None or self._active_side is None:
-            return False
-        if swipe_points.get(self._active_side) is not None:
-            return False
-        last = self._swipe_tracker.last_point()
-        if last is None:
-            return False
-        return math.dist(new_point, last) <= self._side_flap_jump_shoulder * body_scale
+        if self._tap_window_sec is None or shape is None:
+            return None
+        if self._is_tap_dipped or self._tap_dip_count > 0:   # 탭 진행 중
+            if (now_sec - self._tap_anchor_sec > self._tap_window_sec
+                    or (body_scale > 0.0
+                        and math.dist(point, self._tap_anchor_point)
+                        > self._tap_max_move * body_scale)
+                    or (self._is_tap_dipped
+                        and now_sec - self._tap_dip_start_sec > TAP_DIP_MAX_SEC)):
+                self._reset_tap()   # 이동·시간 초과·긴 까딱 — 탭 아님
+                return None
+            if shape == SHAPE_FIST:
+                if not self._is_tap_dipped:
+                    self._is_tap_dipped = True   # 둘째 까딱 시작
+                    self._tap_dip_start_sec = now_sec
+            elif shape == SHAPE_FINGER and self._is_tap_dipped:
+                self._is_tap_dipped = False
+                self._tap_dip_count += 1         # 복귀 = 탭 1회 완성
+                if self._tap_dip_count >= 2:
+                    self._reset_tap()
+                    return self._confirm("click", 1.0, now_sec,
+                                         hand_side=self._hand_label)
+            elif shape not in (SHAPE_FINGER, SHAPE_FIST):
+                self._reset_tap()                # 손바닥 등 — 탭 문맥 아님
+            return None
+        # 대기 — 한 손가락이면 롤링 앵커(첫 까딱 직전 위치·시각), 주먹 등장이 시작 신호
+        if shape == SHAPE_FINGER:
+            self._tap_anchor_point = point
+            self._tap_anchor_sec = now_sec
+        elif shape == SHAPE_FIST and self._tap_anchor_point is not None:
+            self._is_tap_dipped = True
+            self._tap_dip_start_sec = now_sec
+        else:
+            self._reset_tap()
+        return None
+
+    def _reset_tap(self):
+        self._tap_anchor_point = None
+        self._tap_anchor_sec = None
+        self._tap_dip_start_sec = None
+        self._is_tap_dipped = False
+        self._tap_dip_count = 0
 
     # ----- 손 모양 래치 (2026-07-28 v3 — 다수결 대체) -----
 
@@ -681,6 +712,23 @@ class GestureFilter:
 
     # ----- 휴식 존 · 들어올리기 게이트 -----
 
+    def _rest_zone_top_y(self, body_scale):
+        """휴식 존 상단 y — 어깨선 아래 N배, 폴백은 화면 하단 띠.
+
+        2026-07-31 정정(키오스크 실기 — run.bat은 화면이 없어 사용자가 프레임 안
+        위치를 모른다): 어깨선이 있으면 **몸 기준 존만** 쓴다 — 구 min() 결합은
+        화면 하단 띠(절대 좌표)가 항상 함께 적용돼, 카메라 각도에 따라 가슴
+        높이 손이 띠에 걸리면 위 쓸기가 계속 삼켜졌다(위치 의존). 하단 띠는
+        어깨선이 없거나 몸 기준 존이 화면 밖일 때(근거리 — 2026-07-21)만.
+        """
+        bottom_strip_top_y = self._frame_bottom_y - 0.3 * body_scale
+        if self._shoulder_line_y is None:
+            return bottom_strip_top_y
+        zone_top_y = self._shoulder_line_y + self._raise_guard_below_shoulder * body_scale
+        if zone_top_y >= self._frame_bottom_y:
+            return bottom_strip_top_y   # 몸 기준 존이 화면 밖(근거리) — 하단 띠 폴백
+        return zone_top_y
+
     def _stamp_rest_zone(self, point, now_sec, body_scale):
         """추적점이 휴식 존에 있으면 시각을 기록 — 들어올리기 판별 근거.
 
@@ -689,13 +737,7 @@ class GestureFilter:
         """
         if self._raise_guard_below_shoulder is None:
             return
-        bottom_strip_top_y = self._frame_bottom_y - 0.3 * body_scale
-        zone_top_y = (
-            min(self._shoulder_line_y + self._raise_guard_below_shoulder * body_scale,
-                bottom_strip_top_y)
-            if self._shoulder_line_y is not None else bottom_strip_top_y
-        )
-        if point[1] > zone_top_y:
+        if point[1] > self._rest_zone_top_y(body_scale):
             self._last_rest_zone_sec = now_sec
 
     def _is_arm_raise(self, now_sec):
@@ -765,9 +807,9 @@ class GestureFilter:
         self.debug = {
             "body_scale": round(body_scale, 3),               # 어깨너비/프레임폭 (평활 후)
             "shoulder_raw": None if shoulder_width_ratio is None else round(shoulder_width_ratio, 3),
-            "active_side": self._active_side,
-            "user_side": self._user_side,                     # 지시 손 고정 상태 (None=관찰 모드)
-            "hand_shape": self._active_shape,                 # 이번 프레임 원시 판별 (fist/finger/None)
+            "active_side": (None if self._is_hand_absent      # 추적 손 유무 + 라벨(정보용)
+                            else self._hand_label or "hand"),
+            "hand_shape": self._active_shape,                 # 이번 프레임 원시 판별 (fist/finger/open/None)
             "latched_shape": self._latched_shape,             # 고정 모양 — 판정은 이것만 본다
             "latch_candidate": (                              # 전환 후보:연속 관측 수
                 None if self._latch_candidate_shape is None
@@ -800,90 +842,9 @@ class GestureFilter:
                 self._body_scale += self._scale_alpha * (clamped - self._body_scale)
         return self._body_scale if self._body_scale is not None else self._scale_fallback_ratio
 
-    def _update_command_lock(self, available, now_sec, body_scale):
-        """지시 손 감지(v2 — 2026-07-30) — 모양이 보이는 손이 실제로 움직이면 고정한다.
-
-        판정 궤적(_side_tracks)은 활성 팔과 무관하게 양쪽을 항상 기록한다 —
-        쉬는 손이 활성일 때 반대 손이 지시를 시작해도 놓치지 않기 위해서다
-        (v1 역효과의 교정). 안 보이는 쪽은 궤적을 비운다: 소실 전후 점을 이으면
-        난입 손의 위치 점프가 "이동"으로 오인돼 지시로 잘못 승격된다.
-        """
-        for side, track in self._side_tracks.items():
-            info = available.get(side)
-            if info is None:
-                track.clear()
-                continue
-            track.append((now_sec, info[1][0], info[1][1], info[0]))
-            while track and now_sec - track[0][0] > self._command_window_sec:
-                track.popleft()
-        if self._user_side is not None:
-            return
-        best_side, best_travel_ratio = None, 0.0
-        min_travel_ratio = self._command_move_dist * body_scale
-        for side, track in self._side_tracks.items():
-            if len(track) < 2 or all(entry[3] is None for entry in track):
-                continue   # 정지·모양 없는 이동(블러 잔상)은 지시가 아니다
-            travel_ratio = math.dist((track[-1][1], track[-1][2]),
-                                     (track[0][1], track[0][2]))
-            if travel_ratio >= min_travel_ratio and travel_ratio > best_travel_ratio:
-                best_side, best_travel_ratio = side, travel_ratio
-        if best_side is not None:
-            self._user_side = best_side
-            self._user_last_point = (self._side_tracks[best_side][-1][1],
-                                     self._side_tracks[best_side][-1][2])
-            logger.info("지시 손 고정: %s (이동 %.2f 어깨너비)", best_side,
-                        best_travel_ratio / body_scale if body_scale else 0.0)
-
-    def _release_user_side(self):
-        """지시 손 해제 — 다음 지시 손은 모양+이동으로 다시 지정된다."""
-        self._user_side = None
-        self._user_last_point = None
-
-    def _select_active_arm(self, swipe_points, body_scale, now_sec):
-        """이번 프레임의 활성 팔 1개를 고른다 -> (side, (손모양, 좌표)) 또는 (None, None).
-
-        한 번에 한 팔만 인식한다 — 양팔이 다 보이면 **더 높이 든 팔**(화면 y가 작은 쪽)을
-        택한다: 제스처하는 팔은 들려 있고 쉬는 팔은 내려가 있다. 높이 차가
-        switch_margin_y_shoulder(어깨너비 배수) 미만이면 현재 활성 팔을 유지해
-        잦은 교체(궤적 리셋)를 막는다.
-
-        지시 손 고정(v2 — 2026-07-30): 모양이 보이는 손이 실제로 움직이면(지시)
-        그 손을 유저 손으로 고정 — 반대 손이 더 높아도, 먼저 잡혀 있었어도
-        지시 손이 자리를 가져간다. 고정 중엔 같은 손의 재라벨(플랩)만 승계를
-        허용하고, 반대 손과 마지막 관측점에서 먼 같은 라벨 손(다른 사람 난입)은
-        지시 손 소실 유예가 지날 때까지 없는 것으로 취급한다.
-        """
-        available = {s: info for s, info in swipe_points.items() if info is not None}
-        if not available:
-            return None, None
-        if self._is_command_hand_lock:
-            self._update_command_lock(available, now_sec, body_scale)
-            if self._user_side is not None:
-                if self._user_side in available:
-                    point = available[self._user_side][1]
-                    if (self._user_last_point is not None
-                            and math.dist(point, self._user_last_point)
-                            > self._command_rejoin_dist * body_scale):
-                        return None, None   # 원거리 재등장(다른 사람 난입 의심) — 무시
-                    self._user_last_point = point
-                    return self._user_side, available[self._user_side]
-                other_side = next(iter(available))
-                if self._is_side_flap(swipe_points, available[other_side][1], body_scale):
-                    self._user_side = other_side   # 같은 손 재라벨 — 지시 손 라벨 승계
-                    self._user_last_point = available[other_side][1]
-                    return other_side, available[other_side]
-                return None, None   # 반대 손 — 지시 손이 돌아올 때까지 무시
-        if len(available) == 1:
-            side = next(iter(available))
-            return side, available[side]
-
-        left_y = available["left"][1][1]
-        right_y = available["right"][1][1]
-        higher_side = "left" if left_y < right_y else "right"
-        is_near_tie = abs(left_y - right_y) < self._switch_margin_y_shoulder * body_scale
-        if self._active_side in available and is_near_tie:
-            return self._active_side, available[self._active_side]
-        return higher_side, available[higher_side]
+    # 구 활성 팔 선정·지시 손 고정(v2)·라벨 플랩 보정은 2026-07-31 라벨 제거로
+    # 소멸 — 획득(이동+모양)·이음(연속성)·해제는 hand_select의 단일 손 추적이
+    # 맡는다 (동일 규칙의 라벨 없는 계승 — hand_select 모듈 독스트링).
 
     # ----- 공통 -----
 

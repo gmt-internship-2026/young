@@ -1,6 +1,6 @@
 """파이프 수신 확인 도구 — 델파이 없이 stdio 연동 규격을 검증한다 (2026-07-23).
 
-엔진(run_demo.py)을 자식 프로세스로 실행하고, 델파이가 할 일(자식 프로세스의
+엔진(main.py)을 자식 프로세스로 실행하고, 델파이가 할 일(자식 프로세스의
 stdout을 익명 파이프로 줄 단위 수신)을 그대로 흉내 내 받은 줄을 보여준다.
 윈도우 배포 PC에서 델파이 연결 전에 이 도구로 규격을 먼저 확인한다.
 
@@ -23,7 +23,7 @@ def main():
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     args = parser.parse_args()
 
-    cmd = [sys.executable, os.path.join(ROOT_DIR, "scripts", "run_demo.py"),
+    cmd = [sys.executable, os.path.join(ROOT_DIR, "main.py"),
            "--config", args.config]
     print(f"[INFO] 엔진 실행: {' '.join(cmd)}")
     print("[INFO] stdout 파이프 수신 대기 — 카메라 앞에서 제스처를 해 보세요 (종료 Ctrl+C)")

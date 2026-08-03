@@ -3,24 +3,26 @@ import cv2
 
 EVENT_COLOR = (0, 160, 255)
 TEXT_COLOR = (255, 255, 255)
-LOCK_COLOR = (255, 200, 0)       # 잠긴 사용자 얼굴 박스
-HAND_COLOR = {"left": (255, 120, 60), "right": (60, 120, 255)}
-SHAPE_TAG = {"fist": "(F)", "finger": "(1)"}   # F=주먹(fist), 1=한 손가락. 불명은 무표시
+LOCK_COLOR = (255, 200, 0)       # 잠긴 사용자 머리 박스
+TRACKED_COLOR = (60, 220, 60)    # 추적 손(단일 손 — 2026-07-31 라벨 제거)
+CANDIDATE_COLOR = (150, 150, 150)  # 게이트 통과 후보 손 — 획득 전 상황 확인용
+SHAPE_TAG = {"fist": "(F)", "finger": "(1)", "open": "(5)"}   # F=주먹, 1=한 손가락,
+                                               # 5=손바닥(2026-07-31 temp 계층). 불명은 무표시
 
 
 def draw_user_hands(frame, hand_selector):
-    """선별된 사용자 손 박스와 손 추적점(사용자 기준 좌/우)을 그린다.
+    """추적 손 박스·추적점과 후보 손 점을 그린다.
 
-    2026-07-29 포즈 제거: 잠금 몸 박스 대신 주 손 주변 박스(EMA 평활)를 표시한다.
-    라벨: L/R + 손 모양 — 주먹 "(F)" / 한 손가락 "(1)" — 을 화면에서 확인할 수 있게.
-    2026-07-30 얼굴 앵커: 앵커 얼굴 상자("USER FACE")도 표시 — 누가 사용자로
-    잡혔는지 실기에서 바로 확인.
+    2026-07-31 단일 손 추적(라벨 제거): 좌/우 점 2개 대신 **추적 손 1점**(초록
+    원 + 모양 태그)과 게이트 통과 후보(회색 점)를 표시 — 어떤 손이 잡혔고
+    누가 후보로 대기 중인지 실기에서 바로 확인. 앵커 머리 상자("USER HEAD" —
+    몸통판: 포즈 기반, 마스크·모자 무관)는 유지.
     """
-    if getattr(hand_selector, "anchor_face_box", None) is not None:
-        x1, y1, x2, y2 = hand_selector.anchor_face_box
+    if getattr(hand_selector, "anchor_head_box", None) is not None:
+        x1, y1, x2, y2 = hand_selector.anchor_head_box
         cv2.rectangle(frame, (x1, y1), (x2, y2), LOCK_COLOR, 2)
         cv2.putText(
-            frame, "USER FACE", (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, LOCK_COLOR, 2
+            frame, "USER HEAD", (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, LOCK_COLOR, 2
         )
     if hand_selector.locked_box is not None:
         x1, y1, x2, y2 = hand_selector.locked_box
@@ -28,16 +30,16 @@ def draw_user_hands(frame, hand_selector):
         cv2.putText(
             frame, "USER HAND", (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, LOCK_COLOR, 2
         )
-    for side, point_info in hand_selector.user_swipe_points().items():
-        if point_info is None:
-            continue
-        shape, point = point_info
+    for point in hand_selector.candidate_points():
+        cv2.circle(frame, (int(point[0]), int(point[1])), 5, CANDIDATE_COLOR, 1)
+    signal = hand_selector.user_hand_signal()
+    if signal is not None:
+        shape, point, _ = signal
         x_px, y_px = int(point[0]), int(point[1])
-        label = side[0].upper() + SHAPE_TAG.get(shape, "")
-        cv2.circle(frame, (x_px, y_px), 10, HAND_COLOR[side], 2)
+        cv2.circle(frame, (x_px, y_px), 10, TRACKED_COLOR, 2)
         cv2.putText(
-            frame, label, (x_px + 12, y_px + 5),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.6, HAND_COLOR[side], 2,
+            frame, "H" + SHAPE_TAG.get(shape, ""), (x_px + 12, y_px + 5),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.6, TRACKED_COLOR, 2,
         )
     return frame
 
@@ -57,7 +59,8 @@ def draw_debug_panel(frame, debug):
     swallow_tag = f" [RET:{swallow}]" if swallow else ""
     side = debug.get("active_side") or "-"
     shape_tag = SHAPE_TAG.get(debug.get("hand_shape"), "")
-    latch_label = {"fist": "F", "finger": "1"}.get(debug.get("latched_shape"), "-")
+    latch_label = {"fist": "F", "finger": "1", "open": "5"}.get(
+        debug.get("latched_shape"), "-")
     candidate = debug.get("latch_candidate")
     latch_tag = latch_label + (f" cand:{candidate}" if candidate else "")
     lines = [

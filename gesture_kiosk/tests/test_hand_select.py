@@ -1,8 +1,13 @@
-"""hand_select 단위 테스트 — 사용자 손 선별·거리 자·얼굴 앵커 검증.
+"""hand_select 단위 테스트 — 단일 손 추적·거리 자·머리 앵커 검증 (몸통판).
 
-카메라·모델 없이 HandDetection 대역(hand_fixtures.make_hand)과 FaceDetection
-대역만으로 검증한다. 포즈 잠금의 대체(크기+연속성 선별)·손 실측 자(가상
-어깨너비)·얼굴 앵커 게이트(2026-07-30 — 가장 가까운 사람 고정)가 검증 대상이다.
+2026-07-31 단일 손 추적(라벨 제거) 스펙: 좌/우 슬롯·재라벨 소멸 — 획득(이동+
+모양) / 이음(연속성·재등장 반경) / 해제(release_sec)가 검증 대상이다. 카메라·
+모델 없이 HandDetection 대역(hand_fixtures.make_hand)과 HeadDetection 대역만으로
+검증한다. 손 실측 자(가상 어깨너비)·머리 앵커 게이트(2026-07-31 — 포즈 머리)는
+유지.
+
+픽스처 기하: 손 폭 80px · 월드 0.08m → 가상 어깨 400px — 획득 임계
+0.25×400=100px, 재등장 반경 4×80=320px, 연속 반경 1.5×80=120px.
 """
 import os
 import sys
@@ -10,7 +15,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.inference.face_detector import FaceDetection
+from src.inference.head_detector import HeadDetection
 from src.postprocess.hand_select import (
     STANDARD_SHOULDER_M, HandSelector, hand_span_px, hand_span_world_m,
 )
@@ -18,6 +23,7 @@ from tests.hand_fixtures import make_hand
 
 FRAME_WIDTH_PX = 1280
 FRAME_HEIGHT_PX = 720
+FRAME_DT_SEC = 1.0 / 30.0
 
 
 class FakeClock:
@@ -35,6 +41,7 @@ def make_config():
     return {
         "hand_select": {
             "release_sec": 2.0,
+            "acquire": {"move_dist_shoulder": 0.25, "window_sec": 0.5},
             "hand_shape": {
                 "extend_ratio": 1.35,
                 "min_valid_fingers": 3,
@@ -44,9 +51,10 @@ def make_config():
     }
 
 
-def make_selector():
+def make_selector(config=None):
     clock = FakeClock()
-    selector = HandSelector(make_config(), FRAME_WIDTH_PX, FRAME_HEIGHT_PX, clock=clock)
+    selector = HandSelector(config or make_config(), FRAME_WIDTH_PX, FRAME_HEIGHT_PX,
+                            clock=clock)
     return selector, clock
 
 
@@ -63,71 +71,137 @@ def scaled_hand(user_side, shape, root_xy, px_factor):
     return hand
 
 
-class SelectionTest(unittest.TestCase):
-    def test_single_hand_supplies_signal(self):
-        selector, _ = make_selector()
-        selector.update([make_hand("right", "finger", (500, 400))])
-        shape, point = selector.user_swipe_points()["right"]
-        self.assertEqual(shape, "finger")
-        self.assertIsNotNone(point)
-        self.assertIsNone(selector.user_swipe_points()["left"])   # 없는 쪽은 None
+def feed(selector, clock, frames, heads=None):
+    """프레임 목록 공급 — 각 프레임 = HandDetection 목록. 마지막 신호를 돌려준다."""
+    signal = None
+    for hands in frames:
+        selector.update(hands, heads)
+        signal = selector.user_hand_signal()
+        clock.tick(FRAME_DT_SEC)
+    return signal
 
-    def test_biggest_hand_wins_first_selection(self):
-        # 첫 선별 — 가장 큰 손(가장 가까운 사람)이 사용자다
-        selector, _ = make_selector()
-        small = scaled_hand("right", "finger", (300, 400), px_factor=0.5)
-        big = scaled_hand("right", "fist", (900, 400), px_factor=1.5)
-        selector.update([small, big])
-        shape, point = selector.user_swipe_points()["right"]
-        self.assertEqual(shape, "fist")                            # 큰 손이 선택됐다
-        self.assertGreater(point[0], 600)
 
-    def test_continuity_beats_momentary_bigger_hand(self):
-        # 연속성 우선 — 선택된 손 근처의 손을 유지: 옆 사람 손이 순간 커 보여도
-        # (프레임 앞으로 뻗는 등) 주 사용자를 뺏지 못한다 (포즈 잠금의 대체 방어)
-        selector, _ = make_selector()
-        user_hand = make_hand("right", "finger", (500, 400))
-        selector.update([user_hand])
-        selector.user_swipe_points()                               # 선별 기준점 기록
-        intruder = scaled_hand("right", "fist", (1000, 300), px_factor=1.4)
-        selector.update([make_hand("right", "finger", (510, 405)), intruder])
-        shape, point = selector.user_swipe_points()["right"]
-        self.assertEqual(shape, "finger")                          # 연속인 사용자 손 유지
-        self.assertLess(point[0], 700)
+def moving_hand_frames(start_x, step_px, count, y_px=400, shape="finger", side="right"):
+    """이동하는 손의 프레임 목록 — 획득(이동+모양) 재현용."""
+    return [[make_hand(side, shape, (start_x + step_px * i, y_px))]
+            for i in range(count)]
 
-    def test_ambiguous_replacement_is_held(self):
-        # 직전 손이 사라지고 비연속 손 2개가 비슷한 크기 — 우열 불명: 보류(None)
-        selector, _ = make_selector()
-        selector.update([make_hand("right", "finger", (500, 400))])
-        selector.user_swipe_points()
-        selector.update([make_hand("right", "fist", (1000, 300)),
-                         make_hand("right", "finger", (100, 300))])
-        self.assertIsNone(selector.user_swipe_points()["right"])
 
-    def test_single_reappearance_is_adopted(self):
-        # 직전 손이 사라진 뒤 후보가 하나뿐 — 같은 손의 재등장이 압도적으로 흔하다: 승계
-        selector, _ = make_selector()
-        selector.update([make_hand("right", "fist", (500, 400))])
-        selector.user_swipe_points()
-        selector.update([make_hand("right", "fist", (900, 380))])   # 멀리 재등장
-        shape, _ = selector.user_swipe_points()["right"]
-        self.assertEqual(shape, "fist")
+class AcquireTest(unittest.TestCase):
+    """획득 — 모양이 보이는 손이 실제로 움직여야 잡힌다 (구 지시 손 v2의 계승)."""
+
+    def test_moving_hand_with_shape_is_acquired(self):
+        # 5프레임 × 30px = 120px ≥ 임계 100px — 획득
+        selector, clock = make_selector()
+        signal = feed(selector, clock, moving_hand_frames(400, 30, 6))
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal[0], "finger")
+
+    def test_stationary_hand_is_never_acquired(self):
+        # 가만히 떠 있는 손 — 영원히 안 잡힌다 (쉬는 손·구경꾼 손 방어)
+        selector, clock = make_selector()
+        frames = [[make_hand("right", "finger", (500, 400))]] * 30
+        self.assertIsNone(feed(selector, clock, frames))
+
+    def test_moving_shapeless_hand_is_not_acquired(self):
+        # 모양 불명(블러 잔상)인 이동 — 지시가 아니다
+        selector, clock = make_selector()
+        frames = [[make_hand("right", "open", (400 + 30 * i, 400))] for i in range(8)]
+        for frame in frames:
+            frame[0].world_landmarks = frame[0].world_landmarks * 0.0   # 판별 불능화
+        self.assertIsNone(feed(selector, clock, frames))
+
+    def test_moving_hand_beats_resting_hand(self):
+        # 실기 보고 계승(2026-07-30·31 — 가만히 있는 손 독점·배구 토스): 쉬는 손이
+        # 아무리 먼저·크게 보여도, 움직이는 손이 잡힌다
+        selector, clock = make_selector()
+        rest = make_hand("left", "finger", (200, 300))
+        frames = [[rest, make_hand("right", "finger", (700 + 30 * i, 450))]
+                  for i in range(8)]
+        signal = feed(selector, clock, frames)
+        self.assertIsNotNone(signal)
+        self.assertGreater(signal[1][0], 600)   # 움직인 손 위치
+
+    def test_blur_frames_within_window_still_acquire(self):
+        # 이동 중 일부 프레임 판별 실패(모양 None) — 창 안에 모양이 한 번이라도
+        # 보였으면 획득된다 (블러 내성)
+        selector, clock = make_selector()
+        frames = []
+        for i in range(8):
+            hand = make_hand("right", "finger", (400 + 30 * i, 400))
+            if i % 2 == 1:
+                hand.world_landmarks = hand.world_landmarks * 0.0   # 격프레임 블러
+            frames.append([hand])
+        self.assertIsNotNone(feed(selector, clock, frames))
+
+
+class TrackContinuityTest(unittest.TestCase):
+    """이음 — 추적 손은 연속성으로 따라가고, 소실 후에도 근처 재등장이면 같은 손."""
+
+    def _acquire(self):
+        selector, clock = make_selector()
+        feed(selector, clock, moving_hand_frames(400, 30, 6))
+        self.assertIsNotNone(selector.user_hand_signal())
+        return selector, clock
+
+    def test_tracked_hand_follows_fast_move(self):
+        # 획득 후 빠른 이동(프레임당 100px < 재등장 반경 320px) — 계속 같은 손
+        selector, clock = self._acquire()
+        signal = feed(selector, clock,
+                      [[make_hand("right", "finger", (550 + 100 * i, 400))]
+                       for i in range(1, 5)])
+        self.assertIsNotNone(signal)
+        self.assertGreater(signal[1][0], 800)
+
+    def test_intruder_beyond_reentry_is_ignored(self):
+        # 추적 중 반경(320px) 밖에 나타난 손(다른 사람) — 정체성을 못 뺏는다
+        selector, clock = self._acquire()
+        signal = feed(selector, clock, [[make_hand("left", "fist", (1150, 300))]] * 3)
+        self.assertIsNone(signal)   # 추적 손 미관측 — 난입 손은 신호가 아니다
+
+    def test_dropout_reappear_resumes_identity(self):
+        # 소실(release_sec 안) 후 근처 재등장 — 이동 없이도 같은 손으로 승계
+        # (화면 가리킴의 수 초 소실 — 구 래치 유예·rejoin의 계승)
+        selector, clock = self._acquire()
+        feed(selector, clock, [[]] * 20)                       # 0.67초 소실
+        signal = feed(selector, clock,
+                      [[make_hand("right", "finger", (600, 420))]] * 2)
+        self.assertIsNotNone(signal)
+
+    def test_release_requires_reacquisition(self):
+        # release_sec(2초) 초과 소실 — 정체성 해제: 그 자리 정지 손은 새로 획득해야
+        selector, clock = self._acquire()
+        feed(selector, clock, [[]] * 5)
+        clock.tick(2.5)
+        signal = feed(selector, clock,
+                      [[make_hand("right", "finger", (560, 400))]] * 10)
+        self.assertIsNone(signal)   # 정지 재등장 — 획득 요건(이동) 미달
+
+    def test_crossing_center_with_resting_hand_keeps_identity(self):
+        # 획 교차(2026-07-31 실기 계승): 획 손이 쉬는 손 쪽으로 관통해도 연속성이
+        # 정체성을 지킨다 — 라벨 시절 같은 라벨 충돌로 씹히던 시나리오
+        selector, clock = make_selector()
+        rest = make_hand("left", "fist", (350, 550))
+        frames = [[rest, make_hand("right", "finger", (900 - 90 * i, 400))]
+                  for i in range(7)]
+        signal = feed(selector, clock, frames)
+        self.assertIsNotNone(signal)
+        self.assertLess(signal[1][0], 500)   # 관통한 획 손을 끝까지 따라감
 
 
 class EngagementTest(unittest.TestCase):
     def test_engaged_while_hands_recent(self):
         selector, clock = make_selector()
-        self.assertFalse(selector.update([make_hand("right", "finger", (500, 400))]) is False)
+        selector.update([make_hand("right", "finger", (500, 400))])
         self.assertTrue(selector.is_engaged())
         clock.tick(1.0)
         selector.update([])                                        # 잠깐 소실 — 유예 안
         self.assertTrue(selector.is_engaged())
 
     def test_release_clears_selection_state(self):
-        # 유예(2초) 초과 소실 — 사용 종료: 다음 사용자에 기준점을 승계하지 않는다
+        # 유예(2초) 초과 소실 — 사용 종료: 다음 사용자에 상태를 승계하지 않는다
         selector, clock = make_selector()
-        selector.update([make_hand("right", "finger", (500, 400))])
-        selector.user_swipe_points()
+        feed(selector, clock, moving_hand_frames(400, 30, 6))
         clock.tick(2.5)
         self.assertFalse(selector.update([]))
         self.assertIsNone(selector.locked_box)
@@ -160,152 +234,126 @@ class HandScaleTest(unittest.TestCase):
         selector.update([])
         self.assertIsNone(selector.hand_scale_ratio())   # 필터가 마지막 값·폴백 사용
 
-    def test_shoulder_line_is_none(self):
-        # 포즈 제거 — 어깨선 없음: 들어올리기 게이트는 하단 띠 폴백이 담당
+    def test_shoulder_line_is_none_without_anchor(self):
+        # 앵커 없음 — 어깨선 없음: 들어올리기 게이트는 하단 띠 폴백이 담당
         selector, _ = make_selector()
         self.assertIsNone(selector.shoulder_line_y_ratio())
 
 
-def make_face(center_x_px, center_y_px, width_px):
-    return FaceDetection(center_x_px=center_x_px, center_y_px=center_y_px,
+def make_head(center_x_px, center_y_px, width_px):
+    return HeadDetection(center_x_px=center_x_px, center_y_px=center_y_px,
                          width_px=width_px, conf=1.0)
 
 
-class FaceAnchorTest(unittest.TestCase):
-    """얼굴 앵커(2026-07-30) — 가장 큰(가까운) 얼굴 고정 + 팔 도달 반경 게이트."""
+class HeadAnchorTest(unittest.TestCase):
+    """머리 앵커(2026-07-31 몸통판 — 포즈 머리) — 최대(가까운) 머리 고정 + 도달 반경 게이트."""
 
     def setUp(self):
         config = make_config()
-        config["face_anchor"] = {
-            "reach_face_widths": 5.0,     # 얼굴 폭 100px → 반경 500px
+        config["head_anchor"] = {
+            "reach_head_widths": 5.0,     # 머리 폭 100px → 반경 500px
             "anchor_grace_sec": 1.0,
+            "shoulder_below_head_widths": 1.6,   # 어깨선 추정 — 몸 기준 휴식 존
         }
         self.clock = FakeClock()
         self.selector = HandSelector(config, FRAME_WIDTH_PX, FRAME_HEIGHT_PX,
                                      clock=self.clock)
 
-    def test_far_new_hand_blocked_while_anchor_alive(self):
-        # 경성 게이트(2026-07-31 2차 — 실기: 내린 손 자리에 옆 사람 손이 잡힘):
-        # 앵커가 살아 있으면(사용자 얼굴 관측 중) 반경 밖의 새 손은 사용자 손이
-        # 하나도 안 들려 있어도 차단된다 — 옆 사람 손이 통과되던 구멍 봉쇄
-        self.selector.update([make_hand("right", "finger", (1200, 600))],
-                             faces=[make_face(640, 200, 100)])
-        self.assertIsNone(self.selector.user_swipe_points()["right"])
+    def _feed(self, frames, heads):
+        return feed(self.selector, self.clock, frames, heads=heads)
 
-    def test_stale_exemption_not_inherited_by_new_hand(self):
-        # 면제 신선도(2026-07-31 2차): 반경 밖으로 뻗었던 손을 내리고 0.5초가
-        # 지나면 그 자리의 기준점은 만료 — 거기 나타난 새 손(옆 사람)은 면제를
-        # 승계하지 못하고 차단된다
-        face = make_face(640, 200, 100)
-        rest_hand = make_hand("left", "fist", (600, 440))
-        for stroke_x, stroke_y in [(700, 400), (790, 435), (880, 470), (970, 505),
-                                   (1060, 540), (1150, 575)]:
-            self.selector.update(
-                [make_hand("right", "finger", (stroke_x, stroke_y)), rest_hand],
-                faces=[face])
-            self.selector.user_swipe_points()          # 기준점 기록 (반경 밖 면제 상태)
-        self.clock.tick(0.7)                           # 손 내림 — 신선도(0.5초) 만료
-        self.selector.update(
-            [make_hand("right", "finger", (1150, 575)), rest_hand], faces=[face])
-        self.assertIsNone(self.selector.user_swipe_points()["right"])
+    def test_far_moving_hand_blocked_while_anchor_alive(self):
+        # 경성 게이트: 앵커가 살아 있으면 반경(500px) 밖 손은 움직여도(획득 요건
+        # 충족) 후보조차 못 된다 — 옆 사람 손 차단
+        head = make_head(640, 200, 100)
+        frames = [[make_hand("right", "finger", (1200, 600 + 30 * i))]
+                  for i in range(8)]
+        self.assertIsNone(self._feed(frames, [head]))
 
-    def test_far_hand_filtered_when_near_hand_exists(self):
-        # 반경 안 손(사용자)과 반경 밖 손(옆 사람)이 경합 — 밖 손만 제외
-        self.selector.update([make_hand("right", "finger", (700, 400)),
-                              make_hand("left", "finger", (60, 600))],
-                             faces=[make_face(640, 200, 100)])
-        signals = self.selector.user_swipe_points()
-        self.assertIsNotNone(signals["right"])
-        self.assertIsNone(signals["left"])
-
-    def test_biggest_face_becomes_anchor(self):
-        # 큰 얼굴(가까운 사람) 기준 게이트 — 작은(뒷) 얼굴 옆 손은 제외
-        near_hand = make_hand("right", "finger", (500, 400))
-        far_hand = make_hand("left", "finger", (1150, 300))
-        self.selector.update([near_hand, far_hand],
-                             faces=[make_face(400, 200, 120), make_face(1000, 180, 50)])
-        signals = self.selector.user_swipe_points()
-        self.assertIsNotNone(signals["right"])
-        self.assertIsNone(signals["left"])
-
-    def test_bigger_face_cannot_steal_live_anchor(self):
-        # sticky(2026-07-31 실기 정정 — 인식 잘되는 얼굴로 앵커가 옮겨감): 앵커가
-        # 살아 있는 동안 다른 얼굴은 크기와 무관하게 무시 — 훨씬 커도 못 뺏는다
-        self.selector.update([], faces=[make_face(640, 200, 100)])
-        self.selector.update([], faces=[make_face(640, 200, 100),
-                                        make_face(200, 220, 140)])
-        x1, _, x2, _ = self.selector.anchor_face_box
-        self.assertLess(abs((x1 + x2) / 2 - 640), 50)   # 원래 사용자 얼굴 유지
-
-    def test_other_face_alone_does_not_hijack_anchor(self):
-        # 앵커 얼굴이 한 프레임 안 잡히고 다른 얼굴만 잡혀도 — 즉시 점프 금지
-        # (구 로직의 구멍: 이 순간 문턱 없이 옮겨가던 것이 실기 "옮겨감"의 정체)
-        self.selector.update([], faces=[make_face(640, 200, 100)])
-        self.selector.update([], faces=[make_face(200, 220, 140)])   # 앵커 얼굴 미관측
-        x1, _, x2, _ = self.selector.anchor_face_box
-        self.assertLess(abs((x1 + x2) / 2 - 640), 50)   # 앵커 그대로 (유예가 수명 관리)
-
-    def test_new_face_anchors_after_grace_expiry(self):
-        # 교체는 사용자가 떠나 유예(1초)가 앵커를 푼 뒤에만 — 다음 사용자 정상 인수
-        self.selector.update([], faces=[make_face(640, 200, 100)])
-        self.clock.tick(1.5)
-        self.selector.update([], faces=[make_face(200, 220, 90)])    # 유예 만료 후 새 얼굴
-        x1, _, x2, _ = self.selector.anchor_face_box
-        self.assertLess(abs((x1 + x2) / 2 - 200), 50)
+    def test_near_moving_hand_is_acquired(self):
+        # 반경 안에서 움직이는 손 — 정상 획득
+        head = make_head(640, 200, 100)
+        frames = moving_hand_frames(500, 30, 6)
+        self.assertIsNotNone(self._feed(frames, [head]))
 
     def test_tracked_hand_exempt_beyond_reach(self):
-        # 연속 면제(2026-07-31): 반경 안에서 인식돼 추적 중인 손은 크게 뻗어
-        # 반경(500px)을 벗어나도 안 잘린다 — 반경은 입장 심사만 (제스처 손의
-        # 얼굴과의 거리는 사람마다 천차만별). 쉬는 손이 반경 안에 있어
-        # fail-open이 아닌 상태에서도 검증돼야 한다
-        face = make_face(640, 200, 100)
-        rest_hand = make_hand("left", "fist", (600, 440))     # 쉬는 손 — 반경 안 유지
-        stroke_points = [(700, 400), (790, 435), (880, 470), (970, 505),
-                         (1060, 540), (1150, 575)]            # 연속 확장 — 끝은 반경 밖
-        for stroke_x, stroke_y in stroke_points:
-            self.selector.update(
-                [make_hand("right", "finger", (stroke_x, stroke_y)), rest_hand],
-                faces=[face])
-            signals = self.selector.user_swipe_points()       # 선별 기준점 기록
-        # 마지막 위치는 얼굴에서 반경(500px) 밖 — 추적 연속이라 면제
-        self.assertIsNotNone(signals["right"])
-        self.assertGreater(signals["right"][1][0], 1100)
+        # 추적 면제: 반경 안에서 획득된 손은 크게 뻗어 반경 밖으로 나가도 안 잘린다
+        head = make_head(640, 200, 100)
+        frames = moving_hand_frames(500, 30, 6)          # 반경 안 획득
+        frames += [[make_hand("right", "finger", (700 + 90 * i, 480))]
+                   for i in range(1, 7)]                 # 끝은 반경 밖
+        signal = self._feed(frames, [head])
+        self.assertIsNotNone(signal)
+        self.assertGreater(signal[1][0], 1100)
 
-    def test_head_position_overrides_handedness_label(self):
-        # 머리 기준 재라벨(2026-07-31 사용자 제안): 얼굴 중심보다 확실히 오른쪽
-        # (중앙 띠 밖)에 있는 손은 모델 라벨이 "left"로 틀려도 오른손이다 —
-        # handedness 왔다갔다(주먹 불안정)가 위치 기준으로 구조 제거된다
-        self.selector.update([make_hand("left", "finger", (900, 400))],
-                             faces=[make_face(640, 200, 100)])
-        signals = self.selector.user_swipe_points()
-        self.assertIsNotNone(signals["right"])
-        self.assertIsNone(signals["left"])
+    def test_stale_exemption_not_inherited_by_new_hand(self):
+        # 면제 신선도(0.5초): 반경 밖으로 뻗었던 손을 내리고 0.5초가 지나면 그
+        # 자리 추적점은 만료 — 거기 나타난 새 손(옆 사람)은 게이트에 걸린다
+        head = make_head(640, 200, 100)
+        frames = moving_hand_frames(500, 30, 6)
+        frames += [[make_hand("right", "finger", (700 + 90 * i, 480))]
+                   for i in range(1, 7)]                 # 반경 밖(끝 ~1240)까지 추적
+        self._feed(frames, [head])
+        self.clock.tick(0.7)                             # 신선도(0.5초) 만료
+        signal = self._feed([[make_hand("right", "finger", (1240, 480))]] * 3, [head])
+        self.assertIsNone(signal)
 
-    def test_central_band_keeps_model_label(self):
-        # 얼굴 중심 ±0.5 얼굴폭(50px)의 모호 띠 — 위치로 단정하지 않고 모델
-        # 라벨 유지 (획이 중앙을 스칠 때 경계 진동 방지)
-        self.selector.update([make_hand("left", "finger", (660, 400))],
-                             faces=[make_face(640, 200, 100)])
-        self.assertIsNotNone(self.selector.user_swipe_points()["left"])
+    def test_dropout_reappear_far_still_exempt(self):
+        # 소실 재등장 이음: 빠른 획 중 잠깐 끊겼다 반경 밖·재등장 반경(320px) 안에
+        # 재등장 — 게이트 면제 + 정체성 승계로 획이 이어진다
+        head = make_head(640, 200, 100)
+        frames = moving_hand_frames(700, 60, 5)          # 반경 안 획득 (끝 ~990)
+        self._feed(frames, [head])
+        self.clock.tick(0.3)                             # 모션 블러 소실 (신선도 안)
+        signal = self._feed([[make_hand("right", "finger", (1230, 480))]] * 2, [head])
+        self.assertIsNotNone(signal)                     # 머리에서 ~640px — 반경 밖인데 통과
 
-    def test_no_anchor_keeps_model_label(self):
-        # 앵커 없음(마스크 등 얼굴 미검출) — 종전대로 모델 라벨 신뢰
-        self.selector.update([make_hand("left", "finger", (900, 400))])
-        self.assertIsNotNone(self.selector.user_swipe_points()["left"])
+    def test_biggest_head_becomes_anchor(self):
+        # 큰 머리(가까운 사람) 기준 게이트 — 작은(뒷) 머리 옆에서 움직이는 손 제외
+        heads = [make_head(400, 200, 120), make_head(1000, 180, 50)]
+        frames = [[make_hand("left", "finger", (1150 + 20 * i, 300))] for i in range(8)]
+        self.assertIsNone(self._feed(frames, heads))
+
+    def test_bigger_head_cannot_steal_live_anchor(self):
+        # sticky: 앵커가 살아 있는 동안 다른 머리는 크기와 무관하게 무시
+        self.selector.update([], [make_head(640, 200, 100)])
+        self.selector.update([], [make_head(640, 200, 100), make_head(200, 220, 140)])
+        x1, _, x2, _ = self.selector.anchor_head_box
+        self.assertLess(abs((x1 + x2) / 2 - 640), 50)   # 원래 사용자 머리 유지
+
+    def test_other_head_alone_does_not_hijack_anchor(self):
+        # 앵커 머리가 한 프레임 안 잡히고 다른 머리만 잡혀도 — 즉시 점프 금지
+        self.selector.update([], [make_head(640, 200, 100)])
+        self.selector.update([], [make_head(200, 220, 140)])   # 앵커 머리 미관측
+        x1, _, x2, _ = self.selector.anchor_head_box
+        self.assertLess(abs((x1 + x2) / 2 - 640), 50)   # 앵커 그대로 (유예가 수명 관리)
+
+    def test_new_head_anchors_after_grace_expiry(self):
+        # 교체는 사용자가 떠나 유예(1초)가 앵커를 푼 뒤에만 — 다음 사용자 정상 인수
+        self.selector.update([], [make_head(640, 200, 100)])
+        self.clock.tick(1.5)
+        self.selector.update([], [make_head(200, 220, 90)])    # 유예 만료 후 새 머리
+        x1, _, x2, _ = self.selector.anchor_head_box
+        self.assertLess(abs((x1 + x2) / 2 - 200), 50)
 
     def test_anchor_grace_then_gate_off(self):
-        # 얼굴 소실 — 유예(1초) 안엔 게이트 유지(경합 시 밖 손 제외), 초과하면
-        # 해제(모든 손 통과): 얼굴 미검출로 방어가 인식을 해치지 않게
-        near_hand = make_hand("right", "finger", (700, 400))
-        far_hand = make_hand("left", "finger", (60, 600))
-        self.selector.update([near_hand, far_hand], faces=[make_face(640, 200, 100)])
-        self.assertIsNone(self.selector.user_swipe_points()["left"])
-        self.clock.tick(0.5)
-        self.selector.update([near_hand, far_hand], faces=[])   # 관측 실패 — 유예 안
-        self.assertIsNone(self.selector.user_swipe_points()["left"])
-        self.clock.tick(1.0)
-        self.selector.update([near_hand, far_hand], faces=[])   # 유예 초과 — 게이트 해제
-        self.assertIsNotNone(self.selector.user_swipe_points()["left"])
+        # 머리 소실 — 유예(1초) 안엔 게이트 유지(밖 손 차단), 초과하면 해제
+        # (모든 손 통과): 머리 미검출로 방어가 인식을 해치지 않게
+        head = make_head(640, 200, 100)
+        far_frames = [[make_hand("left", "finger", (60 + 20 * i, 600))] for i in range(8)]
+        self.assertIsNone(self._feed(far_frames, [head]))      # 반경 밖 — 차단
+        self.clock.tick(1.5)                                   # 유예 초과 — 앵커 해제
+        signal = self._feed(
+            [[make_hand("left", "finger", (60 + 20 * i, 600))] for i in range(8)], [])
+        self.assertIsNotNone(signal)                           # 게이트 꺼짐 — 획득 가능
+
+    def test_shoulder_line_estimated_from_anchor(self):
+        # 어깨선 추정(2026-07-31 — run.bat 위치 의존 정정): 앵커 머리 중심 y +
+        # 귀-귀 폭×1.6 을 프레임 폭 정규화로 돌려준다 — 휴식 존이 몸 기준으로 선다
+        self.assertIsNone(self.selector.shoulder_line_y_ratio())
+        self.selector.update([], [make_head(640, 200, 100)])
+        self.assertAlmostEqual(self.selector.shoulder_line_y_ratio(),
+                               (200 + 1.6 * 100) / FRAME_WIDTH_PX, places=4)
 
 
 if __name__ == "__main__":

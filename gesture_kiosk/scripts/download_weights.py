@@ -1,7 +1,7 @@
-"""모델 준비 — 손(HandLandmarker)·얼굴(Face Detector) 모델 다운로드.
+"""모델 준비 — 손(HandLandmarker)·머리(Pose Landmarker) 모델 다운로드.
 
-2026-07-29 포즈 스택 제거 + 2026-07-30 얼굴 앵커 도입: 내려받을 것은
-hand_landmarker.task(8MB)와 blaze_face_short_range.tflite(0.2MB) 둘이다
+2026-07-31 몸통판: 앵커가 얼굴 검출 → 포즈 머리로 교체돼 내려받을 것은
+hand_landmarker.task(8MB)와 pose_landmarker_lite.task(~5MB) 둘이다
 (mediapipe 1.0은 모델을 wheel에 담지 않는다). 내부망 반입 시에는 이 파일들이
 프로젝트 폴더(models/weights/)에 포함돼 있어 다운로드가 필요 없다.
 
@@ -24,9 +24,9 @@ HAND_MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
     "hand_landmarker/float16/1/hand_landmarker.task"
 )
-FACE_MODEL_URL = (
-    "https://storage.googleapis.com/mediapipe-models/face_detector/"
-    "blaze_face_short_range/float16/1/blaze_face_short_range.tflite"
+POSE_MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+    "pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
 )
 
 
@@ -45,10 +45,10 @@ def main():
     config = load_config(DEFAULT_CONFIG_PATH)
     download_model(os.path.join(ROOT_DIR, config["hand_tracker"]["model_path"]),
                    HAND_MODEL_URL, "손(HandLandmarker)", "8MB")
-    face_cfg = config.get("face_anchor") or {}
-    if face_cfg.get("model_path"):
-        download_model(os.path.join(ROOT_DIR, face_cfg["model_path"]),
-                       FACE_MODEL_URL, "얼굴(Face Detector)", "0.2MB")
+    head_cfg = config.get("head_anchor") or {}
+    if head_cfg.get("model_path"):
+        download_model(os.path.join(ROOT_DIR, head_cfg["model_path"]),
+                       POSE_MODEL_URL, "머리(Pose Landmarker)", "5MB")
 
 
 if __name__ == "__main__":

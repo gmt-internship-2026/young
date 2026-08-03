@@ -51,19 +51,18 @@ class _Sim:
         self._filter = GestureFilter(config, clock=lambda: self._now_sec)
         self.position = REST
         self.shape = "finger"
-        self.side = "left"      # 손 라벨 — 플랩 시나리오에서 중간에 바꾼다
+        self.side = "left"      # 손 라벨 — 정보용(이벤트 hand_side)일 뿐 판정 무관
         self.events = []
 
-    def _step(self, swipe_points):
+    def _step(self, hand_signal):
         self._now_sec += self._dt_sec
-        event = self._filter.filter_signals(swipe_points, SHOULDER_RATIO, SHOULDER_LINE_Y)
+        event = self._filter.filter_signals(hand_signal, SHOULDER_RATIO, SHOULDER_LINE_Y)
         if event is not None:
             self.events.append(event.class_name)
 
     def feed(self, x, y):
         self.position = (x, y)
-        other = "right" if self.side == "left" else "left"
-        self._step({self.side: (self.shape, (x, y)), other: None})
+        self._step((self.shape, (x, y), self.side))
 
     def hold(self, duration_sec):
         for _ in range(round(duration_sec * FPS)):
@@ -82,7 +81,7 @@ class _Sim:
         x0, y0 = self.position
         for i in range(1, steps + 1):
             self.position = (x0 + dx * i / steps, y0 + dy * i / steps)
-            self._step({"left": None, "right": None})
+            self._step(None)
 
 
 def _sims():
@@ -299,6 +298,22 @@ class SwipeScenarioTest(unittest.TestCase):
             sim.move_by(0, AMP_Y, 0.3)           # 아래 — 정의 없음(무시)
         self._run(scenario, [])
 
+    def test_21_close_range_appear_pause_then_select(self):
+        # 근거리 정정 2차(2026-07-31 키오스크 실기 — 근거리에서 위 쓸기 무반응):
+        # 근거리에선 내린 손이 화면 밖이라 손 등장마다 휴식 존이 스탬프되는데,
+        # 구 로직은 유예(0.6초)를 다 기다려야 위 플릭이 살았다 — 등장 직후의
+        # 자연스러운 "멈췄다 위로 스냅"이 전부 삼켜졌다. 존 밖 정지(재장전
+        # went_still)가 확인되면 들어올리기는 끝난 것 — 스탬프를 지워 짧게 멈춘
+        # 뒤의 위 플릭이 select로 나가야 한다 (쉼 없는 등장→상승은 test_20이
+        # 여전히 차단을 검증)
+        def scenario(sim):
+            sim.drop(0, 0, 0.6)                  # 손 부재(화면 밖)
+            sim.position = (0.5, 0.40)           # 하단(존 밖·어깨선 아래)에서 등장
+            sim.move_by(0, -0.05, 0.15)          # 가슴께로 마저 올림 — 들어올리기 꼬리
+            sim.hold(0.25)                       # 잠깐 정지 — 게이트 해제 (유예 0.6초 미만)
+            sim.move_by(0, -AMP_Y, 0.25)         # 위 플릭 = 의도적 select
+        self._run(scenario, ["select"])
+
     def test_22_pointing_at_screen_navigates_via_memory(self):
         # v2 모양 기억(실기 사진 실증): 손가락을 세워 보인 뒤 화면을 가리키며
         # (검지가 카메라 쪽으로 누움 — 판별 기권) 쓸어도 항법이 유지된다
@@ -321,14 +336,14 @@ class SwipeScenarioTest(unittest.TestCase):
 
     def test_24_handedness_flap_mid_stroke_keeps_back(self):
         # 좌/우 라벨 플랩(2026-07-28 실기 — MediaPipe handedness가 주먹에서 불안정):
-        # 왼쪽으로 쓸던 중 라벨이 좌→우로 튀어도 좌표가 연속이면 같은 손 — 궤적을
-        # 이어 back이 정상 발화해야 한다. 보정 전에는 리셋으로 획이 유실되고
-        # 손을 되돌리는 반동(오른쪽)만 확정돼 confirm(구 ok)으로 오발됐다
+        # 2026-07-31 라벨 제거로 라벨은 판정과 무관해졌다 — 획 중간에 라벨이 튀어도
+        # 신호는 같은 손(hand_select 연속성)이라 back이 그대로 발화한다.
+        # 구 플랩 보정(side_flap_jump)의 회귀 검증을 라벨 무관성 검증으로 계승
         def scenario(sim):
             sim.shape = "fist"
             sim.hold(0.5)
             sim.move_by(-AMP_X / 2, 0, 0.15)
-            sim.side = "right"              # 라벨 플랩 — 좌표는 그대로 이어진다
+            sim.side = "right"              # 라벨 플랩 — 판정에 아무 영향 없다
             sim.move_by(-AMP_X / 2, 0, 0.15)
             sim.hold(0.3)
         self._run(scenario, ["back"])

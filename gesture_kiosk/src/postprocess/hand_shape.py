@@ -1,10 +1,8 @@
-"""postprocess 모듈 — 손 모양 판별: 주먹 / 한 손가락 / 편 손 (2026-07-23 새 스펙).
+"""postprocess 모듈 — 손 모양 판별: 주먹 / 한 손가락 (2026-07-23 새 스펙).
 
 「제스처 정의 보고서」(2026-07-22 회사 확정)의 손 모양 기준 체계를 구현한다:
 - **한 손가락** + 상·하·좌·우 이동 = 포커스 이동 (탐색 계층 — 화면 안 바뀜)
 - **주먹** + 위/왼쪽/오른쪽 = 처음으로/이전/확인 (명령 계층 — 화면 바뀜)
-- **편 손**(손가락 전부 폄) + 위/왼쪽/오른쪽 = temp_top/temp_left/temp_right
-  (2026-08-03 — 기능 미정, 임시 실험용 제스처. gesture_filter.EVENT_BY_SHAPE 참고)
 
 판별 규칙 v3 (2026-07-28 — 입력을 wholebody 손 21점 → MediaPipe HandLandmarker
 21점으로 교체, hand_tracker.py 참고):
@@ -22,9 +20,8 @@
 - **판단 불가(기권)**: 짧지만 접힘이 확인 안 됨 — 단정하지 않는다
 
 손 판정: 한 손가락 = 폄 1개 + 굽힘 확인 min_valid_fingers-1개 이상 ·
-주먹 = 폄 0 + **기권 0** + 굽힘 확인 min_valid_fingers개 이상 ·
-편 손 = 폄 min_valid_fingers개 이상 + **기권 0** + 굽힘 확인 0 (주먹과 대칭 조건) ·
-그 외 = None (모양 불명 — 이동 추적은 하되, 확정은 다수결·모양 기억이 담당).
+주먹 = 폄 0 + **기권 0** + 굽힘 확인 min_valid_fingers개 이상 · 그 외 = None
+(모양 불명 — 이동 추적은 하되, 확정은 다수결·모양 기억이 담당).
 엄지는 세지 않는다 — 주먹을 쥐어도 엄지는 밖으로 삐져나와 오판이 잦고,
 보고서의 "손가락 종류 무관"과도 합치한다 (검지~새끼 중 아무거나 1개).
 """
@@ -38,7 +35,9 @@ HAND_KPT_COUNT = 21
 
 SHAPE_FIST = "fist"       # 주먹 — 명령 계층
 SHAPE_FINGER = "finger"   # 한 손가락 — 탐색 계층
-SHAPE_PALM = "palm"       # 편 손(손가락 전부 폄) — 임시 실험 계층 (2026-08-03)
+SHAPE_OPEN = "open"       # 손바닥(전부 폄) — temp 계층 (2026-07-31 사용자 요청:
+                          #   temp_left/temp_right/temp_top). 종전엔 "2개 이상 폄 =
+                          #   불명"으로 버리던 모양을 셋째 모양으로 승격
 
 STATE_EXTENDED = "extend"      # 폄
 STATE_CURLED = "curl"          # 굽힘 확인
@@ -85,14 +84,14 @@ def finger_states(landmarks, extend_ratio, curl_confirm_ratio):
 
 
 def classify_hand_shape(landmarks, extend_ratio, min_valid_fingers, curl_confirm_ratio):
-    """손 모양 판별 v3 -> "fist" | "finger" | "palm" | None (모양 불명).
+    """손 모양 판별 v3 -> "fist" | "finger" | None (모양 불명).
 
     landmarks: HandDetection.**world_landmarks** — shape (21, 3), 미터 단위 월드
     좌표를 권장한다 (2026-07-28 실기 정정: 화면 좌표의 z는 노이즈가 커서 가리키기
     자세의 방향 반전 판정이 튀어 주먹 오판 재발 — 시점 불변 월드 기하로 판별).
     판별은 비율·방향만 쓰므로 스케일 무관 — 화면 좌표를 넣어도 동작은 한다.
     손가락별 3단계(폄/굽힘 확인/기권 — 모듈 주석)를 3D 거리로 세고,
-    주먹·편 손 둘 다 기권이 하나라도 있으면 단정하지 않는다 (v2 보수 구조 유지).
+    주먹은 기권이 하나라도 있으면 단정하지 않는다 (v2 보수 구조 유지).
     """
     states = finger_states(landmarks, extend_ratio, curl_confirm_ratio)
     if not states:
@@ -105,9 +104,12 @@ def classify_hand_shape(landmarks, extend_ratio, min_valid_fingers, curl_confirm
         return SHAPE_FINGER
     if extended_count == 0 and uncertain_count == 0 and curled_count >= min_valid_fingers:
         return SHAPE_FIST
-    if extended_count >= min_valid_fingers and uncertain_count == 0 and curled_count == 0:
-        return SHAPE_PALM   # 손가락 전부 폄 — 주먹과 대칭 조건 (2026-08-03 신설)
-    return None   # 기권 포함·애매한 개수 폄 — 단정하지 않는다
+    if extended_count >= min_valid_fingers and curled_count == 0:
+        # 손바닥(2026-07-31) — 폄이 판정 정족수 이상 + 굽힘 확인 0: 블러로 한둘이
+        # 기권이어도 나머지가 다 펴져 있으면 손바닥. 굽힘이 하나라도 확인되면
+        # 불명(아래) — 한 손가락→손바닥 전환 중간 자세를 단정하지 않는다
+        return SHAPE_OPEN
+    return None   # 기권 혼재·폄 2개(중간 자세) — 단정하지 않는다
 
 
 def hand_center_point(landmarks):

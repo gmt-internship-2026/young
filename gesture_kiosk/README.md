@@ -19,8 +19,8 @@
 
 ```bat
 install.bat        :: 설치 (인터넷) — CPU 전용, 내부망은 설치가이드.md B절
-run.bat            :: 실행 — 이벤트가 콘솔(stdout)에 GESTURE| 한 줄씩
-run.bat --debug    :: + 로컬 디버그 창 (카메라·판정 계기판)
+venv_win\Scripts\python.exe main.py   :: 실행 — 이벤트가 stdout에 한 줄씩 (델파이 연동 동일)
+run_debug.bat                        :: + 로컬 디버그 창 (카메라·판정 계기판)
 ```
 
 > 상세 절차·내부망(오프라인) 반입·문제 해결: **[설치가이드.md](설치가이드.md)**
@@ -61,7 +61,8 @@ run.bat --debug    :: + 로컬 디버그 창 (카메라·판정 계기판)
 
 ```
 gesture_kiosk/
-├─ install.bat / run.bat / make_offline_bundle.bat  # 윈도우 이식·실행 (설치가이드.md)
+├─ main.py                  # 공식 진입점 — 델파이가 직접 실행 (2026-08-03)
+├─ install.bat / run_debug.bat / make_offline_bundle.bat  # 설치·현장 진단·번들 제작 (설치가이드.md)
 ├─ configs/config.yaml      # 모든 설정값의 단일 출처 — 튜닝은 여기서만
 ├─ models/weights/          # hand_landmarker.task (8MB — download_weights.py가 받는다)
 ├─ src/
@@ -72,7 +73,7 @@ gesture_kiosk/
 │   ├─ postprocess/gesture_filter.py # 동작 판정 — 손 모양 래치 + 첫 선 궤적 4방향
 │   ├─ pipeline/realtime_loop.py     # 실시간 루프 조립 (멀티스레딩)
 │   └─ pipeline/event_sender.py      # ★ 회사 프로그램 연동 접점 (stdio/console)
-├─ scripts/                 # run_demo · pipe_listen · download_weights · benchmark · smoke_test · eval_accuracy
+├─ scripts/                 # pipe_listen · download_weights · benchmark · smoke_test · eval_accuracy
 ├─ tests/                   # 단위 테스트 126건 (카메라·모델 없이 실행 가능)
 └─ docs/TODO.md             # 작업 분해 및 회사 확인 필요 항목
 ```
@@ -83,8 +84,9 @@ gesture_kiosk/
 
 | 명령 | 용도 |
 |---|---|
-| `run.bat` / `python scripts/run_demo.py` | 엔진 — 이벤트가 stdout에 `GESTURE\|...` 한 줄씩 |
-| `run.bat --debug` | + 로컬 디버그 창 (카메라·판정 계기판 오버레이) |
+| `venv_win\Scripts\python.exe main.py` | 엔진 — 이벤트가 stdout에 한 줄씩 (공식 실행) |
+| 실행 중 `cam on` / `cam off` (+Enter) | 카메라·계기판 창 켜기/끄기 — 재실행 불필요 |
+| `main.py --debug` (= `run_debug.bat`) | 창을 켠 채 시작 |
 | `python scripts/pipe_listen.py` | 델파이 대역 — 파이프 수신 규격 자가 검증 |
 | `python scripts/benchmark.py` | 추론 단독 FPS 측정 (기획서 6.1 — KPI 30 FPS) |
 | `python -m unittest discover tests -v` | 판정·잠금·손모양·시나리오 단위 테스트 |

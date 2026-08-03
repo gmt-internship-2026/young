@@ -13,4 +13,5 @@ echo [INFO] 정확도 측정 세션 — 지시 창의 동작을 따라 하세요
 echo [INFO] 주의: 엔진(run.bat)이 켜져 있으면 카메라 점유로 실패합니다 — 먼저 종료하세요
 echo        결과 리포트: logs\eval_*.md · 중단: 지시 창에서 q/ESC
 python scripts\eval_accuracy.py %*
-if errorlevel 1 pause
+REM 성공·실패 모두 pause — 더블클릭 실행에서 결과·오류를 읽을 수 있게 (2026-07-31 실기)
+pause

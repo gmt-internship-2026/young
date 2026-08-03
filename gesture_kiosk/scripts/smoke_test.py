@@ -67,7 +67,7 @@ def main():
 
     print()
     if is_all_passed:
-        print("[OK] 스모크 테스트 통과 — run.bat으로 실행하세요")
+        print("[OK] 스모크 테스트 통과 — 실행: venv_win\Scripts\python.exe main.py")
         return 0
     print("[NG] 실패 항목이 있습니다 — 설치가이드.md 문제 해결 절 참고")
     return 1

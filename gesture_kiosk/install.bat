@@ -67,8 +67,10 @@ python scripts\smoke_test.py
 if errorlevel 1 echo [경고] 검증 실패 항목이 있습니다 — 설치가이드.md의 "문제 해결" 참고
 
 echo.
-echo [DONE] 설치 완료 — run.bat 으로 실행하세요 (이벤트는 콘솔 GESTURE 줄, 디버그 창: run.bat --debug)
+echo [DONE] 설치 완료 — 카메라 확인: run_debug.bat 더블클릭 / 연동 실행: venv_win\Scripts\python.exe main.py
 echo [성능] 30 FPS 미달 시: configs\config.yaml 에서 max_infer_fps 30으로 (캡처 경합 완화)
+REM 성공 시에도 pause — 더블클릭 실행에서 창이 바로 닫혀 결과를 못 보는 문제 방지 (2026-07-31 실기)
+pause
 exit /b 0
 
 REM 실패 시 pause — 더블클릭 실행이라도 창이 닫히지 않고 원인 메시지가 남게 (2026-07-24 실기)

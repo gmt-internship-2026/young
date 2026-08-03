@@ -7,12 +7,17 @@
 #   저작자표시(CC-BY류) 의무 없음. 배포물에 라이선스 고지문 동봉만 필요 (№9).
 # 2026-07-11 라이선스 B안: ultralytics(AGPL-3.0) 제거
 # 2026-07-16: EasyOCR(주민등록증 OCR) 제거 — 제스처 집중
+# 2026-07-31 버전 정합(사용자 결정): 연구소 시선추적 환경(mediapipe 0.10.14 +
+#   numpy 1.26.4)과 일치 — 같은 PC/환경 통합 대비. 1.0.0→0.10.14 하향에 맞춰
+#   opencv도 numpy 1.x 호환 4.10대로 연쇄 하향 (Tasks API는 동일 — 코드 무변경)
 mediapipe==0.10.14                 # 손 랜드마크 HandLandmarker — 유일한 추론 의존
                                    #   (모델 파일은 download_weights.py가 받는다)
-                                   #   2026-07-31: 회사 키오스크(팀장 세팅) 환경 버전에 맞춤
-opencv-python==4.11.0.86           # 카메라 캡처·디버그 창·평가 지시 창
-                                   #   2026-07-31: numpy 1.26.4와 호환되는 버전으로 하향
-                                   #   (5.0.0.93은 numpy>=2 요구 — 충돌, 팀장 PC 버전 확인 필요)
-numpy==1.26.4                      # 2026-07-31: 회사 키오스크(팀장 세팅) 환경 버전에 맞춤
+opencv-contrib-python==4.10.0.84   # 카메라 캡처·디버그 창·평가 지시 창 (numpy 1.x 호환)
+                                   #   ★contrib인 이유(2026-07-31): mediapipe 0.10.14가
+                                   #   opencv-contrib-python을 의존으로 요구 — opencv-python을
+                                   #   고정하면 contrib 최신(4.11)이 따라 들어와 같은 cv2
+                                   #   폴더를 덮어쓴다(실측: cv2가 4.11로 둔갑). contrib
+                                   #   단일 고정이면 의존 충족 + 4.10 고정이 함께 성립
+numpy==1.26.4
 pyyaml==6.0.3
 psutil==7.2.2                      # scripts/resource_report.py 자원 실측용

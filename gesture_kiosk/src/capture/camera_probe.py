@@ -14,12 +14,56 @@
 없으면 전 장치 0점이라 config의 device_id를 그대로 쓴다(폴백).
 score_probe_frames·_hand_quality는 순수 함수 — tests/test_camera_probe.py.
 """
+import threading
 import time
 
 from src.capture.camera_stream import init_camera
 from src.utils.logger import get_logger
 
 logger = get_logger("capture")
+
+DEFAULT_OPEN_TIMEOUT_SEC = 15.0   # 장치 오픈 한도 — 키오스크 실기(2026-07-31): 정상
+                                  #   장치(Brio)도 MSMF 오픈에 ~11초 걸리는 PC가 있어
+                                  #   그보다 여유 있게. config probe_open_timeout_sec
+
+
+def _open_with_timeout(config, device_id, timeout_sec):
+    """장치 열기를 시간 한도로 감싼다 -> cap | None(실패·시간 초과).
+
+    2026-07-31 키오스크 실기(엔진 먹통): MSMF는 VideoCapture **오픈 자체**가
+    장치에 따라 무한 대기한다 — 읽기(probe_timeout_sec)에는 한도가 있었지만
+    오픈에는 없어서, 존재하지 않는/IR 계열 장치 1번을 여는 시도에서 프로브가
+    통째로 멈췄다(로그: 장치 0 채점 후 무소식). 오픈을 데몬 스레드로 보내고
+    한도를 넘기면 그 장치를 포기한다 — 뒤늦게 열린 핸들은 스레드가 닫아
+    점유 누수를 막는다.
+    """
+    holder = {"cap": None, "abandoned": False}
+    lock = threading.Lock()
+    opened = threading.Event()
+
+    def _open():
+        try:
+            cap = init_camera(config, device_id=device_id)
+        except RuntimeError:
+            cap = None
+        with lock:
+            if holder["abandoned"]:
+                if cap is not None:
+                    cap.release()   # 주인이 포기한 뒤 열림 — 닫아서 장치 점유 해제
+                return
+            holder["cap"] = cap
+            opened.set()            # set은 잠금 안에서 — 포기 판정과의 경합 제거
+
+    threading.Thread(target=_open, daemon=True).start()
+    if opened.wait(timeout_sec):
+        return holder["cap"]
+    with lock:
+        if opened.is_set():
+            return holder["cap"]    # 한도 직후 아슬하게 열림 — 그대로 사용
+        holder["abandoned"] = True
+    logger.warning("카메라 오픈 시간 초과(%.0f초) — 장치 건너뜀 (device_id=%d)",
+                   timeout_sec, device_id)
+    return None
 
 
 def score_probe_frames(hand_frames):
@@ -100,11 +144,13 @@ def _probe_device(config, device_id, probe_cfg, hand_tracker, preprocessor):
 
     시간 한도(probe_timeout_sec) 기반으로 읽는다 — MSMF는 오픈 직후 read 실패가
     흔해서(2026-07-28 실기: 시도 횟수 기반은 실패로만 소진돼 0점) 성공 프레임
-    기준으로 워밍업·채점을 센다.
+    기준으로 워밍업·채점을 센다. 오픈 자체도 한도로 감싼다(2026-07-31 키오스크
+    실기 — _open_with_timeout 독스트링).
     """
-    try:
-        cap = init_camera(config, device_id=device_id)
-    except RuntimeError:
+    cap = _open_with_timeout(
+        config, device_id,
+        probe_cfg.get("probe_open_timeout_sec", DEFAULT_OPEN_TIMEOUT_SEC))
+    if cap is None:
         return None
     hand_frames = []
     warmup_left = probe_cfg["warmup_frames"]

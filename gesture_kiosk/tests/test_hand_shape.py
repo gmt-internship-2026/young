@@ -36,9 +36,17 @@ class ClassifyHandShapeTest(unittest.TestCase):
         # 보고서 "손가락 종류 무관" — 중지만 펴도 한 손가락이다
         self.assertEqual(classify(make_hand_landmarks("middle_finger")), "finger")
 
-    def test_open_hand_is_classified(self):
-        # 펼친 손(4지 폄) — palm(임시 실험 계층, 2026-08-03 신설)
-        self.assertEqual(classify(make_hand_landmarks("open")), "palm")
+    def test_open_hand_is_open(self):
+        # 손바닥(4지 폄) — 2026-07-31 temp 계층으로 승격: "open"
+        # (종전엔 정의 없음 None — temp_left/right/top 추가에 따라 셋째 모양)
+        self.assertEqual(classify(make_hand_landmarks("open")), "open")
+
+    def test_two_extended_is_unknown(self):
+        # 폄 2개(한 손가락→손바닥 전환 중간 자세) — 여전히 단정하지 않는다: None
+        landmarks = make_hand_landmarks("open")
+        curled = make_hand_landmarks("fist")
+        landmarks[13:21] = curled[13:21]   # 약지·새끼는 주먹 자세로 — 폄 2(검지·중지)
+        self.assertIsNone(classify(landmarks))
 
     def test_point_at_camera_is_finger(self):
         # v3 핵심(2026-07-28 교체 근거): 카메라를 가리키는 검지는 화면 투영이

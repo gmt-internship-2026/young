@@ -12,17 +12,23 @@
 B안 유지: 상업 허용·카피레프트 없음).
 
 2026-07-23: 웹소켓·UDP·데모 웹 서버 제거(회사 결정 — 네트워크 철회, print 연동).
-디버그는 run_demo.py --debug 로컬 창(cv2)이 담당한다.
+디버그는 main.py --debug 로컬 창(cv2)이 담당한다.
+
+2026-07-31 머리 앵커 추론 스레드 분리(키오스크 실기 — FPS 저하·획 끊김): 포즈
+lite는 BlazeFace(수 ms)와 달리 호출당 수십 ms라 손 루프 인라인이면 10Hz마다
+33ms 예산을 넘겨 프레임을 놓쳤다 — 빠른 쓸기(모션 블러 + 큰 이동폭)의 추적이
+바로 그 회차에 끊긴다. 앵커는 느리게 변하는 값이라 비동기 반영으로 충분하다.
 
 PipelineState가 디버그 창과 공유되는 유일한 상태 저장소다.
 """
+import math
 import threading
 import time
 
 from src.capture.camera_probe import select_camera
-from src.capture.camera_stream import CameraStream
+from src.capture.camera_stream import CameraStream, init_camera
 from src.utils.env_report import log_environment
-from src.inference.face_detector import FaceDetector
+from src.inference.head_detector import HeadDetector
 from src.inference.hand_tracker import HandTracker
 from src.inference.preprocessor import Preprocessor
 from src.pipeline.event_sender import create_event_sender
@@ -45,6 +51,50 @@ def resolve_loop_interval_sec(model_config, is_active):
     max_fps = model_config["max_infer_fps"]
     idle_fps = model_config.get("idle_infer_fps", max_fps)
     return 1.0 / (max_fps if is_active else min(idle_fps, max_fps))
+
+
+def resolve_roi_box(prev_box, anchor_box, frame_width_px, frame_height_px, roi_cfg,
+                    reach_widths):
+    """머리 앵커 기반 손 추론 크롭 창 -> (x1, y1, x2, y2) | None(전체 프레임).
+
+    원거리 디지털 줌(2026-07-31 키오스크 실기 — 거리별 인식 편차): MediaPipe
+    손바닥 검출기는 프레임 전체를 고정 크기(~192px)로 줄여 보므로, 먼 사용자의
+    손은 캡처 해상도와 무관하게 몇 픽셀로 뭉개져 검출이 끊기고 모양(주먹/한
+    손가락) 판별이 무너진다. 앵커 주변 팔 도달 반경만 잘라 넣으면 손이 모델
+    입력에서 그 비율만큼 커진다 — 크롭은 원본 픽셀 그대로(리사이즈 없음)라
+    좌표는 크롭 원점만 더하면 프레임 좌표와 동일하다.
+
+    - 앵커 없음(상체 미노출)·근거리(크롭이 프레임 짧은 변을 덮음) → None.
+    - 히스테리시스: 크롭 창을 매 프레임 옮기면 VIDEO 모드의 추적 ROI가 어긋나
+      재검출이 반복된다 — 중심·크기가 문턱 이상 변할 때만 창을 갱신한다.
+    순수 함수 — tests/test_infer_optimization.py.
+    """
+    if anchor_box is None or reach_widths is None:
+        return None
+    head_width_px = float(anchor_box[2] - anchor_box[0])
+    if head_width_px <= 0.0:
+        return None
+    half_px = max(reach_widths * head_width_px * roi_cfg.get("pad_reach_ratio", 1.3),
+                  roi_cfg.get("min_side_px", 320) / 2.0)
+    if 2.0 * half_px >= min(frame_width_px, frame_height_px):
+        return None   # 근거리 — 크롭이 프레임을 사실상 다 덮는다: 전체 프레임 사용
+    anchor_center_x = (anchor_box[0] + anchor_box[2]) / 2.0
+    anchor_center_y = (anchor_box[1] + anchor_box[3]) / 2.0
+    side_px = int(2.0 * half_px)
+    x1 = int(max(0.0, min(anchor_center_x - half_px, frame_width_px - side_px)))
+    y1 = int(max(0.0, min(anchor_center_y - half_px, frame_height_px - side_px)))
+    target = (x1, y1, x1 + side_px, y1 + side_px)
+    if prev_box is not None:
+        prev_center = ((prev_box[0] + prev_box[2]) / 2.0,
+                       (prev_box[1] + prev_box[3]) / 2.0)
+        prev_side_px = float(max(prev_box[2] - prev_box[0], prev_box[3] - prev_box[1]))
+        target_center = ((target[0] + target[2]) / 2.0, (target[1] + target[3]) / 2.0)
+        if (math.dist(prev_center, target_center)
+                <= roi_cfg.get("move_ratio", 0.15) * prev_side_px
+                and abs(side_px - prev_side_px)
+                <= roi_cfg.get("resize_ratio", 0.2) * prev_side_px):
+            return prev_box   # 문턱 미달 — 창 유지 (추적 ROI 안정)
+    return target
 
 
 class PipelineState:
@@ -93,20 +143,48 @@ class PipelineState:
 
 def run_pipeline(config):
     """파이프라인 전체를 조립해 시작하고 PipelineState를 돌려준다 (기획서 4.6 계약)."""
+    startup_sec = time.monotonic()
     state = PipelineState()
     log_environment(config)   # 어느 하드웨어에서 돈 기록인지 로그 첫머리에 남긴다 (2026-07-16)
+    # 시작 병렬화(2026-08-03 — 키오스크 시작 20초 단축): 카메라 오픈(MSMF —
+    # 키오스크 실측 ~11초)과 모델 로딩(~수 초)이 서로 독립이라 겹친다. 프로브
+    # (auto_select)가 켜져 있으면 오픈에 모델이 필요해 종전 순차 경로 유지
+    probe_cfg = config["camera"].get("auto_select") or {}
+    pre_open = None
+    if not probe_cfg.get("enabled"):
+        pre_open = {"cap": None, "error": None}
+
+        def _open_main_camera():
+            try:
+                pre_open["cap"] = init_camera(config)
+            except RuntimeError as error:
+                pre_open["error"] = error   # 메인 스레드에서 다시 던진다
+
+        pre_open["thread"] = threading.Thread(target=_open_main_camera, daemon=True)
+        pre_open["thread"].start()
     # A안: 모델을 먼저 만들고 손 인식 품질로 카메라를 프로브해 메인을 고른다
     # (2026-07-29 포즈 제거 — 프로브 채점도 손 품질 단독)
     preprocessor = Preprocessor(config)
     hand_tracker = HandTracker(config)   # 주 추론 모델 (2026-07-29 포즈 제거)
-    # 얼굴 앵커(2026-07-30 사용자 결정): 가장 가까운 얼굴의 사람 손만 인식 —
-    # 옆 사람 손 난입 차단. config에 face_anchor 섹션이 없으면 비활성(종전)
-    face_cfg = config.get("face_anchor") or {}
-    face_detector = FaceDetector(config) if face_cfg else None
-    main_device_id, main_cap = select_camera(config, hand_tracker, preprocessor)
+    # 머리 앵커(2026-07-31 몸통판 — 얼굴 검출 교체, 사용자 결정): 포즈(BlazePose)가
+    # 몸 실루엣으로 잡은 머리 위치의 사람 손만 인식 — 마스크·썬글라스·모자·색상
+    # 무관, 옆 사람 손 난입 차단. config에 head_anchor 섹션이 없으면 비활성(종전)
+    head_cfg = config.get("head_anchor") or {}
+    head_detector = HeadDetector(config) if head_cfg else None
+    models_elapsed_sec = time.monotonic() - startup_sec
+    if pre_open is not None:
+        pre_open["thread"].join()   # 모델 로딩과 겹쳐 돌던 카메라 오픈 대기
+        if pre_open["error"] is not None:
+            raise pre_open["error"]
+        main_device_id, main_cap = config["camera"]["device_id"], pre_open["cap"]
+    else:
+        main_device_id, main_cap = select_camera(config, hand_tracker, preprocessor)
     camera = CameraStream(config, device_id=main_device_id, cap=main_cap).start()
 
     first_frame = camera.capture_frame()
+    logger.info("시작 소요: 모델 %.1f초 · 카메라 포함 총 %.1f초 (%s)",
+                models_elapsed_sec, time.monotonic() - startup_sec,
+                "병렬 오픈" if pre_open is not None else "프로브 경로")
     frame_height_px, frame_width_px = first_frame.shape[:2]
     hand_selector = HandSelector(config, frame_width_px, frame_height_px)
     gesture_filter = GestureFilter(config)
@@ -114,26 +192,48 @@ def run_pipeline(config):
 
     state.is_running = True
 
+    # 머리 앵커 스레드 ↔ 손 루프 공유 관측함 — 최신 1건, 소비 즉시 비움
+    head_result_lock = threading.Lock()
+    head_result = [None]
+
+    # 원거리 디지털 줌 설정(2026-07-31) — 키(roi_zoom) 삭제 시 종전(전체 프레임)
+    roi_cfg = config["hand_tracker"].get("roi_zoom")
+
     def _inference_loop():
         infer_fps_meter = FpsMeter()
         was_active = True   # 유휴↔활성 전환을 로그로 남기기 위한 직전 상태
         last_frame_seq = 0  # 새 프레임 동기화(2026-07-20) — 같은 프레임 중복 추론 방지
-        # 얼굴 앵커 추론은 상한 FPS로만 — 얼굴 위치는 천천히 변해 저FPS면 충분(CPU 절약)
-        last_face_infer_sec = 0.0
-        face_interval_sec = 1.0 / face_cfg.get("infer_fps", 10) if face_cfg else 0.0
+        roi_box = None      # 손 추론 크롭 창 — 히스테리시스 상태 (resolve_roi_box)
         while state.is_running:
             loop_start_sec = time.monotonic()
 
             frame, last_frame_seq = camera.capture_new_frame(last_frame_seq)
             input_tensor = preprocessor.preprocess_frame(frame)
 
-            hands = hand_tracker.infer(input_tensor)
-            faces = None   # None = 이번 프레임 얼굴 관측 없음 — 앵커 유지(hand_select)
-            if (face_detector is not None
-                    and loop_start_sec - last_face_infer_sec >= face_interval_sec):
-                last_face_infer_sec = loop_start_sec
-                faces = face_detector.infer(input_tensor)
-            is_engaged = hand_selector.update(hands, faces)
+            # 원거리 디지털 줌 — 앵커(머리) 주변만 잘라 손 추론: 먼 손이 모델
+            # 입력에서 커진다 (resolve_roi_box 독스트링). 크롭은 원본 픽셀
+            # 그대로라 크롭 원점을 더하면 프레임 좌표와 동일 (z는 px 궤적·판정에
+            # 미사용 — hand_shape.hand_center_point 주석)
+            if roi_cfg is not None:
+                roi_box = resolve_roi_box(
+                    roi_box, hand_selector.anchor_head_box,
+                    frame_width_px, frame_height_px, roi_cfg,
+                    head_cfg.get("reach_head_widths"),
+                )
+            if roi_box is not None:
+                rx1, ry1, rx2, ry2 = roi_box
+                hands = hand_tracker.infer(input_tensor[ry1:ry2, rx1:rx2])
+                for hand in hands:
+                    hand.landmarks[:, 0] += rx1
+                    hand.landmarks[:, 1] += ry1
+            else:
+                hands = hand_tracker.infer(input_tensor)
+            heads = None   # None = 새 머리 관측 없음 — 앵커 유지(hand_select)
+            if head_detector is not None:
+                with head_result_lock:
+                    heads = head_result[0]   # 앵커 스레드의 최신 관측 — 1회만 반영
+                    head_result[0] = None
+            is_engaged = hand_selector.update(hands, heads)
             state.is_user_locked = is_engaged
 
             # 유휴 판정 — 손이 보이거나 최근 사용 중이면 활성 (idle_infer_fps 절감)
@@ -143,16 +243,18 @@ def run_pipeline(config):
                             len(hands))
                 was_active = is_active
 
-            # 판정용 손 신호(손모양 + 손 중심) — x·y 모두 프레임 폭으로 나눈
-            # 등방 좌표 (거리 자 정규화와 단위 일치, 2026-07-16)
-            swipe_points_ratio = {
-                side: None if info is None
-                else (info[0], (info[1][0] / frame_width_px, info[1][1] / frame_width_px))
-                for side, info in hand_selector.user_swipe_points().items()
-            }
+            # 판정용 손 신호(손모양 + 손 중심 + 라벨) — 단일 손 추적(2026-07-31
+            # 라벨 제거). x·y 모두 프레임 폭으로 나눈 등방 좌표 (거리 자 정규화와
+            # 단위 일치, 2026-07-16)
+            signal = hand_selector.user_hand_signal()
+            signal_ratio = None if signal is None else (
+                signal[0],
+                (signal[1][0] / frame_width_px, signal[1][1] / frame_width_px),
+                signal[2],
+            )
             gesture_event = gesture_filter.filter_signals(
-                swipe_points_ratio, hand_selector.hand_scale_ratio(),   # 손 실측 자
-                hand_selector.shoulder_line_y_ratio(),   # None — 하단 띠 게이트 폴백
+                signal_ratio, hand_selector.hand_scale_ratio(),   # 손 실측 자
+                hand_selector.shoulder_line_y_ratio(),   # 앵커 어깨선 (없으면 하단 띠 폴백)
             )
             state.debug = gesture_filter.debug
 
@@ -185,6 +287,24 @@ def run_pipeline(config):
             if elapsed_sec < min_loop_interval_sec:
                 time.sleep(min_loop_interval_sec - elapsed_sec)
 
+    # 머리 앵커 추론 스레드(2026-07-31 키오스크 실기 — 모듈 독스트링): 손 루프와
+    # 분리해 포즈 비용(호출당 수십 ms)이 손 추적 프레임을 밀어내지 않게 한다.
+    # 관측은 최신 1건만 유지, 손 루프가 소비하는 즉시 비운다 — hand_select의
+    # "None = 관측 없음(앵커 유지)" 규약이 그대로 성립한다
+    def _head_anchor_loop():
+        interval_sec = 1.0 / head_cfg.get("infer_fps", 10)
+        while state.is_running:
+            infer_start_sec = time.monotonic()
+            frame = preprocessor.preprocess_frame(camera.capture_frame())
+            heads = head_detector.infer(frame)
+            with head_result_lock:
+                head_result[0] = heads
+            elapsed_sec = time.monotonic() - infer_start_sec
+            if elapsed_sec < interval_sec:
+                time.sleep(interval_sec - elapsed_sec)
+
     threading.Thread(target=_inference_loop, daemon=True).start()
+    if head_detector is not None:
+        threading.Thread(target=_head_anchor_loop, daemon=True).start()
     logger.info("실시간 파이프라인 시작 (frame_width_px=%d)", frame_width_px)
     return state

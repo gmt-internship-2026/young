@@ -6,13 +6,16 @@
 """
 import os
 import sys
+import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 
-from src.capture.camera_probe import _hand_quality, score_probe_frames
+from src.capture import camera_probe
+from src.capture.camera_probe import _hand_quality, _open_with_timeout, score_probe_frames
 from src.inference.hand_tracker import HandDetection
 
 
@@ -81,6 +84,31 @@ class HandQualityTest(unittest.TestCase):
     def test_no_hands_is_zero(self):
         self.assertAlmostEqual(
             _hand_quality([], frame_width_px=1280, good_span_ratio=0.10), 0.0)
+
+
+class OpenTimeoutTest(unittest.TestCase):
+    """장치 오픈 한도(2026-07-31 키오스크 실기) — 오픈이 무한 대기해도 엔진이 살아야 한다."""
+
+    def test_hanging_open_is_skipped(self):
+        # 키오스크 실기: MSMF가 장치 1 오픈에서 무한 대기 — 한도(0.2초) 후
+        # None으로 포기하고 다음 장치로 넘어가야 한다 (구 로직: 엔진째 정지)
+        with mock.patch.object(camera_probe, "init_camera",
+                               side_effect=lambda *a, **k: time.sleep(5)):
+            start_sec = time.monotonic()
+            self.assertIsNone(_open_with_timeout({}, 1, timeout_sec=0.2))
+            self.assertLess(time.monotonic() - start_sec, 2.0)   # 5초 잠들지 않았다
+
+    def test_fast_open_returns_cap(self):
+        # 정상 오픈 — 열린 핸들을 그대로 돌려준다
+        fake_cap = object()
+        with mock.patch.object(camera_probe, "init_camera", return_value=fake_cap):
+            self.assertIs(_open_with_timeout({}, 0, timeout_sec=2.0), fake_cap)
+
+    def test_open_failure_returns_none(self):
+        # 장치 없음(RuntimeError) — 종전처럼 None (후보 제외)
+        with mock.patch.object(camera_probe, "init_camera",
+                               side_effect=RuntimeError("no device")):
+            self.assertIsNone(_open_with_timeout({}, 3, timeout_sec=2.0))
 
 
 if __name__ == "__main__":

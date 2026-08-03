@@ -31,7 +31,7 @@ def make_hand_landmarks(shape, root_xy=(500.0, 400.0)):
     shape: "fist"(전부 굽힘) | "finger"(검지만 폄) | "middle_finger"(중지만 폄) |
            "open"(전부 폄) | "point_camera"(검지가 카메라 쪽 — z로 폄) |
            "bunched_flat"(검지가 짧지만 접힘 증거 없음 — 기권)
-    판별 기대값: fist / finger / finger / None / finger / None.
+    판별 기대값: fist / finger / finger / palm / finger / None.
     """
     root_x, root_y = root_xy
     landmarks = np.zeros((HAND_KPT_COUNT, 3), dtype=np.float32)

@@ -3,7 +3,9 @@
 동작 체계(2026-07-29 개편 — 사용자 결정: 상하 포커스(top/bottom) 제거, 위=select, ok→confirm):
 - **한 손가락** + 좌/우 쓸기 = left / right · 위 = select — 포커스 이동(탐색 계층)
 - **주먹** + 왼쪽 = back(이전) · 주먹 + 위 = home(처음으로) · 주먹 + 오른쪽 = confirm(확인)
-- 아래 방향 = 정의 없음(두 모양 공통 — 07-29 bottom 소멸) — 무시
+- **편 손**(손가락 전부 폄) + 왼쪽 = temp_left · 위 = temp_top · 오른쪽 = temp_right
+  (2026-08-03 신설 — 기능 미정, 임시 실험용 제스처)
+- 아래 방향 = 정의 없음(세 모양 공통 — 07-29 bottom 소멸) — 무시
   (복귀 삼킴만 무장해 반동 오발을 막는다)
 
 손 모양이 계층을(탐색/명령), 이동 방향이 기능을 정한다 — 반복 횟수·화면 좌표는
@@ -23,7 +25,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 
-from src.postprocess.hand_shape import SHAPE_FINGER, SHAPE_FIST
+from src.postprocess.hand_shape import SHAPE_FINGER, SHAPE_FIST, SHAPE_PALM
 from src.postprocess.point_filter import PointFilter
 from src.utils.logger import get_logger
 
@@ -37,11 +39,13 @@ RAISE_TRIM_PROGRESS = 0.5   # 들어올리기 중 위 방향 진행이 이 비�
                             # 상승 꼬리가 창에 남아 직후의 아래/좌/우 쓸기를 상쇄(지연)하는 것 방지
 
 # 손 모양 × 이동 방향 -> 이벤트 (2026-07-29 사용자 결정 — top/bottom 제거,
-# 위=select(포커스 이동), ok→confirm). 아래 방향은 두 모양 다 의도적으로 없다 —
+# 위=select(포커스 이동), ok→confirm). 아래 방향은 세 모양 다 의도적으로 없다 —
 # 정의되지 않은 조합(무시 + 삼킴 무장, 모듈 주석)
+# SHAPE_PALM(편 손): 기능 미정 — 임시 실험용 temp_* 이벤트 (2026-08-03 신설)
 EVENT_BY_SHAPE = {
     SHAPE_FINGER: {"left": "left", "right": "right", "up": "select"},
     SHAPE_FIST: {"left": "back", "up": "home", "right": "confirm"},
+    SHAPE_PALM: {"left": "temp_left", "right": "temp_right", "up": "temp_top"},
 }
 
 
@@ -542,7 +546,8 @@ class GestureFilter:
 
         - 직전 동작의 반대 방향: 직전 획 끝을 지나온 복귀 스트로크면 삼킴
         - 위 방향 + 휴식 존 직후: 들어올리기(예비 동작) — 무시
-        - 래치 모양: finger -> left/right/select · fist -> back/home/confirm.
+        - 래치 모양: finger -> left/right/select · fist -> back/home/confirm ·
+          palm -> temp_left/temp_top/temp_right (2026-08-03 신설, 기능 미정).
           불명(래치 없음)·정의 없는 조합(아래 방향 전부 — 07-29 bottom 제거)은
           무시하되 삼킴은 무장한다 — 실제로 움직인 팔은 되돌아오므로 반동
           오발을 막아야 한다

@@ -3,6 +3,8 @@
 2026-07-29 개편 스펙: 손 모양(주먹/한 손가락) × 이동 방향 -> 이벤트
 (left/right/select/back/home/confirm — 상하(top/bottom) 제거·ok→confirm,
 아래 방향은 두 모양 다 정의 없음).
+2026-08-03 추가: 편 손(palm, 손가락 전부 폄) + 좌/우/위 = temp_left/temp_right/temp_top
+(기능 미정, 임시 실험용 — gesture_filter.EVENT_BY_SHAPE 참고).
 
 실행 (프로젝트 루트에서):
     python -m unittest discover tests -v
@@ -157,6 +159,30 @@ class FistCommandTest(GestureFilterTestBase):
         # home으로 오발되면 안 된다 (실제로 움직인 팔은 반드시 돌아온다)
         self._feed_swipe("right", path(0.3, 0.8, 8, x_ratio=0.5), shape="fist")
         event = self._feed_swipe("right", path(0.8, 0.3, 8, x_ratio=0.5), shape="fist")
+        self.assertIsNone(event)
+
+
+class PalmTempTest(GestureFilterTestBase):
+    """편 손(임시 실험 계층, 2026-08-03) — 왼쪽=temp_left · 위=temp_top ·
+    오른쪽=temp_right · 아래=정의 없음. 기능은 미정 — 이벤트명만 확정."""
+
+    def test_palm_left_fires_temp_left(self):
+        event = self._feed_swipe("right", path(0.6, 0.2, 8, y_ratio=0.4), shape="palm")
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "temp_left")
+
+    def test_palm_up_fires_temp_top(self):
+        event = self._feed_swipe("right", path(0.8, 0.3, 8, x_ratio=0.5), shape="palm")
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "temp_top")
+
+    def test_palm_right_fires_temp_right(self):
+        event = self._feed_swipe("right", path(0.2, 0.6, 8, y_ratio=0.4), shape="palm")
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "temp_right")
+
+    def test_palm_down_is_undefined(self):
+        event = self._feed_swipe("right", path(0.3, 0.8, 8, x_ratio=0.5), shape="palm")
         self.assertIsNone(event)
 
 

@@ -8,9 +8,10 @@
 from PyInstaller.utils.hooks import collect_all
 
 datas = [('configs/config.yaml', 'configs'), ('models/weights/hand_landmarker.task', 'models/weights'), ('models/weights/pose_landmarker_lite.task', 'models/weights')]
-# gesture_kiosk_debug.bat는 여기 datas로 안 넣는다 — PyInstaller 6.x onedir은 datas를
-# _internal\ 밑에 넣어(exe와 같은 폭에 안 옴) 더블클릭 런처로 못 쓴다. build_exe.bat이
-# 빌드 후 dist\gesture_kiosk\(exe와 같은 폭)로 직접 복사한다.
+# 카메라 창 자동 실행용 gesture_kiosk_debug.exe(debug_launcher.py)는 여기 담지 않는다
+# — PyInstaller 6.x onedir은 datas를 _internal\ 밑에 넣어(exe와 같은 폭에 안 옴)
+# 더블클릭 런처로 못 쓴다. build_exe.bat이 별도의 --onefile --distpath 빌드로
+# dist\gesture_kiosk\(exe와 같은 폭)에 직접 배치한다.
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('mediapipe')

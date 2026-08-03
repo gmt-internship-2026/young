@@ -27,12 +27,16 @@ if not exist models\weights\hand_landmarker.task (
 
 venv_win\Scripts\python.exe -m PyInstaller --noconfirm gesture_kiosk.spec || goto :fail
 
-:: exe와 같은 폭으로 복사(2026-08-03) — spec datas로 넣으면 PyInstaller 6.x onedir이
-:: _internal\ 밑에 넣어버려 더블클릭 런처로 못 쓴다 (gesture_kiosk.spec 주석 참고)
-copy /Y gesture_kiosk_debug.bat dist\gesture_kiosk\ >nul
+:: 카메라 창 자동 실행용 경량 런처 exe(2026-08-03, bat 대신 exe로 — 사용자 요청):
+:: mediapipe·cv2를 다시 담지 않고 gesture_kiosk.exe --debug만 실행하는 onefile.
+:: --distpath로 dist\gesture_kiosk\(exe와 같은 폭)에 바로 배치 — spec datas로
+:: 넣으면 PyInstaller 6.x onedir이 _internal\ 밑에 넣어버려 못 쓴다(gesture_kiosk.spec 주석)
+venv_win\Scripts\python.exe -m PyInstaller --noconfirm --onefile --console ^
+    --name gesture_kiosk_debug --distpath dist\gesture_kiosk --workpath build\gesture_kiosk_debug ^
+    debug_launcher.py || goto :fail
 
 echo [DONE] 빌드 완료 — dist\gesture_kiosk\gesture_kiosk.exe
-echo        (카메라 창 자동 실행: dist\gesture_kiosk\gesture_kiosk_debug.bat)
+echo        (카메라 창 자동 실행: dist\gesture_kiosk\gesture_kiosk_debug.exe)
 pause
 exit /b 0
 

@@ -117,23 +117,23 @@ def path(start, end, step_count, y_ratio=None, x_ratio=None):
 
 
 class FingerSwipeTest(GestureFilterTestBase):
-    """한 손가락(탐색 계층) — 좌/우/위 = left/right/select (즉시 발화), 아래 = 정의 없음."""
+    """한 손가락(임시 계층) — 좌/우/위 = temp_left/temp_right/temp_top (즉시 발화), 아래 = 정의 없음."""
 
-    def test_finger_right_fires_right(self):
+    def test_finger_right_fires_temp_right(self):
         event = self._feed_swipe(path(0.2, 0.6, 8, y_ratio=0.4))
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "right")
+        self.assertEqual(event.class_name, "temp_right")
         self.assertEqual(event.hand_side, "right")   # 라벨 — 정보용 전달 확인
 
-    def test_finger_left_fires_left(self):
+    def test_finger_left_fires_temp_left(self):
         event = self._feed_swipe(path(0.6, 0.2, 8, y_ratio=0.4))
-        self.assertEqual(event.class_name, "left")
+        self.assertEqual(event.class_name, "temp_left")
 
-    def test_finger_up_fires_select(self):
-        # 2026-07-29 개편: 한 손가락+위 = select (구 top — 포커스 이동)
+    def test_finger_up_fires_temp_top(self):
+        # 2026-08-04 개편: 한 손가락+위 = temp_top (손바닥과 명칭 맞교환 — 구 select)
         event = self._feed_swipe(path(0.8, 0.3, 8, x_ratio=0.5))
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "select")
+        self.assertEqual(event.class_name, "temp_top")
 
     def test_finger_down_is_undefined(self):
         # 2026-07-29 개편: 아래 방향은 정의 없음(구 bottom 제거) — 무시
@@ -172,23 +172,23 @@ class FistCommandTest(GestureFilterTestBase):
         self.assertIsNone(event)
 
 
-class OpenPalmTempTest(GestureFilterTestBase):
-    """손바닥(temp 계층 — 2026-07-31 사용자 요청) — 좌/우/위 = temp_left/right/top."""
+class OpenPalmTest(GestureFilterTestBase):
+    """손바닥(탐색 계층 — 2026-08-04 한 손가락과 명칭 맞교환) — 좌/우/위 = left/right/top."""
 
-    def test_open_left_fires_temp_left(self):
+    def test_open_left_fires_left(self):
         event = self._feed_swipe(path(0.6, 0.2, 8, y_ratio=0.4), shape="open")
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "temp_left")
+        self.assertEqual(event.class_name, "left")
 
-    def test_open_right_fires_temp_right(self):
+    def test_open_right_fires_right(self):
         event = self._feed_swipe(path(0.2, 0.6, 8, y_ratio=0.4), shape="open")
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "temp_right")
+        self.assertEqual(event.class_name, "right")
 
-    def test_open_up_fires_temp_top(self):
+    def test_open_up_fires_top(self):
         event = self._feed_swipe(path(0.8, 0.3, 8, x_ratio=0.5), shape="open")
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "temp_top")
+        self.assertEqual(event.class_name, "top")
 
     def test_open_down_is_undefined(self):
         # 아래 방향은 손바닥도 정의 없음 — 전 모양 공통 규칙 유지
@@ -281,6 +281,49 @@ class TapClickTest(GestureFilterTestBase):
         self.assertEqual(event.class_name, "click")
 
 
+class GripSelectTest(GestureFilterTestBase):
+    """제자리 주먹 쥐었다 펴기 1회 (2026-08-04) — 기하 전용 래치의 fist -> open 전이 = select."""
+
+    def setUp(self):
+        super().setUp()
+        config = make_config()
+        config["gestures"]["grip_select"] = {"window_sec": 1.2, "max_move_shoulder": 0.25}
+        self.filter = GestureFilter(config, clock=self.clock)
+
+    def test_grip_then_open_fires_select(self):
+        shapes = ["fist"] * 4 + ["open"] * 4
+        event = self._feed_swipe([(0.5, 0.4)] * len(shapes), shapes=shapes)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.class_name, "select")
+
+    def test_grip_without_release_does_not_fire(self):
+        shapes = ["fist"] * 8
+        event = self._feed_swipe([(0.5, 0.4)] * len(shapes), shapes=shapes)
+        self.assertIsNone(event)
+
+    def test_grip_then_move_then_open_does_not_fire(self):
+        # 제자리 반경(0.25 x fallback_ratio 0.25 = 0.0625) 밖으로 쥔 채 이동 — 주먹+쓸기
+        # 명령(back/home/confirm)과 겹치지 않게 하는 게이트. 이동폭 0.15는 grip
+        # 반경(0.0625)은 넘지만 스와이프 확정 임계(1.0 shoulder = 0.25)엔 못 미쳐
+        # 이동 자체가 다른 이벤트로 오발되지도 않는다
+        shapes = ["fist"] * 4 + ["fist"] * 4 + ["open"] * 4
+        points = [(0.5, 0.4)] * 4 + [(0.65, 0.4)] * 4 + [(0.65, 0.4)] * 4
+        event = self._feed_swipe(points, shapes=shapes)
+        self.assertIsNone(event)
+
+    def test_grip_timeout_does_not_fire(self):
+        # window_sec 1.2초(36프레임@30fps) 초과 후 펴면 무효
+        shapes = ["fist"] * 40 + ["open"] * 2
+        event = self._feed_swipe([(0.5, 0.4)] * len(shapes), shapes=shapes)
+        self.assertIsNone(event)
+
+    def test_disabled_without_key(self):
+        self.filter = GestureFilter(make_config(), clock=self.clock)
+        shapes = ["fist"] * 4 + ["open"] * 4
+        event = self._feed_swipe([(0.5, 0.4)] * len(shapes), shapes=shapes)
+        self.assertIsNone(event)
+
+
 class HandShapeLatchTest(GestureFilterTestBase):
     """손 모양 래치(2026-07-28 v3) — 연속 판별로 고정, 노이즈로 안 풀린다.
 
@@ -311,7 +354,7 @@ class HandShapeLatchTest(GestureFilterTestBase):
         shapes = [None, "finger", None, None, "finger", None, None, None, "finger"]
         event = self._feed_swipe(path(0.2, 0.6, 8, y_ratio=0.4), shapes=shapes)
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "right")
+        self.assertEqual(event.class_name, "temp_right")
 
     def test_shape_change_does_not_reset_track(self):
         # 주먹↔한 손가락 전환은 손 중심 좌표가 연속 — 궤적을 리셋하지 않는다.
@@ -331,7 +374,7 @@ class HandShapeLatchTest(GestureFilterTestBase):
         shapes = ["finger"] * 3 + ["fist"] * 4 + ["finger"] * 2
         event = self._feed_swipe(path(0.2, 0.55, 8, y_ratio=0.4), shapes=shapes)
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "right")
+        self.assertEqual(event.class_name, "temp_right")
 
     def test_sustained_opposite_shape_switches_latch(self):
         # 전환은 막히지 않는다 — 반대 모양이 문턱(4프레임) 이상 연속이면 전환:
@@ -352,7 +395,7 @@ class HandShapeLatchTest(GestureFilterTestBase):
         # 이동 경로는 정지점(0.3)과 겹치지 않게 0.35부터 — 첫 점까지 전부 고속 유지
         event = self._feed_swipe(path(0.35, 0.7, 7, y_ratio=0.4), shape="fist")
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "right")
+        self.assertEqual(event.class_name, "temp_right")
 
     def test_pointing_at_screen_keeps_navigation(self):
         # 손가락을 세워 보였다가(고정) 화면을 가리키며 쓸면(판별 전부 기권 — 관측
@@ -361,7 +404,7 @@ class HandShapeLatchTest(GestureFilterTestBase):
         self._feed_swipe([(0.3, 0.4)] * 6, shape="finger")   # 정지 — 모양 고정
         event = self._feed_swipe(path(0.3, 0.7, 8, y_ratio=0.4), shape=None)
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "right")
+        self.assertEqual(event.class_name, "temp_right")
 
     def test_latch_cleared_when_hand_disappears(self):
         # 손이 사라지면 래치도 버린다 — 다음 손(다른 사용자)에 잇지 않는다
@@ -380,7 +423,7 @@ class HandShapeLatchTest(GestureFilterTestBase):
         self._feed(None, frame_count=9)                      # 0.3초 소실
         event = self._feed_swipe(path(0.3, 0.7, 8, y_ratio=0.4), shape=None)
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "right")
+        self.assertEqual(event.class_name, "temp_right")
 
     def test_latch_cleared_after_release_expires(self):
         # 유예를 넘긴 소실 — 래치를 버린다 (다음 사용자에 모드 승계 금지)
@@ -426,7 +469,7 @@ class FirstLineTest(GestureFilterTestBase):
         points += [(0.28 + 0.04 * i, 0.4 - 0.05 * i) for i in range(1, 7)]  # 대각 흐름
         event = self._feed_swipe(points)
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "right")
+        self.assertEqual(event.class_name, "temp_right")
 
     def test_origin_return_rearms_new_direction(self):
         # 우로 살짝 나갔다(임계 미달) 원점 복귀 — 재장전: 이어지는 좌 쓸기가 left로
@@ -436,10 +479,11 @@ class FirstLineTest(GestureFilterTestBase):
         points += path(0.46, 0.2, 7, y_ratio=0.4)                       # 좌 쓸기
         event = self._feed_swipe(points)
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "left")
+        self.assertEqual(event.class_name, "temp_left")
 
     def test_still_rearm_moves_origin(self):
-        # 우로 나가다 멈추면 그 자리가 새 원점 — 이어지는 위 쓸기가 select로
+        # 우로 나가다 멈추면 그 자리가 새 원점 — 이어지는 위 쓸기가 temp_top으로
+        # (기본 shape="finger" — 한 손가락+위 = temp_top, 2026-08-04 명칭 맞교환)
         self._use_first_line()
         points = [(0.2, 0.4)] * 4
         points += path(0.24, 0.36, 3, y_ratio=0.4)                  # 우 출발(임계 미달)
@@ -447,7 +491,7 @@ class FirstLineTest(GestureFilterTestBase):
         points += [(0.36, 0.4 - 0.04 * i) for i in range(1, 9)]     # 위 쓸기
         event = self._feed_swipe(points)
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "select")
+        self.assertEqual(event.class_name, "temp_top")
 
     def test_windup_lock_is_relocked_by_real_swipe(self):
         # 꺾임 재고정(2026-07-29): 예비 동작(살짝 들기)이 up을 선점 — 종전엔
@@ -460,7 +504,7 @@ class FirstLineTest(GestureFilterTestBase):
         points += path(0.56, 0.2, 9, y_ratio=0.325)                 # 진짜 좌 쓸기
         event = self._feed_swipe(points)
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "left")
+        self.assertEqual(event.class_name, "temp_left")
 
     def test_small_hook_below_relock_dist_keeps_lock(self):
         # 재고정 문턱(0.24×0.25=0.06) 미만의 갈고리 꼬리 — 개인 궤적 스타일:
@@ -494,7 +538,7 @@ class SwipeJudgeTest(GestureFilterTestBase):
         self.assertIsNone(event)
         event = self._feed_swipe([(0.5, 0.4)])
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "right")
+        self.assertEqual(event.class_name, "temp_right")
 
     def test_hand_loss_resets_track(self):
         # 절반 이동 후 추적점 소실 — 궤적이 리셋돼 나머지 절반로는 확정되지 않는다
@@ -515,7 +559,7 @@ class ReturnSwallowTest(GestureFilterTestBase):
     def _swipe_right_then_pass_cooldown(self):
         """우로 쓸기 확정 후 쿨다운(1초)까지 지난 상태를 만든다 — 복귀 시나리오용."""
         event = self._feed_swipe(path(0.4, 0.8, 8, y_ratio=0.4))
-        self.assertEqual(event.class_name, "right")
+        self.assertEqual(event.class_name, "temp_right")
         self.clock.tick(1.2)
 
     def test_return_stroke_is_swallowed(self):
@@ -530,7 +574,7 @@ class ReturnSwallowTest(GestureFilterTestBase):
         self._feed_swipe(path(0.8, 0.4, 8, y_ratio=0.4))   # 복귀 — 삼킴
         event = self._feed_swipe(path(0.4, 0.05, 8, y_ratio=0.4))
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "left")
+        self.assertEqual(event.class_name, "temp_left")
 
     def test_deliberate_left_from_center_fires_within_window(self):
         # 우로 쓸고(끝 0.8) — 팔을 중앙으로 옮겨 다시 좌로 — 시작점(0.45)이 직전 획
@@ -538,7 +582,7 @@ class ReturnSwallowTest(GestureFilterTestBase):
         self._swipe_right_then_pass_cooldown()
         event = self._feed_swipe(path(0.45, 0.1, 8, y_ratio=0.4))
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "left")
+        self.assertEqual(event.class_name, "temp_left")
 
     def test_swallow_expires(self):
         # 삼킴 창(1.6초)이 지난 뒤의 좌 쓸기는 복귀가 아니다 — 정상 발화
@@ -546,7 +590,7 @@ class ReturnSwallowTest(GestureFilterTestBase):
         self.clock.tick(2.0)                                        # 확정 후 총 3.2초 경과
         event = self._feed_swipe(path(0.8, 0.4, 8, y_ratio=0.4))
         self.assertIsNotNone(event)
-        self.assertEqual(event.class_name, "left")
+        self.assertEqual(event.class_name, "temp_left")
 
 
 class DebugPanelTest(GestureFilterTestBase):
@@ -576,13 +620,13 @@ class DebugPanelTest(GestureFilterTestBase):
 class CooldownTest(GestureFilterTestBase):
     def test_cooldown_blocks_repeat_event(self):
         event = self._feed_swipe(path(0.2, 0.6, 8, y_ratio=0.4))
-        self.assertEqual(event.class_name, "right")                # 확정 → 쿨다운 시작
+        self.assertEqual(event.class_name, "temp_right")                # 확정 → 쿨다운 시작
         event = self._feed_swipe(path(0.6, 0.2, 8, y_ratio=0.4))
         self.assertIsNone(event)                                   # 쿨다운 중 — 무시
         self.clock.tick(1.0)                                       # 쿨다운 경과
         event = self._feed_swipe(path(0.2, 0.6, 8, y_ratio=0.4))
         self.assertIsNotNone(event)                                # 같은 방향 — 삼킴 무관
-        self.assertEqual(event.class_name, "right")
+        self.assertEqual(event.class_name, "temp_right")
 
 
 class MetricsTest(unittest.TestCase):

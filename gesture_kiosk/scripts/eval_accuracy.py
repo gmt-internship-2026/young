@@ -2,7 +2,8 @@
 
 KPI №5(정확도 85%) 산식 확보·튜닝 회귀 검증·cam_a/cam_b 비교의 공통 측정 도구.
 지시 창(cv2)에 동작이 큰 글씨로 표시되고(6종 × N회, 무작위 순서 — 2026-07-29
-top/bottom 제거·select/confirm 개편 반영), 제한 시간 안에
+top/bottom 제거·select/confirm 개편, 2026-08-04 한 손가락↔손바닥 명칭 맞교환
+(구 select → temp_top) 반영), 제한 시간 안에
 나온 **첫** 이벤트로 채점한다 — 정답 / 오인식(무엇이 나갔는지) / 미인식.
 결과는 logs/eval_*.md 마크다운 리포트로 저장된다 (산식: src/utils/eval_metrics.py).
 
@@ -35,9 +36,9 @@ FEEDBACK_SEC = 1.0     # 채점 결과 표시 시간
 # 지시 목록 — (이벤트, 지시 창 표기, 콘솔 한국어). 창 표기는 ASCII —
 # cv2 기본 폰트(Hershey)는 한글을 못 그린다 (별도 폰트 의존을 더하지 않는다)
 INSTRUCTIONS = [
-    ("left", "FINGER  <--", "한 손가락 · 왼쪽"),
-    ("right", "FINGER  -->", "한 손가락 · 오른쪽"),
-    ("select", "FINGER  UP  [select]", "한 손가락 · 위 = 포커스 이동"),
+    ("temp_left", "FINGER  <--", "한 손가락 · 왼쪽"),
+    ("temp_right", "FINGER  -->", "한 손가락 · 오른쪽"),
+    ("temp_top", "FINGER  UP  [temp_top]", "한 손가락 · 위 = 임시 계층"),
     ("back", "FIST  <--   [back]", "주먹 · 왼쪽 = 이전"),
     ("home", "FIST  UP    [home]", "주먹 · 위 = 처음으로"),
     ("confirm", "FIST  -->   [confirm]", "주먹 · 오른쪽 = 확인"),

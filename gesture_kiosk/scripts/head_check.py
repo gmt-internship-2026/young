@@ -59,9 +59,6 @@ def main():
     check_config["head_anchor"] = head_cfg
     if args.device is not None:
         check_config["camera"]["device_id"] = args.device
-        auto_select = check_config["camera"].get("auto_select")
-        if auto_select is not None:
-            auto_select["enabled"] = False   # 점검은 지정 장치 그대로
 
     detector = HeadDetector(check_config)
     preprocessor = Preprocessor(check_config)

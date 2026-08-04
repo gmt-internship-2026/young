@@ -11,6 +11,16 @@
     quit     ↵    # 엔진 종료 (Ctrl+C와 동일)
 --debug 재실행이 필요 없어 현장 점검 중에도 연동을 끊지 않는다.
 
+★카메라 전환(2026-08-04 신설 — 현장에서 장치 번호 즉석 확인): config 수정·
+재실행 없이 다음 장치 번호로 순환 전환한다(configs/config.yaml의
+camera.switch_candidate_count 범위 안). 두 경로 다 됨:
+    카메라 창에서 `c` 키          # 물리 키보드
+    cam next  ↵ (stdin, cam on처럼)  # 화상키보드 — 이미지창은 포커스가
+                                      #   콘솔에 남으면 키를 못 받으므로 안전한 경로
+어느 번호가 맞는지 화면 보며 바로 비교 가능. 확정되면 config의
+camera.device_id를 그 번호로 남겨야 다음 실행에도 유지된다(전환은 런타임
+한정, 저장 안 됨).
+
 ★환경 비종속(2026-08-03 가상환경 제거 — 사용자 결정): 시스템 파이썬에 직접
 설치·실행한다(install.bat). 연구소 시선추적은 exe(파이썬 내장)라 환경 공유
 자체가 불가능 — 별개 프로세스이며, 라이브러리 버전 정합(mediapipe 0.10.14·
@@ -79,6 +89,12 @@ def watch_stdin_commands(state, want_window):
         elif command in ("cam off", "debug off"):
             want_window["value"] = False
             logger.info("stdin 명령: 카메라 창 끄기")
+        elif command in ("cam next", "cam switch"):
+            # 카메라 전환(2026-08-04)의 stdin 경로 — 이미지창의 'c' 키는 화상키보드로
+            # 안 먹는 경우가 있다(포커스가 콘솔에 남아 창으로 키 이벤트가 안 감).
+            # 콘솔 타이핑은 cam on/off와 같은 경로라 화상키보드에서도 확실히 동작
+            state.cycle_camera()
+            logger.info("stdin 명령: 카메라 전환")
         elif command in ("quit", "exit"):
             logger.info("stdin 명령: 엔진 종료")
             state.is_running = False
@@ -115,6 +131,8 @@ def run_window_loop(state, want_window):
             key = cv2.waitKey(30) & 0xFF
             if key in (ord("q"), 27):   # 27 = ESC — 창만 닫는다 (엔진은 계속)
                 want_window["value"] = False
+            elif key == ord("c"):   # 카메라 전환(2026-08-04 — 현장 장치번호 즉석 비교)
+                state.cycle_camera()
     except KeyboardInterrupt:
         pass
     finally:
@@ -141,9 +159,11 @@ def main():
     from src.pipeline.realtime_loop import run_pipeline
 
     state = run_pipeline(config)
-    logger.info("엔진 구동 중 — 이벤트 stdout 한 줄씩 · 카메라 창 cam on/off(+Enter) · 종료 Ctrl+C")
+    logger.info("엔진 구동 중 — 이벤트 stdout 한 줄씩 · 카메라 창 cam on/off(+Enter) ·"
+               " 카메라 전환 c키 또는 cam next(+Enter) · 종료 Ctrl+C")
     # 콘솔 운영자 안내 — stdout(이벤트 채널)을 오염시키지 않도록 stderr로 한 줄만
-    sys.stderr.write("[안내] 카메라 창: cam on / cam off (+Enter) · 종료: quit 또는 Ctrl+C\n")
+    sys.stderr.write("[안내] 카메라 창: cam on / cam off (+Enter) · 카메라 전환: c키 또는"
+                     " cam next(+Enter) · 종료: quit 또는 Ctrl+C\n")
     sys.stderr.flush()
 
     want_window = {"value": args.debug}

@@ -1,10 +1,14 @@
 """postprocess 모듈 — 손 신호(손 모양 + 손 중심 궤적)를 동작 이벤트로 확정한다.
 
-동작 체계(2026-07-29 개편 — 사용자 결정: 상하 포커스(top/bottom) 제거, 위=select, ok→confirm):
-- **한 손가락** + 좌/우 쓸기 = left / right · 위 = select — 포커스 이동(탐색 계층)
+동작 체계(2026-08-04 개편 — 사용자 결정: 손바닥↔한 손가락 명칭 맞교환):
+- **손바닥**(전부 폄) + 좌/우/위 쓸기 = left / right / top — 포커스 이동(탐색 계층)
+- **한 손가락** + 좌/우/위 쓸기 = temp_left / temp_right / temp_top — 임시 계층
 - **주먹** + 왼쪽 = back(이전) · 주먹 + 위 = home(처음으로) · 주먹 + 오른쪽 = confirm(확인)
-- 아래 방향 = 정의 없음(두 모양 공통 — 07-29 bottom 소멸) — 무시
+- 아래 방향 = 정의 없음(전 모양 공통 — 07-29 bottom 소멸) — 무시
   (복귀 삼킴만 무장해 반동 오발을 막는다)
+- **제자리에서 주먹 쥐었다 펴기 1회** = select (2026-08-04 신설 — 위 쓸기 표와
+  무관한 별도 판정, `_update_grip_select`. 구 select(위 쓸기)와 이름만 같고
+  판정 방식은 다르다 — 쓸기가 아니라 제자리 모양 전이)
 
 손 모양이 계층을(탐색/명령), 이동 방향이 기능을 정한다 — 반복 횟수·화면 좌표는
 쓰지 않는다 (보고서 핵심 규칙). 방향은 이동량(경로 A)·플릭(경로 B)으로 확정하고,
@@ -15,8 +19,11 @@
 
 명칭 변천: 구 스펙(위 1회=select · 아래 1회/2연속 분기)은 07-23 제거(top/bottom/ok
 체계로) → 07-29 재개편으로 위 쓸기가 select 명칭을 되찾았다(판정은 쓸기 그대로 —
-보류·지연 없음). 쿨다운·반대 방향 복귀 삼킴·들어올리기 게이트(위 방향 =
-select/home 오발 방지)·소실 유예는 유지. 수치는 config (기획서 4.7).
+보류·지연 없음) → 07-31 손바닥(temp 계층) 추가 → 08-04 손바닥이 본계층
+(left/right/top)을, 한 손가락이 임시 계층(temp_left/temp_right/temp_top)을
+맡도록 명칭을 맞교환(select 명칭 폐기). 쿨다운·반대 방향 복귀 삼킴·들어올리기
+게이트(위 방향 = top/temp_top/home 오발 방지)·소실 유예는 유지. 수치는 config
+(기획서 4.7).
 """
 import math
 import time
@@ -37,13 +44,15 @@ RAISE_TRIM_PROGRESS = 0.5   # 들어올리기 중 위 방향 진행이 이 비�
                             # 상승 꼬리가 창에 남아 직후의 아래/좌/우 쓸기를 상쇄(지연)하는 것 방지
 
 # 손 모양 × 이동 방향 -> 이벤트 (2026-07-29 사용자 결정 — top/bottom 제거,
-# 위=select(포커스 이동), ok→confirm. 2026-07-31 손바닥(temp 계층) 추가 —
-# 사용자 요청). 아래 방향은 전 모양 의도적으로 없다 — 정의되지 않은 조합
+# 위=select(포커스 이동), ok→confirm. 2026-07-31 손바닥(temp 계층) 추가.
+# 2026-08-04 명칭 맞교환(사용자 결정) — 손바닥이 본계층(left/right/top)을,
+# 한 손가락이 임시 계층(temp_left/temp_right/temp_top)을 맡는다(구 select
+# 명칭 폐기). 아래 방향은 전 모양 의도적으로 없다 — 정의되지 않은 조합
 # (무시 + 삼킴 무장, 모듈 주석)
 EVENT_BY_SHAPE = {
-    SHAPE_FINGER: {"left": "left", "right": "right", "up": "select"},
+    SHAPE_FINGER: {"left": "temp_left", "right": "temp_right", "up": "temp_top"},
     SHAPE_FIST: {"left": "back", "up": "home", "right": "confirm"},
-    SHAPE_OPEN: {"left": "temp_left", "right": "temp_right", "up": "temp_top"},
+    SHAPE_OPEN: {"left": "left", "right": "right", "up": "top"},
 }
 TAP_DIP_MAX_SEC = 0.35   # 탭 까딱 1회의 길이 상한 — 이보다 길면 의도적 모양
                          #   전환(주먹 명령 진입)이지 탭이 아니다 (tap_click).
@@ -334,6 +343,21 @@ class GestureFilter:
         self._hand_label = None      # 추적 손의 handedness 라벨 — 정보용(이벤트 hand_side)
         self._active_shape = None    # 이번 프레임의 원시 손 모양 판별 (계기판용)
 
+        # 쥐었다 펴기(2026-08-04 사용자 요청) — 제자리에서 주먹 쥐었다 펴면 select.
+        # 어느 손이든 상관없다(핸디드니스 라벨 불신뢰 — 모듈 독스트링). 기하 전용
+        # 래치(_geo_latched_shape)의 fist -> open 전이만 본다 — 학습 분류기 개입 없이
+        # 순수 판정이라는 점은 탭 클릭과 동일 이유(hand_select._classify_shape 독스트링).
+        # 키(grip_select) 없으면 기능 없음
+        grip_cfg = config["gestures"].get("grip_select")
+        self._grip_window_sec = (grip_cfg.get("window_sec", 1.2)
+                                 if grip_cfg is not None else None)
+        self._grip_max_move = (grip_cfg or {}).get("max_move_shoulder", 0.25)
+        self._grip_anchor_point = None   # 쥔 순간의 위치 — 제자리 반경의 기준
+        self._grip_start_sec = None      # 쥔 순간의 시각 — 시간 한도 기준
+        self._is_gripped = False
+        self._grip_expired = False       # 시간·이동 초과로 무효화된 뒤 — 같은 주먹을 계속
+                                         #   쥐고 있는 동안은 재시작 금지(펴야 해제, 아래 독스트링)
+
         # 탭 클릭(2026-07-31 사용자 요청) — 한 손가락 제자리 더블 탭 = click.
         # 키(tap_click) 없으면 기능 없음
         tap_cfg = config["gestures"].get("tap_click")
@@ -394,11 +418,11 @@ class GestureFilter:
             if point_filter.get("enabled") else None
         )
 
-        # 팔 들어올리기(예비 동작) 게이트(2026-07-20 실기): 위 방향 이벤트(select·home)를
+        # 팔 들어올리기(예비 동작) 게이트(2026-07-20 실기): 위 방향 이벤트(top·temp_top·home)를
         # 하려면 먼저 팔을 올려야 하는데 그 동작 자체가 기하학적으로 위 쓸기와 같다.
         # 추적점이 **휴식 존**(어깨선 아래 어깨너비 raise_guard_below_shoulder배)에
         # 최근(raise_guard_grace_sec 안) 있었다면 위 방향을 이벤트로 치지 않는다 —
-        # 의도적 select/home은 손을 가슴께 들고 하므로 휴식 존 이력이 없다.
+        # 의도적 top/temp_top/home은 손을 가슴께 들고 하므로 휴식 존 이력이 없다.
         # 키 미설정이면 게이트 없음(구 config 하위 호환)
         self._raise_guard_below_shoulder = swipe.get("raise_guard_below_shoulder")
         self._raise_guard_grace_sec = swipe.get("raise_guard_grace_sec", 0.6)
@@ -528,6 +552,10 @@ class GestureFilter:
                     self._update_shape_latch(shape)
                 if geometric_shape is not None:
                     self._update_geo_shape_latch(geometric_shape)
+            grip_event = self._update_grip_select(point, now_sec, body_scale)
+            if grip_event is not None:
+                self._update_debug(body_scale, shoulder_width_ratio)
+                return grip_event
             tap_event = self._update_tap_click(point, now_sec, body_scale, index_ratio)
             if tap_event is not None:
                 self._update_debug(body_scale, shoulder_width_ratio)
@@ -564,7 +592,8 @@ class GestureFilter:
 
         - 직전 동작의 반대 방향: 직전 획 끝을 지나온 복귀 스트로크면 삼킴
         - 위 방향 + 휴식 존 직후: 들어올리기(예비 동작) — 무시
-        - 래치 모양: finger -> left/right/select · fist -> back/home/confirm.
+        - 래치 모양: open -> left/right/top · finger -> temp_left/temp_right/temp_top ·
+          fist -> back/home/confirm.
           불명(래치 없음)·정의 없는 조합(아래 방향 전부 — 07-29 bottom 제거)은
           무시하되 삼킴은 무장한다 — 실제로 움직인 팔은 되돌아오므로 반동
           오발을 막아야 한다
@@ -593,7 +622,7 @@ class GestureFilter:
 
         if direction == "up" and self._is_arm_raise(now_sec):
             # 팔 들어올리기(예비 동작) — 휴식 존(팔 처진 위치)에서 방금 올라온 위
-            # 방향은 select/home이 아니라 다음 동작 준비다 (2026-07-20 실기: 아래 쓸기
+            # 방향은 top/temp_top/home이 아니라 다음 동작 준비다 (2026-07-20 실기: 아래 쓸기
             # 전 들어올리기가 확인으로 오발). 무시하고 궤적을 비워, 이어지는
             # 동작(아래 쓸기 등)이 올라간 위치 기준으로 새로 판정되게 한다
             self._raise_ignored_count += 1
@@ -622,6 +651,42 @@ class GestureFilter:
         self._set_swallow(direction, now_sec, point, stroke_start)
         return event
 
+    # ----- 쥐었다 펴기 (2026-08-04 — 제자리 fist -> open 전이로 select) -----
+
+    def _update_grip_select(self, point, now_sec, body_scale):
+        """제자리 주먹 쥐었다 펴기 1회 -> "select" 이벤트 | None.
+
+        기하 전용 래치(_geo_latched_shape)의 fist -> open 전이만 본다 — 탭 클릭과
+        같은 이유로 학습 분류기 개입 없는 순수 판정. 오발 방어 2중(탭보다 단순 —
+        더블이 아니라 단일 전이라 시간 창은 "쥔 뒤 펴기까지"만 잰다):
+        ① 제자리 — 쥔 순간 위치에서 max_move 반경 안(초과 이동 시 무효 —
+           주먹+쓸기 명령(back/home/confirm)과 겹치지 않게 하는 핵심 게이트)
+        ② 시간 창 — 쥔 순간부터 window_sec 안에 펴져야 한다. 무효화된 뒤에도
+           같은 주먹을 계속 쥐고 있으면 재시작하지 않는다(펴서 새로 쥐어야
+           다시 유효) — 안 그러면 오래 쥐고 있다 아무 때나 펴도 select가 나간다
+        """
+        if self._grip_window_sec is None:
+            return None
+        shape = self._geo_latched_shape
+        if not self._is_gripped:
+            if shape == SHAPE_FIST and not self._grip_expired:
+                self._is_gripped = True
+                self._grip_anchor_point = point
+                self._grip_start_sec = now_sec
+            elif shape != SHAPE_FIST:
+                self._grip_expired = False   # 주먹을 벗어났다 — 다음 쥐기부터 다시 유효
+            return None
+        if (now_sec - self._grip_start_sec > self._grip_window_sec
+                or (body_scale > 0.0
+                    and math.dist(point, self._grip_anchor_point) > self._grip_max_move * body_scale)):
+            self._is_gripped = False   # 시간 초과·이동 — 무효(쓸기 명령일 가능성)
+            self._grip_expired = True
+            return None
+        if shape == SHAPE_OPEN:
+            self._is_gripped = False
+            return self._confirm("select", 1.0, now_sec, hand_side=self._hand_label)
+        return None
+
     # ----- 탭 클릭 (2026-07-31 — 한 손가락 제자리 더블 탭) -----
 
     def _update_tap_click(self, point, now_sec, body_scale, index_ratio):
@@ -648,7 +713,7 @@ class GestureFilter:
         if self._tap_window_sec is None or index_ratio is None:
             return None
         if self._geo_latched_shape != SHAPE_FINGER:
-            self._reset_tap()   # 탐색 계층(한 손가락)에서만 탭을 읽는다
+            self._reset_tap()   # 한 손가락(임시 계층)에서만 탭을 읽는다
             return None
         if self._tap_baseline is None or index_ratio > self._tap_baseline:
             self._tap_baseline = index_ratio   # 폄 상태 최대 = 기준선

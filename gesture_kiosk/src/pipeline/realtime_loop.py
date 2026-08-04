@@ -25,7 +25,6 @@ import math
 import threading
 import time
 
-from src.capture.camera_probe import select_camera
 from src.capture.camera_stream import CameraStream, init_camera
 from src.utils.env_report import log_environment
 from src.inference.head_detector import HeadDetector
@@ -111,6 +110,8 @@ class PipelineState:
         self.is_user_locked = False
         self.debug = {}                # 판정 계기판(gesture_filter.debug) — 실기 튜닝용
         self._viewer_count = 0         # 디버그 창 시청자 수 — 0이면 오버레이 렌더링 생략
+        self.camera_device_id = None   # 현재 열린 카메라 장치 번호 — 전환 확인용(계기판·로그)
+        self._cycle_camera_fn = None   # run_pipeline이 심는 콜백 — 카메라 전환 실행부
 
     def add_viewer(self):
         """디버그 창 열림 — 다음 루프부터 오버레이를 그린다 (2026-07-20 최적화)."""
@@ -120,6 +121,16 @@ class PipelineState:
     def remove_viewer(self):
         with self._lock:
             self._viewer_count = max(0, self._viewer_count - 1)
+
+    def cycle_camera(self):
+        """디버그 창 'c' 키(2026-08-04 신설) — 다음 후보 장치로 카메라를 전환한다.
+
+        키오스크 현장에서 장치 번호(0/1 중 뭐가 맞는지)를 config 수정·재실행 없이
+        즉석으로 비교하려는 요청 — run_pipeline이 심어둔 콜백을 호출만 한다
+        (실제 스트림 교체는 그쪽 클로저가 담당, 아래 _cycle_camera 독스트링).
+        """
+        if self._cycle_camera_fn is not None:
+            self._cycle_camera_fn()
 
     @property
     def has_viewer(self):
@@ -147,23 +158,20 @@ def run_pipeline(config):
     state = PipelineState()
     log_environment(config)   # 어느 하드웨어에서 돈 기록인지 로그 첫머리에 남긴다 (2026-07-16)
     # 시작 병렬화(2026-08-03 — 키오스크 시작 20초 단축): 카메라 오픈(MSMF —
-    # 키오스크 실측 ~11초)과 모델 로딩(~수 초)이 서로 독립이라 겹친다. 프로브
-    # (auto_select)가 켜져 있으면 오픈에 모델이 필요해 종전 순차 경로 유지
-    probe_cfg = config["camera"].get("auto_select") or {}
-    pre_open = None
-    if not probe_cfg.get("enabled"):
-        pre_open = {"cap": None, "error": None}
+    # 키오스크 실측 ~11초)과 모델 로딩(~수 초)이 서로 독립이라 겹친다.
+    # (2026-08-04 사용자 결정 — 카메라 자동 선별(auto_select/camera_probe) 제거:
+    # 현장에서 프로브가 의도와 다른 USB 카메라를 고르는 사례가 있어 신뢰하지
+    # 않기로 함. config의 device_id 고정 하나만 연다 — 프로브 갈래 자체가 소멸)
+    pre_open = {"cap": None, "error": None}
 
-        def _open_main_camera():
-            try:
-                pre_open["cap"] = init_camera(config)
-            except RuntimeError as error:
-                pre_open["error"] = error   # 메인 스레드에서 다시 던진다
+    def _open_main_camera():
+        try:
+            pre_open["cap"] = init_camera(config)
+        except RuntimeError as error:
+            pre_open["error"] = error   # 메인 스레드에서 다시 던진다
 
-        pre_open["thread"] = threading.Thread(target=_open_main_camera, daemon=True)
-        pre_open["thread"].start()
-    # A안: 모델을 먼저 만들고 손 인식 품질로 카메라를 프로브해 메인을 고른다
-    # (2026-07-29 포즈 제거 — 프로브 채점도 손 품질 단독)
+    pre_open["thread"] = threading.Thread(target=_open_main_camera, daemon=True)
+    pre_open["thread"].start()
     preprocessor = Preprocessor(config)
     hand_tracker = HandTracker(config)   # 주 추론 모델 (2026-07-29 포즈 제거)
     # 머리 앵커(2026-07-31 몸통판 — 얼굴 검출 교체, 사용자 결정): 포즈(BlazePose)가
@@ -172,19 +180,41 @@ def run_pipeline(config):
     head_cfg = config.get("head_anchor") or {}
     head_detector = HeadDetector(config) if head_cfg else None
     models_elapsed_sec = time.monotonic() - startup_sec
-    if pre_open is not None:
-        pre_open["thread"].join()   # 모델 로딩과 겹쳐 돌던 카메라 오픈 대기
-        if pre_open["error"] is not None:
-            raise pre_open["error"]
-        main_device_id, main_cap = config["camera"]["device_id"], pre_open["cap"]
-    else:
-        main_device_id, main_cap = select_camera(config, hand_tracker, preprocessor)
+    pre_open["thread"].join()   # 모델 로딩과 겹쳐 돌던 카메라 오픈 대기
+    if pre_open["error"] is not None:
+        raise pre_open["error"]
+    main_device_id, main_cap = config["camera"]["device_id"], pre_open["cap"]
     camera = CameraStream(config, device_id=main_device_id, cap=main_cap).start()
+    state.camera_device_id = main_device_id
+
+    def _cycle_camera():
+        """'c' 키 콜백 — camera를 다음 후보 장치로 교체(nonlocal 재바인딩).
+
+        _inference_loop·_head_anchor_loop는 매 순회 이 스코프의 camera 변수를
+        다시 읽으므로(파이썬 클로저는 셀을 공유 — 스냅샷이 아니다), 여기서
+        재바인딩만 하면 두 스레드 다음 순회부터 새 스트림을 쓴다. 옛 스트림은
+        교체 직후 정지 — 그 찰나에 옛 참조로 진행 중이던 호출은 stop() 후에도
+        마지막 캐시 프레임을 그대로 돌려줄 뿐이라(capture_frame 독스트링) 죽지 않는다.
+        """
+        nonlocal camera
+        candidate_count = max(2, config["camera"].get("switch_candidate_count", 2))
+        next_device_id = (camera.device_id + 1) % candidate_count
+        try:
+            new_camera = CameraStream(config, device_id=next_device_id).start()
+        except RuntimeError as error:
+            logger.warning("카메라 전환 실패 (device_id=%d): %s", next_device_id, error)
+            return
+        old_camera = camera
+        camera = new_camera
+        old_camera.stop()
+        state.camera_device_id = next_device_id
+        logger.info("카메라 전환: device_id=%d", next_device_id)
+
+    state._cycle_camera_fn = _cycle_camera
 
     first_frame = camera.capture_frame()
-    logger.info("시작 소요: 모델 %.1f초 · 카메라 포함 총 %.1f초 (%s)",
-                models_elapsed_sec, time.monotonic() - startup_sec,
-                "병렬 오픈" if pre_open is not None else "프로브 경로")
+    logger.info("시작 소요: 모델 %.1f초 · 카메라 포함 총 %.1f초 (병렬 오픈)",
+                models_elapsed_sec, time.monotonic() - startup_sec)
     frame_height_px, frame_width_px = first_frame.shape[:2]
     hand_selector = HandSelector(config, frame_width_px, frame_height_px)
     gesture_filter = GestureFilter(config)

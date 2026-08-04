@@ -10,7 +10,11 @@ handedness가 불안정해 보정(위치 재라벨·중앙 띠·획 교차 보�
 - 이음: 직전 추적점 근처(REENTRY 반경) 재등장 = 같은 손 (신선 0.5초는 게이트
   면제 겸용, 이후 release_sec까지는 재합류 — 화면 가리킴의 수 초 소실 흡수)
 - 해제: release_sec 초과 소실 — 다음 손은 획득부터 (다른 사용자 승계 차단)
-handedness 라벨은 이벤트의 정보용 필드(hand_side)로만 전달한다.
+handedness 라벨은 이벤트의 정보용 필드(hand_side)로만 전달 — 단, 2026-08-04
+실기 보완(사용자 보고: 제스처 읽던 손이 반대쪽 손으로 넘어감)으로 이음
+단계에서 **반경 안 후보를 라벨로 추가 필터**한다(하드 필터 — `_update_tracked_hand`
+독스트링). 정체성의 유일한 키로 쓰는 게 아니라 이미 반경으로 좁힌 후보 안의
+추가 조건일 뿐이라 구 아키텍처의 플랩 버그(위 문단)와는 다르다.
 
 몸통판(2026-07-31): 앵커 = 포즈(BlazePose) 머리 관측(head_detector.py) —
 마스크·썬글라스·모자 무관. 앵커 동작(sticky·게이트·어깨선)은 얼굴판과 동일,
@@ -159,6 +163,8 @@ class HandSelector:
         self._tracked_center = None     # 추적 손의 마지막 중심 (x_px, y_px)
         self._tracked_sec = None        # 마지막으로 추적 손이 관측된 시각
         self._tracked_hand = None       # 이번 프레임의 추적 손 HandDetection | None
+        self._tracked_label = None      # 추적 손의 마지막 handedness(정보용) — 이음
+                                        #   후보가 여럿일 때 우선순위로만 쓴다(아래)
         self._acquire_tracks = []       # 획득 후보 궤적 — {last/start center·sec, shape_sec}
         self._last_any_hand_sec = None  # 마지막으로 손이 보인 시각 — engaged 판정
         self.locked_box = None          # 시각화용 — 추적 손 주변 박스(EMA)
@@ -187,6 +193,7 @@ class HandSelector:
             # 이전 사용자 정체성·표시를 승계하지 않는다
             self._tracked_center = None
             self._tracked_sec = None
+            self._tracked_label = None
             self._acquire_tracks = []
             self.locked_box = None
         return self.is_engaged()
@@ -287,7 +294,19 @@ class HandSelector:
     def _update_tracked_hand(self, now_sec):
         """추적 손 상태 갱신 — 이음(연속성) 또는 획득(이동+모양).
 
-        이음: 마지막 추적점 근처(REENTRY 반경) 후보 중 최근접 = 같은 손.
+        이음: 마지막 추적점 근처(REENTRY 반경) 후보 중, **마지막 handedness
+        라벨과 같은 쪽만** 이을 수 있다.
+        2026-08-04 실기 보완(사용자 보고 — 제스처 읽던 손이 갑자기 반대쪽
+        손으로 넘어감): 반경만 보면 양손이 가까워지거나(교차) 원래 손이
+        한두 프레임 가려진 사이 반대 손이 반경에 들어와 정체성을 가로챌 수
+        있었다. 라벨을 **하드 필터**로 걸어 절대 못 넘어가게 막는다 — 라벨이
+        그 프레임에 없거나(관측 이상) 반대로 튀면(원조 손 자체의 순간 플랩)
+        그냥 그 프레임은 후보 없음(신호 없음)으로 처리하고 release_sec 안
+        다음 프레임에 다시 시도한다. 라벨을 정체성의 **유일한** 키로 삼아
+        좌/우 슬롯을 따로 관리하던 구 아키텍처(플랩 보정 누더기 — 모듈
+        독스트링)와는 다르다: 여기선 반경으로 이미 좁힌 후보 안에서의
+        추가 필터일 뿐이라, 다른 사람 손이 라벨 하나 맞았다고 뺏어가지 않는다
+        (반경 자체를 벗어나면 애초에 후보에 안 들어옴).
         release_sec 안이면 소실 후 재등장도 잇는다(화면 가리킴의 수 초 소실 —
         구 래치 소실 유예·rejoin과 같은 역할). 반경 밖 후보는 무시 — 다른
         사람 손이 정체성을 뺏지 못한다.
@@ -303,17 +322,22 @@ class HandSelector:
             if now_sec - self._tracked_sec > self._release_sec:
                 self._tracked_center = None   # 소실 유예 초과 — 정체성 해제
                 self._tracked_sec = None
+                self._tracked_label = None
             else:
-                best = None
+                in_reach = []
                 for hand, center in candidates:
                     dist_px = math.dist(center, self._tracked_center)
-                    if dist_px <= REENTRY_SPAN_RATIO * hand_span_px(hand.landmarks) and (
-                            best is None or dist_px < best[2]):
-                        best = (hand, center, dist_px)
+                    if dist_px <= REENTRY_SPAN_RATIO * hand_span_px(hand.landmarks):
+                        in_reach.append((hand, center, dist_px))
+                same_label = [entry for entry in in_reach
+                             if self._tracked_label is None
+                             or entry[0].user_side == self._tracked_label]
+                best = min(same_label, key=lambda entry: entry[2]) if same_label else None
                 if best is not None:
                     self._tracked_hand = best[0]
                     self._tracked_center = best[1]
                     self._tracked_sec = now_sec
+                    self._tracked_label = best[0].user_side
                     self._update_display_box(best[0])
                 return   # 추적 유지 중 — 획득 경로는 돌지 않는다
         self._acquire_tracked_hand(candidates, now_sec)
@@ -368,6 +392,7 @@ class HandSelector:
             self._tracked_hand = acquired[0]
             self._tracked_center = acquired[1]
             self._tracked_sec = now_sec
+            self._tracked_label = acquired[0].user_side   # 이후 이음의 하드 필터 기준
             self._acquire_tracks = []
             self._update_display_box(acquired[0])
             logger.info("사용자 손 획득: 이동 %.0fpx (라벨 %s — 정보용)",

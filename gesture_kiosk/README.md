@@ -19,8 +19,8 @@
 
 ```bat
 install.bat        :: 설치 (인터넷) — CPU 전용, 내부망은 설치가이드.md B절
-py main.py                          :: 실행 — 이벤트가 stdout에 한 줄씩 (델파이 연동 동일)
-py main.py --debug                  :: + 카메라·판정 계기판 창을 켠 채 시작
+py main.py                          :: 실행 — 카메라·판정 계기판 창을 켠 채 시작(기본, 2026-08-11)
+py main.py --no-cam                 :: 창 없이 이벤트만(stdout, 델파이 연동 동일)
 :: 실행 중에는 콘솔에 cam on / cam off 로 창을 켜고 끌 수 있다
 ```
 
@@ -92,9 +92,9 @@ gesture_kiosk/
 
 | 명령 | 용도 |
 |---|---|
-| `py main.py` | 엔진 — 이벤트가 stdout에 한 줄씩 (공식 실행 — 시스템 파이썬) |
+| `py main.py` | 엔진 — 카메라·계기판 창을 켠 채 시작 (공식 실행 — 시스템 파이썬) |
 | 실행 중 `cam on` / `cam off` (+Enter) | 카메라·계기판 창 켜기/끄기 — 재실행 불필요 |
-| `py main.py --debug` | 창을 켠 채 시작 |
+| `py main.py --no-cam` | 창 없이 이벤트만(stdout) |
 | `py scripts\pipe_listen.py` | 델파이 대역 — 파이프 수신 규격 자가 검증 |
 | `py scriptsenchmark.py` | 추론 단독 FPS 측정 (기획서 6.1 — KPI 30 FPS) |
 | `py -m unittest discover tests -v` | 판정·손 추적·손모양·시나리오 단위 테스트 |

@@ -1,15 +1,18 @@
 """gesture_kiosk 공식 진입점 — 실시간 엔진 구동 (2026-08-03 신설, 사용자 결정).
 
 델파이(회사 UI)가 **이 파일을 직접 실행**한다 — bat 경유 없이:
-    py main.py            # 엔진만 — 이벤트가 stdout에 한 줄씩
-    py main.py --debug    # 카메라 창을 켠 채 시작(선택)
+    py main.py            # 카메라·계기판 창을 켠 채 시작(2026-08-11 사용자
+                          #   결정 — 기본값 전환: 종전엔 --debug를 줘야만 켜졌고
+                          #   콘솔에서 cam on을 쳐야 했다. 현장 점검 때마다 매번
+                          #   타이핑해야 하는 불편 제거 — 항상 켠 채 시작한다
+    py main.py --no-cam   # 창 없이 이벤트만(stdout) — 창이 필요 없는 배포 환경용
 
 ★카메라 창 런타임 토글(2026-08-03 사용자 결정 — 재실행 없는 점검): 엔진이
 도는 중에 stdin에 한 줄 명령으로 카메라·계기판 창을 켜고 끈다:
     cam on   ↵    # 창 열기 (콘솔에서 직접 타이핑하거나, 델파이가 stdin 파이프로)
     cam off  ↵    # 창 닫기 (창에서 q/ESC도 동일)
     quit     ↵    # 엔진 종료 (Ctrl+C와 동일)
---debug 재실행이 필요 없어 현장 점검 중에도 연동을 끊지 않는다.
+기본이 켠 채 시작이라 cam on을 칠 일은 거의 없다 — 창을 끄고 싶을 때만 cam off.
 
 ★카메라 전환(2026-08-04 신설 — 현장에서 장치 번호 즉석 확인): config 수정·
 재실행 없이 다음 장치 번호로 순환 전환한다(configs/config.yaml의
@@ -145,8 +148,9 @@ def run_window_loop(state, want_window):
 def main():
     parser = argparse.ArgumentParser(description="gesture_kiosk 실시간 엔진")
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
-    parser.add_argument("--debug", action="store_true",
-                        help="카메라·계기판 창을 켠 채 시작 (실행 중 cam on/off로도 토글)")
+    parser.add_argument("--no-cam", action="store_true",
+                        help="카메라·계기판 창 없이 시작 (기본은 켠 채 시작. 실행 중"
+                             " cam on/off로도 토글 가능)")
     args = parser.parse_args()
 
     disable_console_quick_edit()
@@ -159,19 +163,48 @@ def main():
     from src.pipeline.realtime_loop import run_pipeline
 
     state = run_pipeline(config)
-    logger.info("엔진 구동 중 — 이벤트 stdout 한 줄씩 · 카메라 창 cam on/off(+Enter) ·"
-               " 카메라 전환 c키 또는 cam next(+Enter) · 종료 Ctrl+C")
+    window_state_text = "꺼진 채 시작(--no-cam)" if args.no_cam else "켠 채 시작"
+    logger.info("엔진 구동 중 — 이벤트 stdout 한 줄씩 · 카메라 창 %s, cam off/on(+Enter)으로"
+               " 토글 · 카메라 전환 c키 또는 cam next(+Enter) · 종료 Ctrl+C",
+               window_state_text)
     # 콘솔 운영자 안내 — stdout(이벤트 채널)을 오염시키지 않도록 stderr로 한 줄만
-    sys.stderr.write("[안내] 카메라 창: cam on / cam off (+Enter) · 카메라 전환: c키 또는"
-                     " cam next(+Enter) · 종료: quit 또는 Ctrl+C\n")
+    sys.stderr.write(f"[안내] 카메라 창: {window_state_text} (끄려면 cam off, 다시 켜려면"
+                     " cam on, +Enter) · 카메라 전환: c키 또는 cam next(+Enter) ·"
+                     " 종료: quit 또는 Ctrl+C\n")
     sys.stderr.flush()
 
-    want_window = {"value": args.debug}
+    want_window = {"value": not args.no_cam}
     if sys.stdin is not None:   # pythonw 등 stdin 자체가 없는 실행 — 토글 없이 구동
         threading.Thread(target=watch_stdin_commands, args=(state, want_window),
                          daemon=True).start()
     run_window_loop(state, want_window)
 
 
+def _run_interactive_safe():
+    """탐색기에서 main.py를 직접 더블클릭해 실행하는 경우(2026-08-11 사용자
+    요청 — "무조건 main.py로 열어야 한다", 우회 bat 불가)를 위한 안전판.
+
+    콘솔이 파이프 없이 진짜 인터랙티브(예: py.exe 연결로 더블클릭 실행)면
+    sys.stdin.isatty()가 True다 — 이때만 예외 발생 시 트레이스백을 찍고
+    아무 키 입력을 기다린다: 안 그러면 카메라 연결 실패 등으로 시작 직후
+    죽었을 때 콘솔 창이 원인도 못 읽고 바로 닫혀버린다(더블클릭 실행의
+    전형적 증상). quit/Ctrl+C로 끝내는 정상 종료 경로는 안 건드린다 —
+    main()이 그냥 정상 반환하면 이 함수도 그대로 반환해 창이 즉시 닫힌다.
+    델파이가 자식 프로세스로 띄우는 배포 경로는 stdin이 파이프가 아니거나
+    비대화식이라 isatty()가 False — 크래시해도 대기 없이 그대로 종료해
+    Delphi 쪽 재기동 타이머(WM_ENGINE_EXITED)가 정상 동작한다.
+    """
+    is_interactive = sys.stdin is not None and sys.stdin.isatty()
+    try:
+        main()
+    except Exception:
+        if not is_interactive:
+            raise
+        import traceback
+        traceback.print_exc()
+        input("\n[오류로 종료됨] 창을 닫으려면 아무 키나 누르세요...")
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    main()
+    _run_interactive_safe()

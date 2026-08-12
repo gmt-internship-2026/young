@@ -4,6 +4,57 @@
 기획서(기획서.docx) 주차 계획·9장 체크리스트와 연동. **기획서 2.2/3.1/5.1은
 2026-07-10(타깃)·2026-07-15(동작 체계) 변경을 반영해 개정 필요.**
 
+## 🟡 진행 중 (2026-08-05 — feat/shape_ml: 손 모양 학습 판정 전용 판)
+
+폴더명 gesture_kiosk1 → gesture_kiosk로 되돌림(이 판 전용). main(young 저장소)은
+건드리지 않음 — 이 판만의 실험.
+
+- [x] hand_select._classify_shape를 "학습 분류기 주판정 + 클래스별 기하 폴백"으로
+      문서화(로직 자체는 2026-08-03부터 이미 이 구조 — fist/finger는 이미 분류기가
+      최종 판정). HandSelector 통합 지점에 처음으로 테스트 추가
+      (tests/test_hand_select.py ClassifierPrimaryShapeTest, 2건)
+- [x] **open(손바닥) 학습 데이터 수집 — 완료(2026-08-12 확인, 319건)**.
+      `data/hand_shape/landmarks.csv` label=open 319건(전 2255건 fist/finger에 추가)
+- [x] 위 데이터로 재학습 완료 — `models/weights/hand_shape_classifier.npz`의
+      classes에 open 포함 확인(finger/fist/open 3종 모두 분류기 주판정)
+- [ ] 3모양(open/finger/fist) 전부 분류기 판정인 상태로 실기 정확도 재확인
+      (`scripts/eval_accuracy.py`) — 기하 단독 대비 비교. 데이터·재학습은
+      끝났으나 카메라 앞 실측 검증은 아직
+
+## ✅ 완료 (2026-08-05~11 — feat/shape_ml: pose_gesture_filter 자세 콤보 판정 엔진)
+
+위 3모양 분류기와 별개로, "정지된 손 자세 하나(모양+방향 콤보)"를 통째로
+분류기가 판정하는 새 판정 경로를 도입(사용자 결정 — "완전 새로운 방식",
+궤적 추적 불필요). `config gestures.engine`으로 기존 swipe와 택1
+(`src/pipeline/realtime_loop.py`).
+
+- [x] **콤보 판정 엔진 신설** — `src/postprocess/pose_gesture_filter.py`.
+      open×4방향(left/right/home/back)·finger×4방향(select 포함)·
+      fist 2종(plain/back)·ok(confirm), 상태기(latch_frames→cooldown_sec
+      유지→release_sec 해제)는 모듈 독스트링 표 참고
+- [x] **none 클래스 방어 4중화** — 실기 보고("손으로 V를 해도 select로 잡고
+      그래")로 V사인이 학습 기반 방어(min_conf·max_dist_ratio)를 뚫는 걸
+      확인 → none_margin·none_neighbor_ratio(통계적 방어) +
+      geometric_shape_check(손가락 개수 직접 세는 기하 교차검증, 데이터
+      불필요) 추가. 전용 테스트
+      `test_v_sign_rejected_despite_forced_finger_prediction` 통과
+- [x] **none 학습 데이터 수집 체계** — `scripts/collect_gesture_pose_data.py`
+      [n]키, 현재 688건(V사인 등 헷갈리는 자세 포함 권장 목록 명시).
+      2026-08-12: 원근 단축(카메라 쪽으로 손가락 뻗기) 자세도 수집 후보로
+      독스트링·주석에 추가 — 아직 실기 보고로 확정된 사례는 아님, 데이터
+      확보 여부 다음 수집 세션에서 확인 필요
+- [x] **휴식 자세 오인 방어** — 실기 보고("손을 허리 옆에 붙이고 있는데
+      back으로 인식한다")로 `rest_zone_below_shoulder` 게이트 추가(어깨선
+      아래 손은 모양 무관 None)
+- [x] 단위 테스트 246건 통과(2026-08-12 재확인) — `python -m unittest
+      discover tests`
+- [ ] **왼손 실기 검증** — 왼손은 오른손 기준 미러링으로 좌표만 처리(단위
+      테스트로 수식 검증 완료), 실제 카메라로 왼손 방향이 맞게 나오는지는
+      미검증(pose_gesture_filter.py 모듈 독스트링 참고)
+- [ ] pose_classifier 엔진 실기 채택 여부 — 지금은 swipe와 나란한 실험
+      브랜치 상태, 델파이 쪽 정식 반영 대상 아님(config.yaml classes 주석
+      참고). 실기로 비교해 하나로 정할 것
+
 ## ✅ 완료 (2026-08-03 — main 통합 · py 직접 실행 · 실기 보정)
 
 - [x] **몸통판을 main으로 승격(사용자 결정)** — 최종 추론판 = 포즈 머리 앵커

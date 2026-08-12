@@ -37,6 +37,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
 
 from src.inference.hand_tracker import HandTracker  # noqa: E402
+from src.inference.preprocessor import Preprocessor  # noqa: E402
 from src.postprocess.hand_shape_features import FEATURE_NAMES, normalize_landmarks  # noqa: E402
 from src.utils.config_loader import load_config  # noqa: E402
 
@@ -58,6 +59,13 @@ def main():
 
     config = load_config(args.config)
     hand_tracker = HandTracker(config)
+    # 실전 추론 경로(realtime_loop.py)는 Preprocessor로 거울 반전한 프레임을 손
+    # 추적기에 넣는다 — 여기서 반전을 빼먹으면 화면이 실전과 다르게 보이고(거울
+    # 아닌 일반 웹캠처럼), user_side를 쓰는 다른 수집 스크립트(collect_gesture_
+    # pose_data.py)와도 어긋난다. 이 스크립트 자체는 user_side를 안 쓰지만
+    # 일관성을 위해 통일(2026-08-05 — collect_gesture_pose_data.py에서 발견된
+    # 버그와 같은 원인)
+    preprocessor = Preprocessor(config)
 
     cap = cv2.VideoCapture(args.device)
     if not cap.isOpened():
@@ -81,6 +89,7 @@ def main():
             ret, frame = cap.read()
             if not ret:
                 continue
+            frame = preprocessor.preprocess_frame(frame)
             hands = hand_tracker.infer(frame)
             # 여러 손이 보이면 가장 큰(=가까운) 손 하나만 — 실전(hand_select)의
             # "사용자 손 하나" 가정과 맞춘다

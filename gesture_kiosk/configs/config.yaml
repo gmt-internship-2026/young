@@ -18,7 +18,7 @@ camera:
   model: "Logitech Brio 100"  # 사용 카메라 기종 기록(2026-07-16 신설) — 실측 검증 2026-07-10.
                               #   OpenCV는 장치 이름을 못 읽으므로 사람이 기록. 교체 시 갱신 —
                               #   시작 로그의 "카메라 협상 결과"에 협상값과 나란히 남는다
-  device_id: 1            # USB 웹캠 장치 번호
+  device_id: 0            # USB 웹캠 장치 번호
   switch_candidate_count: 2  # 디버그 창 'c' 키(카메라 전환, 2026-08-04 신설) 순환 범위 —
                           #   현장에서 장치 번호가 뭐가 맞는지 재빌드 없이 즉석 비교할 때 씀.
                           #   0..N-1을 순환(마지막 다음은 다시 0). 카메라 대수에 맞춰 조정
@@ -161,8 +161,159 @@ hand_select:              # 사용자 손 선별(2026-07-31 단일 손 추적 �
                               #   체감이 오히려 나쁘면 이 키를 지워 기하 판정 단독으로
                               #   되돌릴 것(설정 켜기 전 회귀 없음, 옵트인 구조)
                               #   ⚠ 검증 인물 1명(me)뿐 — 과적합 여부 미확인, 실기로 판단
+                              #   ★2026-08-05 feat/shape_ml(사용자 결정 — "완전 새로운 방식",
+                              #   손 모양 학습 판정 전용 판): 이 키가 이 판의 핵심이다 — 위
+                              #   설명대로 fist/finger는 이미 분류기가 최종 판정을 결정하고,
+                              #   open만 데이터가 없어 기하로 폴백 중이다. open 샘플을 모아
+                              #   재학습하면(위 경로 그대로) 재빌드 없이 3모양 전부 분류기
+                              #   주판정으로 넘어간다 — hand_select.py 모듈 독스트링 참고
 
 gestures:
+  engine: pose_classifier       # swipe(종전 — GestureFilter/모양 래치+궤적) |
+                              #   pose_classifier(2026-08-06 신설 — PoseGestureFilter/
+                              #   정지 자세 학습 분류기, 아래 섹션). realtime_loop.py가
+                              #   이 값으로 두 경로 중 하나만 돌린다. 지금 학습된
+                              #   가중치(5클래스: fist·open 4방향)가 실기 검증 전이라
+                              #   기대만큼 안 되면 이 값을 swipe로 되돌릴 것 — 코드
+                              #   삭제 없이 config 한 줄로 되돌아간다
+  pose_classifier:             # 자세(모양+방향) 판정 — feat/shape_ml 신설
+                              #   (2026-08-05, 사용자 결정 — "완전 새로운 방식"). 종전
+                              #   모양 래치(shape_latch)+궤적(swipe) 조합 대신, 정지된
+                              #   손 자세 하나(예: open_left)를 학습 분류기가 통째로
+                              #   판정한다 — 방향은 손목을 그 방향으로 기울인 자세
+                              #   자체가 표현하므로 이동 거리를 안 잰다(사용자 확인 —
+                              #   "지금은 움직임이 필요없는거 같은데").
+                              #   src/postprocess/pose_gesture_filter.py가 담당.
+                              #   2026-08-06 realtime_loop.py에 연결(위 engine 키) —
+                              #   지금 가중치는 5클래스(fist·open 4방향)뿐이라 finger·
+                              #   fist 방향·fist_forward는 아직 미학습(분류기가 모르는
+                              #   콤보는 아무 이벤트도 안 남 — pose_gesture_filter.
+                              #   COMBO_TO_EVENT가 학습된 콤보만 이벤트로 냄).
+                              #   더 모으려면: scripts/collect_gesture_pose_data.py로
+                              #   수집 -> scripts/train_hand_shape_classifier.py --data
+                              #   data/gesture_pose/landmarks.csv --out 아래 weights_path로
+                              #   재학습(재빌드 불필요 — hand_select._resolve_classifier_path
+                              #   와 같은 원리로 exe와 같은 폭에 놓으면 바로 반영)
+    weights_path: models/weights/gesture_pose_classifier.npz
+    latch_frames: 4            # 후보 콤보가 이 프레임 연속 관측돼야 "확정" — 프레임별
+                              #   판별 출렁임 방지(gesture_filter.shape_latch.latch_frames와
+                              #   같은 원리). 30 FPS ≈ 0.13초. 시작값 — 실기로 조정
+    release_sec: 1.5           # 손 소실 후 이 시간 안엔 발화 이력(같은 콤보 재발화 방지)을
+                              #   유지 — 손 검출이 잠깐(가리킴 등) 끊겨도 자세를 다시
+                              #   잡을 때마다 재발화되지 않게. gesture_filter의
+                              #   shape_latch.release_sec(1.5)과 동일 근거로 시작값 동일
+    cooldown_sec: 1.5          # ★2026-08-11 4차 개정(사용자 결정 — 실기 로그 실측:
+                              #   1.0에서 home/right 반복 발화 간격이 로그상 정확히
+                              #   1초씩이었는데도(pose_gesture_event 타임스탬프로 확인)
+                              #   "체감상 1초 같지 않게 빠르다" — 자세를 계속 들고 있을
+                              #   때 초당 반복 발화 자체가 실사용에 너무 잦다고 판단해
+                              #   여유를 더 둠. 1.0→1.5. ★2026-08-07 3차 개정 배경은
+                              #   아래(사용자 결정 — "인식이 너무 빨라서 하고 싶지 않은
+                              #   제스처도 바로바로 잡혀 혼동이 온다 — 전체 다 1초로,
+                              #   인식되고 1초 지나면 실행, 연속 동작도 1초 틈이 생기게"):
+                              #   "확정 콤보로 몇 초 유지됐는가"를 재는 hold 게이트로
+                              #   의미 확정 — latch_frames로 노이즈만 거른 뒤 곧바로
+                              #   발화하던 2차 개정(콤보 전환은 즉시)을 폐기, 전환·반복
+                              #   구분 없이 항상 이 시간을 채워야 발화한다
+                              #   (pose_gesture_filter.filter_signals 독스트링 참고 —
+                              #   다른 자세로 넘어가는 중간에 잠깐 스치는 자세가 그대로
+                              #   발화되던 문제). 오발이 여전히 있으면 올리고, 반응이
+                              #   굼뜨면 내릴 것
+    min_conf: 0.7              # ★2026-08-07 신설(사용자 보고 — "정해진 제스처가 아닌데
+                              #   비슷한 제스처로 인식한다, 정의 밖 동작은 철저하게
+                              #   none으로 잡혀야"): 분류기 승자 클래스의 확률(소프트맥스)이
+                              #   이 값 미만이면 콤보를 None으로 취급(hand_shape_classifier.
+                              #   classify 독스트링 참고) — 로지스틱 회귀는 원래 "모르겠다"가
+                              #   없어 정의 밖 자세도 가장 가까운 클래스로 강제 판정하던 것
+                              #   방어. 0.6→0.7(2차 보고 — "V사인도 select로 잡힘" 이후
+                              #   소폭 상향). ⚠ V사인처럼 정의된 클래스와 실제로 닮은
+                              #   자세는 min_conf·max_dist_ratio 둘 다로도 한계가 있다 —
+                              #   근본 해법은 scripts/collect_gesture_pose_data.py의
+                              #   none 클래스로 그런 자세를 직접 학습시키는 것(그 파일
+                              #   모듈 독스트링 참고). 정의된 제스처가 자꾸 None으로
+                              #   새면 내리고, 엉뚱한 자세가 여전히 잡히면 올릴 것. 키
+                              #   삭제 시 종전(항상 argmax 강제, 방어 없음)
+    max_dist_ratio: 1.1        # ★2026-08-07 신설(사용자 보고 — "여전히 다 잡아 이상한
+                              #   제스처도" — min_conf 단독으론 부족했다): 로지스틱
+                              #   회귀는 경계에서 멀수록 오히려 확신이 커지는 구조라(선형
+                              #   무한 외삽), min_conf만으론 학습 데이터와 전혀 안 닮은
+                              #   입력도 못 거를 수 있다. 이건 "예측 확신도"가 아니라
+                              #   "가장 가까운 클래스 중심점까지 실제 거리"를 본다 —
+                              #   그 클래스 학습 샘플의 최대 반경(max_dist, 학습 시 계산·
+                              #   저장) × 이 배수를 넘으면 None(hand_shape_classifier.
+                              #   classify 독스트링 참고). 1.5→1.1(2차 보고 이후 소폭
+                              #   하향 — 여전히 V사인처럼 학습 클래스와 실제로 닮은
+                              #   자세까지는 거리만으로 못 거를 수 있음, min_conf 주석
+                              #   참고). ⚠ 구버전 가중치(centroids
+                              #   미저장분)엔 적용 안 됨 — scripts/
+                              #   train_hand_shape_classifier.py로 재학습해야 실제로
+                              #   반영된다. 1.5는 실측 없는 시작값 — 정의된 제스처가
+                              #   자꾸 None으로 새면 올리고, 엉뚱한 자세가 여전히 잡히면
+                              #   내릴 것(1.0 = 학습 데이터의 가장 극단적인 샘플만큼만
+                              #   허용, 그보다 낮추면 정상 변형까지 잘릴 수 있음). 키
+                              #   삭제 시 거리 검사 없음(min_conf만 작동)
+    none_margin: 0.15          # ★2026-08-07 신설(사용자 요청 — "추론값으로도 좀 해당
+                              #   제스처만 잡도록, 제스처와 다른 행동은 인식하지
+                              #   않도록"): min_conf·max_dist_ratio는 "승자가 확신하는가/
+                              #   가까운가"만 보고 "none이 2등으로 얼마나 바짝
+                              #   따라붙었는가"는 안 본다 — 승자(제스처)의 확률에서
+                              #   "none" 클래스 확률을 뺀 차이가 이 값 미만이면 None
+                              #   (hand_shape_classifier.classify 독스트링 참고). "none"
+                              #   클래스를 실제로 학습해야(scripts/
+                              #   collect_gesture_pose_data.py의 [n]키) 의미가 생김 —
+                              #   그 전엔 항상 통과. 0.15는 실측 없는 시작값 — 정의된
+                              #   제스처가 자꾸 None으로 새면 내리고, 여전히 헷갈리는
+                              #   자세가 잡히면 올릴 것. 키 삭제 시 이 검사 없음
+    none_neighbor_ratio: 1.2   # ★2026-08-07 신설(max_dist_ratio가 "none"엔 잘 안
+                              #   맞는 문제 보완 — 실기: 뻐큐는 걸러졌는데 V사인은
+                              #   여전히 통과): none은 서로 다른 자세를 뭉친 다봉
+                              #   클래스라 중심점·반경(max_dist_ratio)이 무뎌진다.
+                              #   이건 "none 평균과의 거리"가 아니라 **학습 시 저장된
+                              #   개별 none 샘플 중 제일 가까운 것 하나**까지 거리를
+                              #   본다 — 그 거리가 none_typical_gap(none 샘플들끼리
+                              #   서로 떨어진 전형적 거리, 학습 시 계산) × 이 배수보다
+                              #   가까우면 None(hand_shape_classifier.classify
+                              #   독스트링 참고). "none" 데이터를 실제로 넣어
+                              #   재학습해야 의미가 생김 — collect_gesture_pose_data.py
+                              #   [n]키로 헷갈리는 자세를 다양하게 모을수록 이 방어가
+                              #   촘촘해진다. 1.2는 실측 없는 시작값. 키 삭제 시 이
+                              #   검사 없음
+    geometric_shape_check: true   # ★2026-08-07 신설(사용자 요청 — "손가락 갯수나
+                              #   그냥 진짜 아무것도 아닌 제스처... 학습 없이 되는
+                              #   방법 없을까"): 위 3개(min_conf·max_dist_ratio·
+                              #   none_margin)는 전부 학습 데이터 기반 통계적 방어라
+                              #   V사인처럼 한 번도 학습 안 시킨 헷갈리는 자세는
+                              #   못 거를 수 있다. 이건 학습과 무관하게 **손가락
+                              #   개수를 직접 세어** 교차검증한다 — 학습 분류기가
+                              #   "finger_up"이라 확신해도 실제 편 손가락이 1개가
+                              #   아니면(V사인=2개) 즉시 거부(hand_shape.
+                              #   classify_hand_shape 재사용, hand_select.hand_shape의
+                              #   임계값과 동일 — pose_gesture_filter.classify_pose_combo
+                              #   독스트링 참고). 데이터·재학습 불필요, 즉시 적용.
+                              #   ⚠ 기하 판정은 일부러 보수적이라(굽힘 미확인 손가락이
+                              #   하나라도 있으면 기권) 블러 등으로 진짜 제스처도 가끔
+                              #   한두 프레임 걸러질 수 있음 — latch_frames+cooldown_sec가
+                              #   보통 흡수하지만, 반응이 눈에 띄게 굼떠지면 false로
+                              #   끄고 진단할 것. 키 삭제 시 종전(이 검사 없음)
+    rest_zone_below_shoulder: 0.8   # ★2026-08-11 신설(사용자 보고 — "손을 허리
+                              #   옆에 붙이고 있는데 back으로 인식한다"): 위
+                              #   min_conf·max_dist_ratio·none_margin·
+                              #   geometric_shape_check는 전부 "손 모양이 정의된
+                              #   제스처를 닮았는가"만 본다 — swipe 엔진의
+                              #   raise_guard_below_shoulder(허리께 휴식 자세를
+                              #   위 방향 이벤트에서 제외)와 달리 pose_classifier는
+                              #   손 위치 자체를 아예 안 봐서, 휴식 자세가 우연히
+                              #   학습된 모양(예: open_down)과 닮으면 위치 무관 그대로
+                              #   나갔다. 어깨선(hand_select.shoulder_line_y_ratio)
+                              #   아래로 가상 어깨너비(hand_scale_ratio) 이 배수만큼
+                              #   내려간 손은 모양·방향 무관 전부 None 처리
+                              #   (realtime_loop._inference_loop) — swipe의 raise_guard_
+                              #   below_shoulder와 같은 0.8로 시작(휴식 존 정의 재사용).
+                              #   앵커·손 실측 자 중 하나라도 없으면(가림 등) 게이트
+                              #   자체를 건너뛴다(head_anchor 부재 시 게이트 해제와
+                              #   같은 관대한 기본값 원칙). 정상 제스처가 이 게이트에
+                              #   걸리면(가슴 앞에서도 씹힘) 올리고, 허리 오발이
+                              #   남으면 내릴 것. 키 삭제 시 게이트 없음(종전)
   grip_select:                # 제자리에서 주먹 쥐었다 펴기 1회 = select (2026-08-04 사용자
                               #   요청). 어느 손이든 상관없다 — handedness 라벨은 불신뢰라
                               #   좌/우 구분에 안 쓴다(모듈 독스트링). 키 삭제 시 기능 없음
@@ -340,9 +491,30 @@ gestures:
 classes:                    # 표준 동작 목록 — UI/이벤트 수신부와의 계약.
                             # 2026-07-31 갱신: 07-29 개편(top/bottom 소멸·ok→confirm)
                             # 반영 + 손바닥 temp 3종·탭 click 추가 (델파이 분기문
-                            # 갱신 대상 — №7)
+                            # 갱신 대상 — №7). ★2026-08-06 feat/shape_ml — bottom
+                            # 부활 + fist_back·temp_bottom 신설(gestures.pose_classifier
+                            # 전용, pose_gesture_filter.COMBO_TO_EVENT — 2차 개편 스펙은
+                            # 그 모듈 독스트링 표 참고). swipe 엔진 쪽은 이 목록 중
+                            # select·temp_top을 쓰고 pose_classifier는 안 씀(엔진마다
+                            # 실제 부분집합만 사용 — 이 목록은 둘의 합집합) — 델파이
+                            # 쪽엔 이 판을 실제로 쓰기로 확정되면 그때 통지(지금은
+                            # 실험 브랜치, №7 정식 반영 대상 아님)
+                            # ★2026-08-06 3차 개편(사용자 결정 — "ok사인이 confirm 손가락
+                            # 하나를 위로하면 select 정면 주먹쥐는 제스처를 temp_fist로"):
+                            # pose_classifier도 이제 select를 쓴다(위 391-392행 "swipe만
+                            # 씀"은 이 개편으로 낡음 — finger_up이 select를 냄).
+                            # ok(신설) 라벨은 유지하되 이벤트명은 ok가 아니라 confirm을
+                            # 내므로 "ok"는 어느 엔진도 안 쓰는 이벤트명이 돼 목록에서
+                            # 제거, temp_fist(신설, plain fist 전용) 추가.
+                            # click은 pose_classifier에서는 더 안 쓰지만 swipe의
+                            # tap_click이 여전히 씀 — 목록엔 남긴다.
+                            # bottom은 어느 엔진도 안 씀(open_down은 back으로 매핑) —
+                            # 델파이 쪽 계약이라 임의 삭제는 보류. ★2026-08-11
+                            # 4차 개편: fist_back → temp_fist_back(이벤트명만 재배정 —
+                            # pose_gesture_filter.py 모듈 독스트링 참고, 콤보 라벨·
+                            # 학습 데이터는 fist_back 그대로 불변)
   [left, right, select, back, home, confirm,
-   temp_left, temp_right, temp_top, click]
+   temp_left, temp_right, temp_top, temp_bottom, temp_fist, click, bottom, temp_fist_back]
 
 event_output:
   # 회사 GUI = 델파이7 프로그램 — 파이프(stdio) 연동 확정(2026-07-23, 회사 요청

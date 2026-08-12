@@ -3,7 +3,10 @@
 프레임 흐름 (2026-07-29 포즈 제거 — 손 단독 추론, hand_select.py 참고):
   카메라(스레드) → 거울 반전 → 손 랜드마크(MediaPipe — 유일한 추론 모델)
   → 사용자 손 선별(hand_select: 크기+연속성, 손 실측 자)
-  → 동작 판정(gesture_filter: 손 모양 래치 + 첫 선 궤적 4방향)
+  → 동작 판정(config gestures.engine으로 택1, 2026-08-06):
+      swipe(종전) = gesture_filter: 손 모양 래치 + 첫 선 궤적 4방향
+      pose_classifier(feat/shape_ml 신설) = pose_gesture_filter: 정지 자세
+      (모양+방향 콤보) 하나를 학습 분류기가 통째로 판정 — 궤적 추적 없음
   → 이벤트 전송(stdio — stdout 한 줄, 델파이가 파이프로 수신)
 
 2026-07-29 포즈(ONNX Runtime + rtmlib) 제거(사용자 결정): 제스처 판정은 손
@@ -12,7 +15,7 @@
 B안 유지: 상업 허용·카피레프트 없음).
 
 2026-07-23: 웹소켓·UDP·데모 웹 서버 제거(회사 결정 — 네트워크 철회, print 연동).
-디버그는 main.py --debug 로컬 창(cv2)이 담당한다.
+디버그는 main.py의 로컬 창(cv2, 2026-08-11부터 기본으로 켠 채 시작)이 담당한다.
 
 2026-07-31 머리 앵커 추론 스레드 분리(키오스크 실기 — FPS 저하·획 끊김): 포즈
 lite는 BlazeFace(수 ms)와 달리 호출당 수십 ms라 손 루프 인라인이면 10Hz마다
@@ -33,6 +36,9 @@ from src.inference.preprocessor import Preprocessor
 from src.pipeline.event_sender import create_event_sender
 from src.postprocess.gesture_filter import GestureFilter
 from src.postprocess.hand_select import HandSelector
+from src.postprocess.hand_shape import hand_center_point
+from src.postprocess.hand_shape_classifier import HandShapeClassifier
+from src.postprocess.pose_gesture_filter import PoseGestureFilter, classify_pose_combo
 from src.utils.logger import get_logger
 from src.utils.metrics import FpsMeter
 from src.utils.visualize import draw_debug_panel, draw_status, draw_user_hands
@@ -217,7 +223,48 @@ def run_pipeline(config):
                 models_elapsed_sec, time.monotonic() - startup_sec)
     frame_height_px, frame_width_px = first_frame.shape[:2]
     hand_selector = HandSelector(config, frame_width_px, frame_height_px)
-    gesture_filter = GestureFilter(config)
+    # 판정 엔진 택1(2026-08-06, config gestures.engine — 모듈 독스트링): swipe는
+    # 기존 GestureFilter, pose_classifier는 정지 자세 학습 분류기(feat/shape_ml).
+    # 두 엔진 다 만들지 않는다 — pose_classifier는 가중치 로딩(파일 I/O)이 있어
+    # 안 쓰는 쪽을 굳이 초기화할 이유가 없다
+    gesture_mode = config["gestures"].get("engine", "swipe")
+    gesture_filter = None
+    pose_classifier = None
+    pose_gesture_filter = None
+    pose_min_conf = None
+    pose_max_dist_ratio = None
+    pose_none_margin = None
+    pose_none_neighbor_ratio = None
+    pose_geometric_check = None
+    pose_rest_zone_below_shoulder = None
+    if gesture_mode == "pose_classifier":
+        pose_cfg = config["gestures"]["pose_classifier"]
+        pose_classifier = HandShapeClassifier(pose_cfg["weights_path"])
+        pose_gesture_filter = PoseGestureFilter(config)
+        pose_min_conf = pose_cfg.get("min_conf")   # None(키 없음)이면 종전(항상 argmax 강제)
+        pose_max_dist_ratio = pose_cfg.get("max_dist_ratio")   # None이면 거리 검사 건너뜀
+        pose_none_margin = pose_cfg.get("none_margin")   # None이면 none 마진 검사 건너뜀
+        pose_none_neighbor_ratio = pose_cfg.get("none_neighbor_ratio")   # None이면 건너뜀
+        # 손가락 개수 기하 교차검증(2026-08-07 — pose_gesture_filter.classify_pose_combo
+        # 독스트링 참고): hand_select와 같은 hand_shape 임계값을 재사용 — 학습
+        # 분류기와 별개로 손가락 개수가 안 맞으면(V사인 등) 데이터 없이도 거른다
+        if pose_cfg.get("geometric_shape_check"):
+            hand_shape_cfg = config["hand_select"]["hand_shape"]
+            pose_geometric_check = (
+                hand_shape_cfg["extend_ratio"], hand_shape_cfg["min_valid_fingers"],
+                hand_shape_cfg.get("curl_confirm_ratio", hand_shape_cfg["extend_ratio"]),
+            )
+        # 휴식 존 게이트(2026-08-11 — 위 config 키 독스트링 참고): pose_classifier는
+        # 손 위치를 안 봐서 허리께 휴식 자세가 손 모양만으로 오발되던 것 방어
+        pose_rest_zone_below_shoulder = pose_cfg.get("rest_zone_below_shoulder")
+        logger.info("판정 엔진: pose_classifier (classes=%s, min_conf=%s, "
+                    "max_dist_ratio=%s, none_margin=%s, none_neighbor_ratio=%s, "
+                    "geometric_shape_check=%s)",
+                    pose_classifier.classes, pose_min_conf, pose_max_dist_ratio,
+                    pose_none_margin, pose_none_neighbor_ratio, pose_geometric_check)
+    else:
+        gesture_filter = GestureFilter(config)
+        logger.info("판정 엔진: swipe")
     event_sender = create_event_sender(config)
 
     state.is_running = True
@@ -273,23 +320,55 @@ def run_pipeline(config):
                             len(hands))
                 was_active = is_active
 
-            # 판정용 손 신호(손모양 + 손 중심 + 라벨) — 단일 손 추적(2026-07-31
-            # 라벨 제거). x·y 모두 프레임 폭으로 나눈 등방 좌표 (거리 자 정규화와
-            # 단위 일치, 2026-07-16)
-            signal = hand_selector.user_hand_signal()
-            signal_ratio = None if signal is None else (
-                signal[0],
-                (signal[1][0] / frame_width_px, signal[1][1] / frame_width_px),
-                signal[2],
-                signal[3],   # 검지 비율 — 탭 클릭 판정용 (2026-08-03, 스케일 무관)
-                signal[4],   # 기하 손모양 — 탭 클릭 모드 확인 전용, 학습 분류기
-                             #   무관(2026-08-03, hand_select._classify_shape 참고)
-            )
-            gesture_event = gesture_filter.filter_signals(
-                signal_ratio, hand_selector.hand_scale_ratio(),   # 손 실측 자
-                hand_selector.shoulder_line_y_ratio(),   # 앵커 어깨선 (없으면 하단 띠 폴백)
-            )
-            state.debug = gesture_filter.debug
+            if gesture_mode == "pose_classifier":
+                # 정지 자세 판정(2026-08-06 — 모듈 독스트링): 궤적·어깨 자 불필요,
+                # 추적 손의 원본 랜드마크(hand_select.HandSelector.tracked_hand)를
+                # 분류기에 직접 넣는다 — 왼손이면 classify_pose_combo가 오른손
+                # 기준으로 미러링·역미러링까지 알아서 처리한다(모듈 독스트링)
+                tracked_hand = hand_selector.tracked_hand
+                combo_label = (classify_pose_combo(pose_classifier, tracked_hand,
+                                                   min_conf=pose_min_conf,
+                                                   max_dist_ratio=pose_max_dist_ratio,
+                                                   none_margin=pose_none_margin,
+                                                   none_neighbor_ratio=pose_none_neighbor_ratio,
+                                                   geometric_shape_check=pose_geometric_check)
+                              if tracked_hand is not None else None)
+                if (combo_label is not None and pose_rest_zone_below_shoulder is not None
+                        and tracked_hand is not None):
+                    # 휴식 존 게이트(2026-08-11 — config gestures.pose_classifier.
+                    # rest_zone_below_shoulder 독스트링 참고): 앵커·손 실측 자
+                    # 둘 다 있어야 판단 — 하나라도 없으면 관대하게 통과(게이트 생략)
+                    shoulder_y_ratio = hand_selector.shoulder_line_y_ratio()
+                    body_scale_ratio = hand_selector.hand_scale_ratio()
+                    hand_center = hand_center_point(tracked_hand.landmarks)
+                    if (shoulder_y_ratio is not None and body_scale_ratio is not None
+                            and hand_center is not None):
+                        hand_y_ratio = hand_center[1] / frame_width_px
+                        rest_zone_top_y = (shoulder_y_ratio
+                                          + pose_rest_zone_below_shoulder * body_scale_ratio)
+                        if hand_y_ratio > rest_zone_top_y:
+                            combo_label = None   # 허리 옆 등 휴식 존 — 모양·방향 무관 무시
+                hand_side = tracked_hand.user_side if tracked_hand is not None else None
+                gesture_event = pose_gesture_filter.filter_signals(combo_label, hand_side)
+                state.debug = pose_gesture_filter.debug
+            else:
+                # 판정용 손 신호(손모양 + 손 중심 + 라벨) — 단일 손 추적(2026-07-31
+                # 라벨 제거). x·y 모두 프레임 폭으로 나눈 등방 좌표 (거리 자 정규화와
+                # 단위 일치, 2026-07-16)
+                signal = hand_selector.user_hand_signal()
+                signal_ratio = None if signal is None else (
+                    signal[0],
+                    (signal[1][0] / frame_width_px, signal[1][1] / frame_width_px),
+                    signal[2],
+                    signal[3],   # 검지 비율 — 탭 클릭 판정용 (2026-08-03, 스케일 무관)
+                    signal[4],   # 기하 손모양 — 탭 클릭 모드 확인 전용, 학습 분류기
+                                 #   무관(2026-08-03, hand_select._classify_shape 참고)
+                )
+                gesture_event = gesture_filter.filter_signals(
+                    signal_ratio, hand_selector.hand_scale_ratio(),   # 손 실측 자
+                    hand_selector.shoulder_line_y_ratio(),   # 앵커 어깨선 (없으면 하단 띠 폴백)
+                )
+                state.debug = gesture_filter.debug
 
             if gesture_event is not None:
                 event_sender.send(gesture_event)   # stdio: stdout 한 줄 — 델파이 파이프 수신

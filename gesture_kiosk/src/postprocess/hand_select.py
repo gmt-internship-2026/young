@@ -20,6 +20,33 @@ handedness 라벨은 이벤트의 정보용 필드(hand_side)로만 전달 — �
 마스크·썬글라스·모자 무관. 앵커 동작(sticky·게이트·어깨선)은 얼굴판과 동일,
 관측 소스만 다르다.
 
+feat/shape_ml(2026-08-05 신설, 사용자 결정 — "완전 새로운 방식"): 손 모양
+(손바닥/한 손가락/주먹) 판정을 **학습 분류기 주판정**으로 못박은 판. 기하
+규칙(hand_shape.classify_hand_shape)은 판정 로직을 대체하지 않고 — 분류기가
+아직 배우지 못한 모양(현재 open — 학습 데이터 0건, 아래 참고)에 한해서만
+쓰는 **클래스별 폴백**이다. `_classify_shape` 자체는 2026-08-03 도입 때부터
+이미 이 구조였다(fist/finger는 그때부터 분류기가 최종 판정을 결정) — 이 판이
+새로 한 일은 그 사실을 이름·문서에 정확히 반영하고, HandSelector 통합
+지점(분류기가 학습한 클래스는 분류기 예측이 실제로 최종 판정을 뒤집는지)에
+처음으로 테스트를 붙인 것이다(tests/test_hand_select.py
+ClassifierPrimaryShapeTest). 폴백은 클래스가 늘어도(예: 나중에 4번째 모양을
+추가) 자동으로 좁혀진다 — `_classify_shape`가 분류기의 `classes`를 그때그때
+확인하기 때문에 이 파일을 다시 고칠 필요가 없다.
+⚠ open(손바닥)은 아직 분류기가 모른다 — data/hand_shape/landmarks.csv가
+fist/finger 2255건뿐이라(2026-08-03 기준) open은 계속 기하 폴백으로 판정된다.
+`scripts/collect_hand_shape_data.py --person-id <이름>`으로 [5]키를 눌러
+open 샘플을 모으고 `scripts/train_hand_shape_classifier.py`로 재학습하면,
+재빌드 없이 다음 실행부터 open도 자동으로 분류기 주판정으로 넘어간다
+(`_resolve_classifier_path` — exe 배포판도 가중치 파일만 교체하면 반영).
+
+★2026-08-07 획득 방식이 엔진별로 갈림(사용자 보고 — "바로 서자마자 무슨
+제스처를 취해도 빨리빨리 손을 인식해줘야"): 아래 "획득" 문단의 이동 요구는
+원래 swipe(궤적 판정) 체계에 맞춰 설계됐는데, pose_classifier(정지 자세
+판정)에선 그 요구가 그대로 첫 인식 지연으로 나타났다. `config["gestures"]
+["engine"]`을 읽어 pose_classifier면 이동 없이(모양만 판별되면) 즉시
+획득한다 — 자세한 근거는 `_acquire_tracked_hand` 독스트링 참고. swipe는
+변경 없음(여전히 이동 요구 — 정지 손 오작동 방어가 그쪽은 계속 필요).
+
 2026-07-29 포즈 스택 제거(사용자 결정)의 대체 구조는 유지:
 - 어깨너비 자(거리 무관 임계) → **손 실측 자**: 월드 랜드마크(미터)와 화면
   px의 비로 가상 어깨너비를 만든다 — 기존 임계 체계(어깨너비 배수) 무변경
@@ -128,6 +155,16 @@ class HandSelector:
         acquire_cfg = select_cfg.get("acquire") or {}
         self._acquire_move_shoulder = acquire_cfg.get("move_dist_shoulder", 0.25)
         self._acquire_window_sec = acquire_cfg.get("window_sec", 0.5)
+        # ★2026-08-07 pose_classifier 엔진 전용 동작 분기 — 이 판(정지 자세
+        # 판정)은 swipe(궤적 판정)와 손 추적 요구사항 자체가 달라서, 아래 두
+        # 지점에서 엔진별로 갈린다(각 사용처 독스트링 참고):
+        #   ① 즉시 획득(사용자 보고 — "바로 서자마자 무슨 제스처를 취해도
+        #      빨리빨리 손을 인식해줘야") — _acquire_tracked_hand
+        #   ② 재이음 반경 촘촘화(사용자 보고 — "옆에서 손 흔들면 포커스가
+        #      빼앗기는데") — _update_tracked_hand
+        gestures_cfg = config.get("gestures") or {}
+        self._pose_classifier_engine = gestures_cfg.get("engine", "swipe") == "pose_classifier"
+        self._acquire_requires_movement = not self._pose_classifier_engine
         # 손 모양 판별 임계 — 실측 근거는 config hand_select.hand_shape 주석 참고
         hand_cfg = select_cfg["hand_shape"]
         self._hand_extend_ratio = hand_cfg["extend_ratio"]
@@ -294,8 +331,8 @@ class HandSelector:
     def _update_tracked_hand(self, now_sec):
         """추적 손 상태 갱신 — 이음(연속성) 또는 획득(이동+모양).
 
-        이음: 마지막 추적점 근처(REENTRY 반경) 후보 중, **마지막 handedness
-        라벨과 같은 쪽만** 이을 수 있다.
+        이음: 마지막 추적점 근처 후보 중, **마지막 handedness 라벨과 같은
+        쪽만** 이을 수 있다.
         2026-08-04 실기 보완(사용자 보고 — 제스처 읽던 손이 갑자기 반대쪽
         손으로 넘어감): 반경만 보면 양손이 가까워지거나(교차) 원래 손이
         한두 프레임 가려진 사이 반대 손이 반경에 들어와 정체성을 가로챌 수
@@ -311,6 +348,24 @@ class HandSelector:
         구 래치 소실 유예·rejoin과 같은 역할). 반경 밖 후보는 무시 — 다른
         사람 손이 정체성을 뺏지 못한다.
         해제: release_sec 초과 소실 — 다음 손은 획득부터.
+
+        ★2026-08-07 pose_classifier 재이음 반경 촘촘화(사용자 보고 — "한
+        사람이 제스처를 하고 있을 때 다른 사람이 지나가거나 옆에서 손
+        흔들면 포커스가 빼앗김"): 이 함수는 손 소실 후 재등장뿐 아니라
+        **매 프레임**(끊김 없이 계속 보이는 중에도) 후보 재탐색을 한다 —
+        즉 방금 전 프레임까지 REENTRY_SPAN_RATIO(손 폭의 4배, 재등장·빠른
+        쓸기 복구용으로 넉넉하게 잡은 값)를 프레임 간 정상 추적에도 그대로
+        썼다는 뜻이라, 옆 사람이 손을 흔들다 우연히 그 넉넉한 반경 안 +
+        같은 라벨(50% 확률)로 들어오면 실제 소실 없이도 그 프레임에 바로
+        정체성이 넘어갈 수 있었다. pose_classifier는 자세를 **정지**시켜
+        판정하는 체계라 방금까지 보이던 손이 한 프레임 만에 몇 손폭씩
+        움직일 이유가 없다 — 최근(ACQUIRE_GAP_SEC 이내, 즉 진짜 끊김이
+        아니라 정상 프레임 간격) 관측이면 촘촘한 CONTINUITY_SPAN_RATIO(1.5배)
+        만 인정해 옆 사람 손이 끼어들 틈을 줄인다. 그 이상 벌어졌으면(실제
+        소실 후 재등장) 여전히 REENTRY_SPAN_RATIO를 쓴다 — 화면 가리킴 등
+        진짜 재등장 복구는 그대로 유지. swipe는 건드리지 않는다(빠른 쓸기는
+        프레임당 이동이 커서 촘촘한 반경을 쓰면 같은 손도 놓친다 — 이 판은
+        원래부터 REENTRY_SPAN_RATIO 하나로 이 넓은 이동을 감당하게 설계됨).
         """
         self._tracked_hand = None
         candidates = []
@@ -324,10 +379,14 @@ class HandSelector:
                 self._tracked_sec = None
                 self._tracked_label = None
             else:
+                gap_sec = now_sec - self._tracked_sec
+                span_ratio = (CONTINUITY_SPAN_RATIO
+                             if self._pose_classifier_engine and gap_sec <= ACQUIRE_GAP_SEC
+                             else REENTRY_SPAN_RATIO)
                 in_reach = []
                 for hand, center in candidates:
                     dist_px = math.dist(center, self._tracked_center)
-                    if dist_px <= REENTRY_SPAN_RATIO * hand_span_px(hand.landmarks):
+                    if dist_px <= span_ratio * hand_span_px(hand.landmarks):
                         in_reach.append((hand, center, dist_px))
                 same_label = [entry for entry in in_reach
                              if self._tracked_label is None
@@ -343,12 +402,24 @@ class HandSelector:
         self._acquire_tracked_hand(candidates, now_sec)
 
     def _acquire_tracked_hand(self, candidates, now_sec):
-        """획득 — 모양이 보이는 손이 실제로 움직이면 그 손을 추적한다.
+        """획득 — 모양이 보이는 손을 추적한다(swipe는 실제 이동까지 요구).
 
         구 지시 손 고정 v2(2026-07-30)의 획득 규칙을 라벨 없이 계승: 쉬는 손·
         떠 있는 손은 영원히 안 잡히고, 들어 올리거나 획을 시작하는 손이 잡힌다.
         후보는 라벨이 없으므로 프레임 간 최근접(연속 반경)으로 궤적을 잇는다.
-        여럿이 동시에 기준을 넘으면 이동량 최대가 이긴다.
+        여럿이 동시에 기준을 넘으면 이동량 최대가 이긴다(이동 불요 모드에선
+        먼저 조건을 만족한 손을 그대로 쓴다 — travel_px가 항상 0이라 동률이면
+        루프 순서가 정한다. 후보가 거의 항상 1명이라 실질적 영향 없음).
+
+        ★2026-08-07 pose_classifier 즉시 획득(사용자 보고 — "바로 서자마자
+        무슨 제스처를 취해도 빨리빨리 손을 인식해줘야"): 이 이동 요구 자체가
+        "정지 자세를 판정하는" pose_classifier 체계와 안 맞았다 — 손을 들어
+        자세를 잡아도 어깨너비 25% 이상 움직이지 않으면 계속 미획득 상태였다.
+        pose_classifier 엔진에선(self._acquire_requires_movement=False) 모양이
+        판별되는 순간 그 프레임에 바로 획득한다 — 오획득 방어는 이후
+        PoseGestureFilter.latch_frames(콤보가 N프레임 연속 유지돼야 이벤트
+        발화)가 대신 맡는다. swipe는 여전히 이동을 요구한다(궤적 자체가
+        판정 재료라 정지 손 방어가 계속 필요 — 위 문단 그대로 유지).
         """
         matched_tracks = []
         acquired = None
@@ -384,8 +455,9 @@ class HandSelector:
                     now_sec - track["shape_sec"] > self._acquire_window_sec):
                 continue
             travel_px = math.dist(track["last_center"], track["start_center"])
-            if travel_px >= self._acquire_move_shoulder * shoulder_px and (
-                    acquired is None or travel_px > acquired[2]):
+            qualifies = (not self._acquire_requires_movement
+                        or travel_px >= self._acquire_move_shoulder * shoulder_px)
+            if qualifies and (acquired is None or travel_px > acquired[2]):
                 acquired = (hand, center, travel_px)
         self._acquire_tracks = matched_tracks   # 미매칭 궤적 폐기 — 소실 손 잔상 제거
         if acquired is not None:
@@ -445,6 +517,16 @@ class HandSelector:
             return geometric, geometric
         predicted = self._shape_classifier.classify(world_landmarks)
         return CLASSIFIER_LABEL_TO_SHAPE.get(predicted), geometric
+
+    @property
+    def tracked_hand(self):
+        """추적 손의 원본 HandDetection | None(미관측) — feat/shape_ml
+        pose_gesture_filter.classify_pose_combo가 world_landmarks·user_side를
+        그대로 써야 해서(user_hand_signal의 파생 튜플로는 부족) 추가한 읽기
+        전용 접근자(2026-08-06). realtime_loop.py의 pose_classifier 엔진
+        경로 전용 — 기존 swipe 엔진 경로(user_hand_signal)는 안 건드림.
+        """
+        return self._tracked_hand
 
     def user_hand_signal(self):
         """사용자 손 신호 — (손모양, (x_px, y_px), 라벨, 검지비율, 기하손모양) |

@@ -11,7 +11,10 @@
 """
 import os
 import sys
+import tempfile
 import unittest
+
+import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -133,6 +136,90 @@ class AcquireTest(unittest.TestCase):
                 hand.world_landmarks = hand.world_landmarks * 0.0   # 격프레임 블러
             frames.append([hand])
         self.assertIsNotNone(feed(selector, clock, frames))
+
+
+class PoseClassifierInstantAcquireTest(unittest.TestCase):
+    """★2026-08-07 사용자 보고 — "바로 서자마자 무슨 제스처를 취해도 빨리빨리
+    손을 인식해줘야": pose_classifier 엔진은 정지 자세 판정 체계라 획득에
+    이동을 요구할 이유가 없다 — 모양만 판별되면 그 프레임에 즉시 획득해야
+    한다(오작동 방어는 PoseGestureFilter.latch_frames가 대신 맡음). swipe는
+    AcquireTest 그대로 이동을 요구해야 한다(엔진별로 갈림 — 회귀 방지)."""
+
+    def _pose_classifier_config(self):
+        config = make_config()
+        config["gestures"] = {"engine": "pose_classifier"}
+        return config
+
+    def test_stationary_hand_with_shape_is_acquired_immediately(self):
+        # AcquireTest.test_stationary_hand_is_never_acquired와 대비되는 값 —
+        # swipe에선 영원히 안 잡히는 정지 손이 pose_classifier에선 첫 프레임에 잡힌다
+        selector, clock = make_selector(self._pose_classifier_config())
+        frames = [[make_hand("right", "finger", (500, 400))]]
+        signal = feed(selector, clock, frames)
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal[0], "finger")
+
+    def test_shapeless_stationary_hand_is_still_not_acquired(self):
+        # 이동 요구는 없앴어도 모양 불명(블러 등)은 여전히 획득하지 않는다
+        selector, clock = make_selector(self._pose_classifier_config())
+        hand = make_hand("right", "open", (500, 400))
+        hand.world_landmarks = hand.world_landmarks * 0.0   # 판별 불능화
+        self.assertIsNone(feed(selector, clock, [[hand]]))
+
+    def test_swipe_engine_unaffected_stationary_hand_never_acquired(self):
+        # 회귀 방지 — gestures 키 자체가 없거나(구 config) swipe면 종전 그대로
+        selector, clock = make_selector(make_config())   # gestures 키 없음 -> swipe 기본값
+        frames = [[make_hand("right", "finger", (500, 400))]] * 5
+        self.assertIsNone(feed(selector, clock, frames))
+
+
+class PoseClassifierTightReentryTest(unittest.TestCase):
+    """★2026-08-07 사용자 보고 — "한 사람이 제스처를 하고 있을 때 다른 사람이
+    지나가거나 옆에서 손 흔들면 포커스가 빼앗김": 원인은 `_update_tracked_hand`가
+    소실 없이 계속 보이는 중에도 매 프레임 REENTRY_SPAN_RATIO(손폭의 4배 —
+    재등장·빠른 쓸기 복구용으로 넉넉하게 잡은 값)로 후보를 재탐색해, 그 반경
+    안에서 흔드는 다른 사람 손(같은 라벨 — 50% 확률)이 실제 소실 없이도
+    정체성을 가로챌 수 있었다는 것. pose_classifier는 정지 자세 판정이라
+    끊김 없는 프레임 간엔 촘촘한 CONTINUITY_SPAN_RATIO(1.5배)만 인정한다."""
+
+    def _pose_classifier_config(self):
+        config = make_config()
+        config["gestures"] = {"engine": "pose_classifier"}
+        return config
+
+    def _acquire(self, config):
+        # 오늘 자 즉시 획득 수정(PoseClassifierInstantAcquireTest) 덕에
+        # 정지 손 1프레임으로도 pose_classifier는 바로 잡힌다
+        selector, clock = make_selector(config)
+        feed(selector, clock, [[make_hand("right", "finger", (500, 400))]])
+        self.assertIsNotNone(selector.user_hand_signal())
+        return selector, clock
+
+    def test_nearby_same_label_hand_does_not_steal_focus_without_dropout(self):
+        # 200px(촘촘 120 < 200 < 재등장 320) — 소실 없이 등장한 같은 라벨
+        # 손은 pose_classifier에선 정체성을 못 뺏는다(원 손 미관측 처리)
+        selector, clock = self._acquire(self._pose_classifier_config())
+        intruder = make_hand("right", "finger", (700, 400))
+        signal = feed(selector, clock, [[intruder]] * 3)
+        self.assertIsNone(signal)
+
+    def test_swipe_engine_unaffected_same_scenario_still_steals(self):
+        # 회귀 대조 — swipe는 이 수정 대상이 아니라 종전처럼 REENTRY_SPAN_RATIO를
+        # 그대로 써서 같은 200px 난입도 정체성을 가로챈다(구 동작, 의도된 유지)
+        selector, clock = make_selector(make_config())   # gestures 키 없음 -> swipe
+        feed(selector, clock, moving_hand_frames(400, 30, 6))   # swipe는 이동으로 획득
+        # 마지막 관측 위치 = (400 + 30*5, 400) = (550, 400) — 200px 떨어진 난입
+        intruder = make_hand("right", "finger", (750, 400))
+        signal = feed(selector, clock, [[intruder]] * 3)
+        self.assertIsNotNone(signal)
+
+    def test_real_dropout_reappearance_still_recovers_in_pose_classifier(self):
+        # 진짜 소실(occlusion 등, ACQUIRE_GAP_SEC 초과) 후 재등장은 여전히
+        # 넉넉한 REENTRY_SPAN_RATIO로 복구된다 — 촘촘화가 이 경로까지 막으면 안 됨
+        selector, clock = self._acquire(self._pose_classifier_config())
+        feed(selector, clock, [[]] * 20)   # 0.67초 소실 (release_sec 2.0 안)
+        signal = feed(selector, clock, [[make_hand("right", "finger", (700, 400))]] * 2)
+        self.assertIsNotNone(signal)
 
 
 class TrackContinuityTest(unittest.TestCase):
@@ -354,6 +441,64 @@ class HeadAnchorTest(unittest.TestCase):
         self.selector.update([], [make_head(640, 200, 100)])
         self.assertAlmostEqual(self.selector.shoulder_line_y_ratio(),
                                (200 + 1.6 * 100) / FRAME_WIDTH_PX, places=4)
+
+
+FEATURE_COUNT = 60   # hand_shape_features.normalize_landmarks() 출력 차원
+
+
+def _save_classifier_weights(path, classes, fist_bias=0.0):
+    """합성 분류기 가중치 — coef는 전부 0, intercept로 fist_bias만큼 "fist" 쪽을
+    강하게 밀어둔다. fist_bias가 크면 입력 손 모양과 무관하게 항상 "fist"를
+    예측 — 분류기의 답이 실제로 최종 판정에 쓰이는지(기하 결과를 그냥 통과시키는
+    게 아니라) 구분하는 용도(feat/shape_ml — 분류기 주판정 검증).
+    """
+    class_count = len(classes)
+    coef = np.zeros((class_count, FEATURE_COUNT))
+    intercept = np.zeros(class_count)
+    intercept[classes.index("fist")] = fist_bias
+    np.savez(path, coef=coef, intercept=intercept, classes=np.array(classes))
+
+
+def make_classifier_config(classes, fist_bias=0.0):
+    """classifier_weights_path가 채워진 hand_select 설정 — feat/shape_ml
+    분류기 주판정 테스트 전용(임시 .npz 파일을 만들어 경로를 꽂는다)."""
+    tmpdir = tempfile.TemporaryDirectory()
+    weights_path = os.path.join(tmpdir.name, "weights.npz")
+    _save_classifier_weights(weights_path, classes, fist_bias)
+    config = make_config()
+    config["hand_select"]["hand_shape"]["classifier_weights_path"] = weights_path
+    return config, tmpdir   # tmpdir을 호출자가 들고 있어야 파일이 안 지워진다
+
+
+class ClassifierPrimaryShapeTest(unittest.TestCase):
+    """학습 분류기 주판정(feat/shape_ml) — classes에 없는 모양만 기하로 폴백하고,
+    classes에 있으면 분류기 예측이 최종 판정을 그대로 결정해야 한다.
+
+    _classify_shape 자체는 기존 판정기(2026-08-03)와 로직 변경이 없다 — 이
+    테스트는 그 "분류기가 학습한 클래스는 분류기가, 아직 모르는 클래스만 기하가
+    맡는다"는 설계가 HandSelector 통합 경로에서 실제로 그렇게 동작함을
+    HandSelector 수준에서 처음으로 검증한다(종전엔 HandShapeClassifier 단위
+    테스트만 있었고 hand_select 통합 지점은 커버되지 않았다).
+    """
+
+    def test_untrained_class_falls_back_to_geometric(self):
+        # 분류기가 fist/finger만 알 때 — open 모양은 기하 판정 그대로 통과
+        config, tmpdir = make_classifier_config(["fist", "finger"], fist_bias=100.0)
+        with tmpdir:
+            selector, _clock = make_selector(config)
+            hand = make_hand("right", "open")
+            self.assertEqual(selector.classify_hand(hand), "open")
+
+    def test_trained_class_uses_classifier_prediction(self):
+        # 분류기가 open까지 알면(3클래스) — 기하가 "open"이라 봐도 최종 답은
+        # 분류기 몫이다. fist_bias를 크게 줘서 분류기가 무조건 "fist"를 예측하게
+        # 만들고, 실제로 최종 판정이 "fist"로 뒤집히는지 확인(그냥 기하를 통과
+        # 시키는 거라면 여전히 "open"이 나올 것)
+        config, tmpdir = make_classifier_config(["fist", "finger", "open"], fist_bias=100.0)
+        with tmpdir:
+            selector, _clock = make_selector(config)
+            hand = make_hand("right", "open")
+            self.assertEqual(selector.classify_hand(hand), "fist")
 
 
 if __name__ == "__main__":

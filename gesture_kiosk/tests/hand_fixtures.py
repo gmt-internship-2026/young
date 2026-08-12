@@ -30,8 +30,10 @@ def make_hand_landmarks(shape, root_xy=(500.0, 400.0)):
 
     shape: "fist"(전부 굽힘) | "finger"(검지만 폄) | "middle_finger"(중지만 폄) |
            "open"(전부 폄) | "point_camera"(검지가 카메라 쪽 — z로 폄) |
-           "bunched_flat"(검지가 짧지만 접힘 증거 없음 — 기권)
-    판별 기대값: fist / finger / finger / None / finger / None.
+           "bunched_flat"(검지가 짧지만 접힘 증거 없음 — 기권) |
+           "v_sign"(검지+중지 둘 다 폄 — 2026-08-07 신설,
+           pose_gesture_filter의 geometric_shape_check 검증용)
+    판별 기대값: fist / finger / finger / None / finger / None / None(폄 2개 — 불명).
     """
     root_x, root_y = root_xy
     landmarks = np.zeros((HAND_KPT_COUNT, 3), dtype=np.float32)
@@ -59,6 +61,7 @@ def make_hand_landmarks(shape, root_xy=(500.0, 400.0)):
             shape == "open"
             or (shape == "finger" and finger_idx == 0)
             or (shape == "middle_finger" and finger_idx == 1)
+            or (shape == "v_sign" and finger_idx in (0, 1))
         )
         tip_y = root_y - 80.0 if is_extended else root_y - 40.0
         landmarks[tip] = (x, tip_y, 0.0)

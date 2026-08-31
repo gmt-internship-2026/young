@@ -187,12 +187,6 @@ def run_pipeline(config):
     head_cfg = config.get("head_anchor") or {}
     head_detector = HeadDetector(config) if head_cfg else None
     models_elapsed_sec = time.monotonic() - startup_sec
-    # 델파이 기동 핸드셰이크(2026-08-31 신설, 사용자 요청): 모델 로딩 완료를
-    # stdout으로 알린다. flush=True 필수 — 델파이가 자식 프로세스로 띄운
-    # 파이프 stdout은 tty가 아니라 완전 버퍼링돼, 안 붙이면 이 줄이 프로세스
-    # 종료 시점까지 버퍼에 갇혀 델파이 쪽에 안 들어간다(event_sender.send가
-    # 매번 flush하는 것과 같은 이유).
-    print("Models Loaded", flush=True)
     pre_open["thread"].join()   # 모델 로딩과 겹쳐 돌던 카메라 오픈 대기
     if pre_open["error"] is not None:
         raise pre_open["error"]
@@ -430,4 +424,12 @@ def run_pipeline(config):
     if head_detector is not None:
         threading.Thread(target=_head_anchor_loop, daemon=True).start()
     logger.info("실시간 파이프라인 시작 (frame_width_px=%d)", frame_width_px)
+    # 델파이 기동 핸드셰이크(2026-08-31 신설, 사용자 요청 — 2026-08-31 위치 정정:
+    # 처음엔 모델 생성 직후(카메라 오픈 전, ~1초)에 찍어 실제 제스처 인식이
+    # 가능해지기 전에 음성이 먼저 나가버렸다 — 카메라 오픈(~11초)·추론 스레드
+    # 기동까지 다 끝난 지금 시점으로 옮김). flush=True 필수 — 델파이가 자식
+    # 프로세스로 띄운 파이프 stdout은 tty가 아니라 완전 버퍼링돼, 안 붙이면
+    # 이 줄이 프로세스 종료 시점까지 버퍼에 갇혀 델파이 쪽에 안 들어간다
+    # (event_sender.send가 매번 flush하는 것과 같은 이유).
+    print("Models Loaded", flush=True)
     return state

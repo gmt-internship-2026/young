@@ -56,6 +56,20 @@ d = finger_right)의 자동 저장을 토글한다(같은 조합 다시 누르�
 한 번 누르고 키보드에서 손 떼고 그 자세를 몇 초 유지하면 그동안 알아서
 AUTO_SAVE_INTERVAL_SEC 간격으로 여러 장 저장된다.
 
+새 제스처 추가(2026-08-21 신설 — 사용자 요청 "제스처 보완... 다른 ok동작
+이런것도 좀 학습해두려고"): --extra-shape 키=이름 으로 완전히 새로운 손
+모양을 실험적으로 더 모을 수 있다(코드 수정 없이). 예: 두 번째 ok류
+제스처를 키 [p]에 "ok2"라는 이름으로 추가하려면:
+    python scripts\\collect_gesture_pose_data.py --person-id me --extra-shape p=ok2
+여러 개 동시 추가도 가능(--extra-shape 여러 번 반복). 기존 SHAPE_KEYS와
+같은 규칙을 그대로 따른다 — 방향과 조합해 모아도 되고(ok2_left 등), 같은
+키를 두 번 누르면 방향 없는 단일 자세(ok2)로도 모을 수 있다. 다만 이렇게
+모은 새 라벨은 재학습(scripts/train_hand_shape_classifier.py --data
+data/gesture_pose/landmarks.csv)하면 분류기가 예측은 하게 되지만, 실제
+이벤트로 나가려면 pose_gesture_filter.COMBO_TO_EVENT에 그 라벨 -> 이벤트명
+매핑을 직접 추가해야 한다(어떤 화면 동작에 쓸지는 코드가 대신 정할 수 없는
+부분) — 매핑이 없는 동안은 그냥 조용히 무시되니 데이터만 미리 모아둬도 안전.
+
 수집 지침(기획서 5.4와 같은 원칙 — 인물 단위 분할):
 - --person-id로 촬영자를 구분해 저장한다 (여러 사람이 모으면 각자 다른 id)
 - 카메라 각도를 다양하게: 정면 / 비스듬히 / 가까이 / 멀리 — 각 라벨당 최소 수십 장
@@ -119,10 +133,31 @@ DIRECTION_KEYS = {ord("w"): "up", ord("s"): "down", ord("a"): "left", ord("d"): 
                   ord("b"): "back"}
 
 
-def all_labels():
+def all_labels(shape_keys):
     return [f"{shape}_{direction}"
-            for shape in SHAPE_KEYS.values()
+            for shape in shape_keys.values()
             for direction in DIRECTION_KEYS.values()]
+
+
+def _parse_extra_shape(raw):
+    """--extra-shape "키=이름" 문자열 -> (키코드, 이름). 형식이 잘못되면 즉시 종료(argparse 관례)."""
+    if "=" not in raw or len(raw.split("=", 1)[0]) != 1:
+        raise argparse.ArgumentTypeError(
+            f"--extra-shape는 '한글자키=이름' 형식이어야 합니다 (받음: {raw!r})")
+    key_char, label = raw.split("=", 1)
+    return ord(key_char), label
+
+
+def _build_shape_keys(extra_shapes):
+    """기본 SHAPE_KEYS + --extra-shape로 받은 것들을 합친다 — 이 함수가 돌려주는
+    딕셔너리를 실행 내내 SHAPE_KEYS 대신 쓴다(모듈 상수는 기본값 문서화 목적으로만 남김).
+    키 충돌(기본 모양·방향 키와 겹침)은 사용자 실수를 조용히 덮어쓰면 안 되니 즉시 에러."""
+    shape_keys = dict(SHAPE_KEYS)
+    for key_code, label in extra_shapes:
+        if key_code in shape_keys or key_code in DIRECTION_KEYS or key_code == ord("q"):
+            raise SystemExit(f"[FAIL] --extra-shape 키 '{chr(key_code)}'가 이미 다른 용도로 쓰이고 있습니다")
+        shape_keys[key_code] = label
+    return shape_keys
 
 
 def main():
@@ -133,8 +168,13 @@ def main():
     parser.add_argument("--person-id", required=True, help="촬영자 구분 — 인물 단위 분할용")
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--device", type=int, default=0)
+    parser.add_argument("--extra-shape", action="append", default=[], type=_parse_extra_shape,
+                         metavar="키=이름",
+                         help="완전히 새로운 손 모양을 실험적으로 추가(여러 번 지정 가능, "
+                              "예: --extra-shape p=ok2) — 위 모듈 독스트링 2026-08-21 참고")
     args = parser.parse_args()
 
+    shape_keys = _build_shape_keys(args.extra_shape)
     config = load_config(args.config)
     hand_tracker = HandTracker(config)
     # 실전 추론 경로(realtime_loop.py)는 Preprocessor로 거울 반전한 프레임을 손
@@ -155,14 +195,17 @@ def main():
     if is_new_file:
         writer.writerow(["person_id", "label", *FEATURE_NAMES])
 
-    # 콤보(모양_방향) + 방향 없는 순수 모양 라벨(위 SHAPE_KEYS 두 번 누르기) 둘 다 셀 수 있게
-    counts = {label: 0 for label in all_labels() + list(SHAPE_KEYS.values())}
+    # 콤보(모양_방향) + 방향 없는 순수 모양 라벨(위 shape_keys 두 번 누르기) 둘 다 셀 수 있게
+    counts = {label: 0 for label in all_labels(shape_keys) + list(shape_keys.values())}
     pending_shape = None         # 방향 키를 기다리는 중인 모양 — None이면 미정
     auto_label = None            # 지금 자동 저장 중인 조합 라벨 — None이면 꺼짐
     last_auto_save_sec = 0.0
     print("[INFO] 모양 [1]=finger [0]=fist [5]=open [o]=ok 먼저 누르고, "
           "방향 [w]=up [a]=left [s]=down [d]=right [b]=back 로 저장 토글(같은 모양 "
           "두 번=방향없음)  [q]=종료")
+    if args.extra_shape:
+        extra_line = "  ".join(f"[{chr(k)}]={label}" for k, label in args.extra_shape)
+        print(f"[INFO] 추가 모양: {extra_line}")
     print("[INFO] 왼손이 잡히면 자동으로 오른손 기준 좌표·라벨로 미러링해 저장합니다")
 
     try:
@@ -197,9 +240,9 @@ def main():
             if auto_label is not None:
                 cv2.putText(frame, f"AUTO SAVING: {auto_label}", (10, 90),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 100, 255), 2)
-            # 모양별로 한 줄씩 — 모양·방향 키가 늘 때마다 이 표시 로직을 다시 안
-            # 고쳐도 되게 SHAPE_KEYS/DIRECTION_KEYS에서 그대로 뽑는다
-            shapes = list(SHAPE_KEYS.values())
+            # 모양별로 한 줄씩 — 모양·방향 키가 늘 때마다(--extra-shape 포함) 이 표시
+            # 로직을 다시 안 고쳐도 되게 shape_keys/DIRECTION_KEYS에서 그대로 뽑는다
+            shapes = list(shape_keys.values())
             for row_idx, shape in enumerate(shapes):
                 row_labels = [f"{shape}_{direction}" for direction in DIRECTION_KEYS.values()]
                 count_line = "  ".join(f"{k}={counts[k]}" for k in row_labels)
@@ -213,8 +256,8 @@ def main():
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 break
-            if key in SHAPE_KEYS:
-                shape = SHAPE_KEYS[key]
+            if key in shape_keys:
+                shape = shape_keys[key]
                 if pending_shape == shape:
                     # 같은 모양 키를 두 번(방향 없이) — 방향 구분 없는 순수 모양
                     # 라벨 자체를 토글한다(2026-08-05 사용자 요청 — "일단 5개만

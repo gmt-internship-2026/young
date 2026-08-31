@@ -6,9 +6,11 @@ bat 대신 exe로 열 수 있게 — gesture_kiosk_debug.bat과 같은 일(gestu
 빌드는 build_exe.bat이 담당(별도 pyinstaller --onefile 호출, 산출물을
 dist\\gesture_kiosk\\gesture_kiosk_debug.exe로 배치).
 2026-08-11: main.py의 카메라 창 기본값이 켠 채 시작으로 바뀌어(--debug 인자
-소멸, 아래 참고) 플래그 없이 그냥 실행 — gesture_kiosk.exe 단독 실행과
-차이가 없어졌지만, 델파이 배포판에서 "카메라 확인용 런처"라는 별도 exe
-이름 자체가 운용상 의미가 있어 유지한다.
+소멸) 한동안 플래그 없이 그냥 실행해도 gesture_kiosk.exe 단독 실행과 차이가
+없었다. 2026-08-31 main.py 기본값이 다시 꺼진 채 시작으로 되돌아가면서
+(main.py 모듈 독스트링 참고) 이 런처가 `--cam`을 넘겨줘야 원래 목적
+("카메라 확인용 런처")이 성립한다 — 안 넘기면 gesture_kiosk_debug.exe도
+그냥 창 없이 실행돼 이름과 동작이 어긋난다.
 """
 import os
 import subprocess
@@ -24,7 +26,7 @@ def main():
         print(f"[FAIL] gesture_kiosk.exe를 찾을 수 없습니다: {engine_path}")
         input("Enter를 눌러 종료...")
         sys.exit(1)
-    subprocess.run([engine_path], cwd=launcher_dir)
+    subprocess.run([engine_path, "--cam"], cwd=launcher_dir)
 
 
 if __name__ == "__main__":

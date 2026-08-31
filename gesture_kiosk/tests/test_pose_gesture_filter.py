@@ -31,10 +31,21 @@ class FakeClock:
         self.now_sec += dt_sec
 
 
-def make_config(latch_frames=4, release_sec=1.5, cooldown_sec=0.6):
-    return {"gestures": {"pose_classifier": {
+def make_config(latch_frames=4, release_sec=1.5, cooldown_sec=0.6,
+               repeat_events=("left", "right"), none_release_frames=None):
+    # repeat_events 기본값은 configs/config.yaml의 실제 기본값(★2026-08-13
+    # 5차 개편)과 맞춘다 — 대부분의 기존 테스트는 반복 여부를 안 다루므로
+    # 이 기본값이 그대로 실 서비스 스펙과 일치해야 회귀 없이 의미가 통한다.
+    # none_release_frames 기본 None(키 자체를 안 넣음) — PoseGestureFilter가
+    # latch_frames로 대체하는 하위 호환 경로(★2026-08-20 7차 개편)를 그대로
+    # 타서, 이 값을 안 다루는 기존 테스트들이 종전과 동일하게 동작한다
+    cfg = {
         "latch_frames": latch_frames, "release_sec": release_sec, "cooldown_sec": cooldown_sec,
-    }}}
+        "repeat_events": list(repeat_events),
+    }
+    if none_release_frames is not None:
+        cfg["none_release_frames"] = none_release_frames
+    return {"gestures": {"pose_classifier": cfg}}
 
 
 class PoseGestureFilterTestBase(unittest.TestCase):
@@ -148,6 +159,142 @@ class RepeatWhileHeldTest(PoseGestureFilterTestBase):
         event = self._feed_until_event("open_right")
         self.assertIsNotNone(event)
         self.assertEqual(event.class_name, "right")
+
+
+class FireOnceForNonRepeatEventsTest(PoseGestureFilterTestBase):
+    """★2026-08-13 5차 개편(사용자 결정 — "left와 right만 1.5초 간격으로
+    계속 받고, 나머지 제스처는 한 번 들어오면 다시 받지 않도록"):
+    repeat_events(기본 left/right)에 없는 이벤트는 확정 후 딱 한 번만
+    발화하고, 같은 콤보를 계속 들고 있어도 두 번째 발화가 없어야 한다."""
+
+    def test_non_repeat_event_does_not_refire_while_held(self):
+        first = self._feed_until_event("open_up")   # home — repeat_events 밖
+        self.assertIsNotNone(first)
+        self.assertEqual(first.class_name, "home")
+        # cooldown_sec을 훌쩍 넘도록 같은 콤보를 계속 공급해도 재발화 없어야 한다
+        for _ in range(60):   # 60프레임 * 1/30초 = 2초 > cooldown_sec(0.6초)
+            event = self.filter.filter_signals("open_up")
+            self.clock.tick(1.0 / 30.0)
+            self.assertIsNone(event)
+
+    def test_non_repeat_event_fires_again_after_switching_combo(self):
+        first = self._feed_until_event("open_up")
+        self.assertEqual(first.class_name, "home")
+        # 다른 콤보로 전환됐다 되돌아오면(confirmed_label이 실제로 바뀜) 잠금 해제
+        self._feed_until_event("open_down")
+        second = self._feed_until_event("open_up")
+        self.assertIsNotNone(second)
+        self.assertEqual(second.class_name, "home")
+
+    def test_non_repeat_event_fires_again_after_release(self):
+        first = self._feed_until_event("finger_up")   # select — repeat_events 밖
+        self.assertEqual(first.class_name, "select")
+        self._feed(None, frame_count=60)   # release_sec(1.5초) 초과 소실
+        second = self._feed_until_event("finger_up")
+        self.assertIsNotNone(second)
+        self.assertEqual(second.class_name, "select")
+
+    def test_non_repeat_event_fires_again_after_brief_none_streak(self):
+        # ★6차 개편(사용자 결정 — "다른 제스처뿐만 아니라 그냥 none 동작이
+        # 되고 다시 제스처를 해도 되도록"): release_sec(1.5초)을 다 안
+        # 기다려도, none이 none_release_frames만큼 연속 관측되면 잠금이
+        # 풀린다(★7차 개편으로 이 문턱이 latch_frames와 분리됐지만, 기본값이
+        # 키 미설정 시 latch_frames를 그대로 물려받으므로 이 테스트의 기본
+        # config에서는 종전과 동일하게 동작한다)
+        first = self._feed_until_event("open_up")
+        self.assertEqual(first.class_name, "home")
+        self._feed(None, frame_count=self.filter._none_release_frames)   # 짧은 none 스트릭
+        second = self._feed_until_event("open_up")
+        self.assertIsNotNone(second)
+        self.assertEqual(second.class_name, "home")
+
+    def test_single_none_frame_does_not_unlock(self):
+        # none_release_frames 미만의 순간 none(오검출 등 노이즈 1프레임)만으로는
+        # 잠금이 풀리면 안 된다 — 5차 개편의 "1회만 발화" 취지가 흔들림
+        first = self._feed_until_event("open_up")
+        self.assertEqual(first.class_name, "home")
+        self._feed(None, frame_count=1)   # none_release_frames(기본 4)보다 훨씬 짧은 노이즈
+        event = self._feed_until_event("open_up")
+        self.assertIsNone(event)
+
+    def test_repeat_events_configured_empty_makes_left_fire_once_too(self):
+        self.filter = PoseGestureFilter(make_config(repeat_events=[]), clock=self.clock)
+        first = self._feed_until_event("open_left")
+        self.assertEqual(first.class_name, "left")
+        for _ in range(60):
+            event = self.filter.filter_signals("open_left")
+            self.clock.tick(1.0 / 30.0)
+            self.assertIsNone(event)
+
+    def test_none_release_frames_defaults_to_latch_frames_when_unset(self):
+        # ★7차 개편 하위 호환 — config에 none_release_frames 키가 없으면
+        # 종전(latch_frames 재사용) 그대로 동작해야 한다
+        self.filter = PoseGestureFilter(make_config(latch_frames=4), clock=self.clock)
+        self.assertEqual(self.filter._none_release_frames, 4)
+
+    def test_none_release_frames_separated_from_latch_frames(self):
+        # ★7차 개편(2026-08-20, 사용자 보고 — "none이 너무 민감해서 조금만
+        # 자세가 바뀌어도 none으로 인식하여 제스처를 여러 번 인식하는 문제"):
+        # none_release_frames를 latch_frames보다 크게 두면, latch_frames 길이의
+        # 순간적 none 스트릭(6차 개편 시절엔 이걸로 풀렸다)만으로는 더 이상
+        # 잠금이 풀리지 않아야 한다 — 확정용/해제용 문턱이 독립됐기 때문
+        self.filter = PoseGestureFilter(
+            make_config(latch_frames=4, none_release_frames=10), clock=self.clock)
+        first = self._feed_until_event("open_up")
+        self.assertEqual(first.class_name, "home")
+        self._feed(None, frame_count=4)   # 구 문턱(latch_frames)만큼만 none — 이제는 부족
+        event = self._feed_until_event("open_up")
+        self.assertIsNone(event)
+
+    def test_none_release_frames_unlocks_once_its_own_threshold_reached(self):
+        self.filter = PoseGestureFilter(
+            make_config(latch_frames=4, none_release_frames=10), clock=self.clock)
+        first = self._feed_until_event("open_up")
+        self.assertEqual(first.class_name, "home")
+        self._feed(None, frame_count=10)   # none_release_frames만큼 채움
+        second = self._feed_until_event("open_up")
+        self.assertIsNotNone(second)
+        self.assertEqual(second.class_name, "home")
+
+    def test_none_streak_unlock_still_requires_fresh_cooldown_hold(self):
+        # ★8차 개편(2026-08-20, 사용자 실기 보고 — "아직 너무 민감해 한번에
+        # 다라라락 올라와", 카메라 창 로그에서 select 연속 수십 건 확인):
+        # 7차 개편만으로는 confirmed_label이 원래 라벨과 같을 때
+        # confirmed_since_sec이 갱신 안 돼, none 스트릭에서 돌아오자마자
+        # (latch_frames만 지나면) cooldown_sec 대기 없이 즉시 재발화됐다.
+        # 이제 none 스트릭 완성 시점에 confirmed_since_sec도 재장전돼야 한다
+        self.filter = PoseGestureFilter(
+            make_config(latch_frames=4, cooldown_sec=0.6, none_release_frames=10),
+            clock=self.clock)
+        first = self._feed_until_event("open_up")
+        self.assertEqual(first.class_name, "home")
+        self._feed(None, frame_count=10)   # none_release_frames 채워 잠금 해제
+        # 손이 돌아온 직후(latch_frames만 지난 시점)엔 아직 발화하면 안 된다 —
+        # 8차 개편 전엔 여기서 즉시 재발화되던(폭주) 지점
+        immediate = self._feed("open_up", frame_count=4)
+        self.assertIsNone(immediate)
+        # cooldown_sec까지 마저 채우면 그제서야 발화한다
+        second = self._feed_until_event("open_up")
+        self.assertIsNotNone(second)
+        self.assertEqual(second.class_name, "home")
+
+    def test_none_streak_unlock_does_not_cause_rapid_refire_burst(self):
+        # 위 테스트의 실사용 시나리오 버전 — 자세가 확정 라벨과 none 사이를
+        # 계속 오가도(카메라 앞에서 손이 살짝 흔들리는 상황 재현), cooldown_sec
+        # 간격보다 짧게 여러 번 발화하면 안 된다(로그로 관측된 select 폭주 재현)
+        self.filter = PoseGestureFilter(
+            make_config(latch_frames=4, cooldown_sec=0.6, none_release_frames=10),
+            clock=self.clock)
+        fired_ts = []
+        event = self._feed_until_event("open_up")
+        fired_ts.append(event.ts_sec)
+        for _ in range(6):   # none<->확정을 6번 오가며 재발화를 계속 시도
+            self._feed(None, frame_count=10)
+            event = self._feed("open_up", frame_count=20)
+            if event is not None:
+                fired_ts.append(event.ts_sec)
+        for earlier, later in zip(fired_ts, fired_ts[1:]):
+            self.assertGreaterEqual(later - earlier, self.filter._cooldown_sec)
 
 
 class UndefinedComboTest(PoseGestureFilterTestBase):

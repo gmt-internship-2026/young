@@ -15,7 +15,8 @@
 B안 유지: 상업 허용·카피레프트 없음).
 
 2026-07-23: 웹소켓·UDP·데모 웹 서버 제거(회사 결정 — 네트워크 철회, print 연동).
-디버그는 main.py의 로컬 창(cv2, 2026-08-11부터 기본으로 켠 채 시작)이 담당한다.
+디버그는 main.py의 로컬 창(cv2, 2026-08-31부터 기본은 꺼진 채 시작 — `--cam`
+시작 인자 또는 실행 중 `cam on`으로 켠다)이 담당한다.
 
 2026-07-31 머리 앵커 추론 스레드 분리(키오스크 실기 — FPS 저하·획 끊김): 포즈
 lite는 BlazeFace(수 ms)와 달리 호출당 수십 ms라 손 루프 인라인이면 10Hz마다
@@ -35,7 +36,7 @@ from src.inference.hand_tracker import HandTracker
 from src.inference.preprocessor import Preprocessor
 from src.pipeline.event_sender import create_event_sender
 from src.postprocess.gesture_filter import GestureFilter
-from src.postprocess.hand_select import HandSelector
+from src.postprocess.hand_select import HandSelector, resolve_classifier_path
 from src.postprocess.hand_shape import hand_center_point
 from src.postprocess.hand_shape_classifier import HandShapeClassifier
 from src.postprocess.pose_gesture_filter import PoseGestureFilter, classify_pose_combo
@@ -186,6 +187,12 @@ def run_pipeline(config):
     head_cfg = config.get("head_anchor") or {}
     head_detector = HeadDetector(config) if head_cfg else None
     models_elapsed_sec = time.monotonic() - startup_sec
+    # 델파이 기동 핸드셰이크(2026-08-31 신설, 사용자 요청): 모델 로딩 완료를
+    # stdout으로 알린다. flush=True 필수 — 델파이가 자식 프로세스로 띄운
+    # 파이프 stdout은 tty가 아니라 완전 버퍼링돼, 안 붙이면 이 줄이 프로세스
+    # 종료 시점까지 버퍼에 갇혀 델파이 쪽에 안 들어간다(event_sender.send가
+    # 매번 flush하는 것과 같은 이유).
+    print("Models Loaded", flush=True)
     pre_open["thread"].join()   # 모델 로딩과 겹쳐 돌던 카메라 오픈 대기
     if pre_open["error"] is not None:
         raise pre_open["error"]
@@ -239,7 +246,11 @@ def run_pipeline(config):
     pose_rest_zone_below_shoulder = None
     if gesture_mode == "pose_classifier":
         pose_cfg = config["gestures"]["pose_classifier"]
-        pose_classifier = HandShapeClassifier(pose_cfg["weights_path"])
+        # exe 배포판 가중치 핫스왑(2026-08-31 — hand_select.resolve_classifier_path
+        # 독스트링 참고): 종전엔 이 경로만 이 처리를 안 거쳐, gesture_pose_classifier.npz를
+        # exe 폭에 복사해도 번들 스냅샷이 그대로 쓰였다 — swipe 엔진(hand_select 내부
+        # 호출)과 동작을 맞춘다
+        pose_classifier = HandShapeClassifier(resolve_classifier_path(pose_cfg["weights_path"]))
         pose_gesture_filter = PoseGestureFilter(config)
         pose_min_conf = pose_cfg.get("min_conf")   # None(키 없음)이면 종전(항상 argmax 강제)
         pose_max_dist_ratio = pose_cfg.get("max_dist_ratio")   # None이면 거리 검사 건너뜀

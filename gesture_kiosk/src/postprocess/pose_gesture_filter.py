@@ -82,6 +82,60 @@ temp_fist_back으로 재배정(plain fist가 temp_fist로 임시 이름 격하�
 fist_back 그대로(collect_gesture_pose_data.py 수집 키·학습 데이터·분류기
 클래스명 불변 — 이벤트명 재배정일 뿐 재학습 불필요). config.yaml의
 classes: 목록도 함께 갱신.
+
+★2026-08-13 5차 개편(사용자 결정 — "left와 right만 1.5초 간격으로 계속
+받고, 나머지 제스처는 한 번 들어오면 다시 받지 않도록"): 위 ②의 반복
+발화(cooldown_sec마다 재발화)는 이제 config(gestures.pose_classifier.
+repeat_events, 기본 [left, right])에 실린 이벤트만 적용된다. 그 밖의
+이벤트(home/back/select/confirm/temp_*)는 확정 후 **딱 한 번만** 발화하고,
+같은 콤보를 계속 들고 있어도 더는 안 나간다 — 다음 발화 자격은 콤보가
+실제로 바뀌거나(_update_candidate가 confirmed_since_sec을 다시 여는 바로
+그 전환) 손이 release_sec 넘게 사라졌다 돌아와야 생긴다. 구현은
+_fired_once_for_confirm 플래그 하나 — confirmed_label이 바뀔 때마다
+_update_candidate에서 초기화되고, repeat_events 밖 이벤트를 발화하면 즉시
+세운다(반복 이벤트는 이 플래그를 건드리지 않아 기존 cooldown 반복 동작
+그대로 유지).
+
+★2026-08-13 6차 개편(사용자 결정 — "다른 제스처뿐만 아니라 그냥 none
+동작이 되고 다시 제스처를 해도 되도록"): 5차 개편 직후엔 fire-once 잠금이
+풀리는 경로가 ①다른 정의된 콤보로 전환 ②release_sec(1.5초) 넘는 완전
+소실, 둘뿐이었다 — 자세를 풀었다가(손이 살짝 사라지거나 none으로 판정)
+같은 제스처를 다시 해도 1.5초를 다 기다려야만 재발화됐다. combo_label이
+**none(콤보 라벨=None — 손 미검출뿐 아니라 none 클래스 판정·min_conf 등
+방어선에 걸린 경우 전부 포함, classify_pose_combo 참고)으로 latch_frames
+프레임 연속 관측되면** 그 자체로 "진짜 손을 뗐다"로 보고 fire-once
+잠금만 즉시 푼다(_none_streak_count, _update_absence) — confirmed_label·
+confirmed_since_sec·release_sec 기반 완전 초기화(다음 사용자 승계 차단
+목적)는 그대로 유지, 별개 관심사다. latch_frames를 재사용하는 이유는 딱
+한 프레임 순간 오검출(none 클래스 오탐 등)만으로 잠금이 풀려 즉시 재발화
+되는 걸 막기 위함 — 콤보를 "확정"할 때 쓰는 것과 같은 연속성 기준을
+"해제"에도 대칭 적용한다. 시작값은 기존 latch_frames 재사용 — 실기에서
+너무 쉽게/어렵게 풀리면 별도 상수로 분리 검토.
+
+★2026-08-20 7차 개편(사용자 보고 — "none이 너무 민감해서 조금만 자세가
+바뀌어도 none으로 인식하여 제스처를 여러 번 인식하는 문제"): 6차 개편이
+우려했던 그대로였다 — latch_frames(4프레임 ≈ 0.13초)는 콤보 "확정"엔
+반응성 때문에 짧아야 맞지만, "진짜 손을 뗐다"는 판단은 그보다 훨씬
+보수적이어야 하는데 같은 문턱을 그대로 재사용했다. none 판정 자체가
+min_conf·none_margin 등 방어선 때문에 꽤 예민해서, 자세가 살짝 흔들려
+몇 프레임만 none으로 스쳐도 잠금이 풀리고 곧바로 재확정 -> 재발화가
+반복됐다. **확정용 latch_frames와 해제용 none_release_frames를 분리**해
+두 문턱을 독립적으로 조정할 수 있게 했다(config: gestures.pose_classifier.
+none_release_frames — 키 없으면 latch_frames 재사용, 하위 호환). 시작값은
+실측 전 잠정값(configs/config.yaml 주석·docs/TODO.md 참고).
+
+★2026-08-20 8차 개편(사용자 실기 보고 — "아직 너무 민감해 한번에 다라라락
+올라와", 카메라 창 로그에서 select 연속 수십 건 확인): 7차 개편으로도 폭주가
+안 잡힌 진짜 원인은 문턱 크기가 아니라 **confirmed_since_sec 미갱신**이었다
+— none 스트릭으로 fire-once 잠금이 풀려도 confirmed_label이 원래 라벨과
+같으면(예: 자세가 none과 finger_up 사이를 오갈 때) _update_candidate가
+"라벨이 안 바뀌었다"고 보고 confirmed_since_sec을 그대로 둔다. 그러면 이미
+한참 전에 지난 그 시각 기준으로 cooldown_sec hold 조건이 항상 참이 돼,
+손이 none 스트릭에서 돌아오자마자(latch_frames만 지나면) **대기 없이
+즉시 재발화**됐다 — 자세가 흔들리는 동안 이게 반복돼 짧은 간격으로
+쏟아졌다. none 스트릭이 완성되는 순간 confirmed_since_sec도 지금 시각으로
+재장전해(_update_absence), "손을 뗐다 다시 잡음"이 콤보 전환과 동일하게
+새 cooldown_sec hold를 반드시 채우도록 고쳤다.
 """
 import time
 from dataclasses import dataclass
@@ -183,6 +237,14 @@ class PoseGestureFilter:
         self._latch_frames = pose_cfg["latch_frames"]
         self._release_sec = pose_cfg["release_sec"]
         self._cooldown_sec = pose_cfg["cooldown_sec"]
+        # ★2026-08-20 7차 개편 — none으로 fire-once 잠금을 푸는 문턱을 확정용
+        # latch_frames와 분리(모듈 독스트링 7차 개편 참고). 키 없으면 종전대로
+        # latch_frames 재사용(하위 호환)
+        self._none_release_frames = pose_cfg.get("none_release_frames", self._latch_frames)
+        # ★2026-08-13 5차 개편 — 여기 실린 이벤트명만 자세를 계속 들고 있는 동안
+        # cooldown_sec마다 반복 발화(모듈 독스트링 참고). 없는 키는 하위 호환으로 빈 목록
+        # (전부 1회 발화) — repeat_events 도입 전 config를 쓰는 판이 있으면 안전한 기본값
+        self._repeat_events = set(pose_cfg.get("repeat_events", []))
         self._clock = clock
 
         self._candidate_label = None   # 연속 관측 세는 중인 콤보
@@ -191,6 +253,15 @@ class PoseGestureFilter:
         self._confirmed_since_sec = None   # confirmed_label이 지금 값이 된 시각 —
                                         #   cooldown_sec(hold) 게이트의 기준(아래 filter_signals)
         self._fired_label = None       # 마지막으로 이벤트를 낸 콤보 — 계기판 표시용
+        self._fired_once_for_confirm = False   # repeat_events 밖 이벤트의 1회 발화 여부 —
+                                        #   confirmed_label이 바뀔 때(아래 _update_candidate)
+                                        #   또는 none이 latch_frames 연속 관측될 때(아래
+                                        #   _update_absence, 6차 개편) 초기화 — 같은 콤보를
+                                        #   계속 들고 있어도 두 번째 발화를 막는 게이트
+        self._none_streak_count = 0    # combo_label=None 연속 관측 프레임 수 — none_release_frames에
+                                        #   도달하면 "진짜 손을 뗐다"로 보고 fire-once 잠금만
+                                        #   푼다(7차 개편 — 확정용 latch_frames와 분리,
+                                        #   _update_absence 참고)
         self._last_seen_sec = None     # 손이 마지막으로 관측된 시각 — release_sec 판단
         self.debug = {}
 
@@ -229,9 +300,16 @@ class PoseGestureFilter:
             return None   # 정의 없는 조합(주로 아래 방향) — 무시. confirmed_since_sec을
                           #   안 건드려야 다음에 진짜 콤보로 바뀌었을 때 hold를 다시
                           #   기다리지 않는다(정의 없는 조합은 "발화"가 아니다)
+        is_repeat_event = event_name in self._repeat_events
+        if not is_repeat_event and self._fired_once_for_confirm:
+            return None   # repeat_events 밖 이벤트는 이 콤보로 이미 한 번 발화했음 —
+                          #   콤보가 바뀌거나(release 포함) 해야 다음 발화 자격이 생긴다
         self._fired_label = self._confirmed_label
-        self._confirmed_since_sec = now_sec   # hold 타이머 재장전 — 계속 들고 있으면
-                                              #   다음 cooldown_sec 뒤 반복 발화
+        if is_repeat_event:
+            self._confirmed_since_sec = now_sec   # hold 타이머 재장전 — 계속 들고 있으면
+                                                  #   다음 cooldown_sec 뒤 반복 발화
+        else:
+            self._fired_once_for_confirm = True   # 1회 발화 완료 — 콤보 전환 전까지 잠금
         event = PoseGestureEvent(class_name=event_name, conf=1.0, ts_sec=now_sec,
                                  hand_side=hand_side)
         logger.info("pose_gesture_event: %s (combo=%s)", event_name, self._confirmed_label)
@@ -245,6 +323,7 @@ class PoseGestureFilter:
         filter_signals의 hold 게이트가 "이 콤보로 확정된 지 얼마나
         지났는가"를 정확히 잰다.
         """
+        self._none_streak_count = 0   # 실제 콤보 관측 — none 연속성 끊김(6차 개편)
         if combo_label == self._candidate_label:
             self._candidate_count += 1
         else:
@@ -253,6 +332,7 @@ class PoseGestureFilter:
         if self._candidate_count >= self._latch_frames:
             if self._confirmed_label != combo_label:
                 self._confirmed_since_sec = now_sec
+                self._fired_once_for_confirm = False   # 새 콤보로 전환 — 1회 발화 잠금 해제
             self._confirmed_label = combo_label
 
     def _update_absence(self, now_sec):
@@ -260,14 +340,41 @@ class PoseGestureFilter:
         연속 관측부터). confirmed·fired는 release_sec을 넘겨야 비운다 — 짧은 블러 한두
         프레임에 이미 확정된 자세·발화 이력이 날아가 재발화(중복 이벤트)되면 안 된다.
         release_sec 초과는 다음 사용자에게 이전 발화 이력을 승계하지 않기 위함이다.
+
+        ★6차 개편: fire-once 잠금(_fired_once_for_confirm)만은 별도로, none이
+        none_release_frames 연속 관측되면 release_sec을 기다리지 않고 바로
+        푼다 — confirmed_label 등 정체성 관련 상태는 이 짧은 경로로 안
+        건드린다(그대로 release_sec 기준 유지, 모듈 독스트링 6차 개편 참고).
+        ★7차 개편: 이 문턱은 확정용 latch_frames가 아니라 별도의
+        none_release_frames를 쓴다 — none 판정이 예민해 짧은 문턱(4프레임)
+        으로는 자세가 살짝 흔들려도 곧장 풀려버렸다(모듈 독스트링 7차 개편,
+        사용자 실기 보고 참고).
+
+        ★2026-08-20 8차 개편(사용자 실기 보고 — "아직 너무 민감해 한번에
+        다라라락 올라와", 카메라 창 로그에서 select가 연속 수십 건 확인):
+        7차 개편 후에도 confirmed_label이 원래 라벨(예: finger_up)과 같으면
+        _update_candidate가 "라벨이 안 바뀌었다"고 보고 confirmed_since_sec을
+        안 건드렸다 — 그래서 이미 한참 전에 지난 confirmed_since_sec 기준으로
+        cooldown_sec 조건이 항상 참이 돼, 손이 none 스트릭에서 돌아오자마자
+        (latch_frames만 지나면) hold 대기 없이 즉시 재발화됐다. 자세가 none과
+        확정 라벨 사이에서 흔들리면 이 즉시-재발화가 반복돼 짧은 간격으로
+        폭주했다(로그: select 연속). confirmed_since_sec을 여기서 지금
+        시각으로 재장전해, "손을 뗐다 다시 잡음"도 콤보가 실제로 바뀐 것과
+        동일하게 새 cooldown_sec hold를 반드시 채우게 한다.
         """
         self._candidate_label = None
         self._candidate_count = 0
+        self._none_streak_count += 1
+        if self._none_streak_count >= self._none_release_frames:
+            self._fired_once_for_confirm = False
+            if self._confirmed_since_sec is not None:
+                self._confirmed_since_sec = now_sec   # 재발화 전 새 hold 강제(8차 개편)
         if (self._last_seen_sec is not None
                 and now_sec - self._last_seen_sec > self._release_sec):
             self._confirmed_label = None
             self._confirmed_since_sec = None
             self._fired_label = None
+            self._fired_once_for_confirm = False
 
     def _update_debug(self):
         self.debug = {

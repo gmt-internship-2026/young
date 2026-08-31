@@ -37,7 +37,7 @@ fist/finger 2255건뿐이라(2026-08-03 기준) open은 계속 기하 폴백으�
 `scripts/collect_hand_shape_data.py --person-id <이름>`으로 [5]키를 눌러
 open 샘플을 모으고 `scripts/train_hand_shape_classifier.py`로 재학습하면,
 재빌드 없이 다음 실행부터 open도 자동으로 분류기 주판정으로 넘어간다
-(`_resolve_classifier_path` — exe 배포판도 가중치 파일만 교체하면 반영).
+(`resolve_classifier_path` — exe 배포판도 가중치 파일만 교체하면 반영).
 
 ★2026-08-07 획득 방식이 엔진별로 갈림(사용자 보고 — "바로 서자마자 무슨
 제스처를 취해도 빨리빨리 손을 인식해줘야"): 아래 "획득" 문단의 이동 요구는
@@ -66,7 +66,7 @@ import logging
 logger = get_logger("postprocess")
 
 
-def _resolve_classifier_path(config_path):
+def resolve_classifier_path(config_path):
     """분류기 가중치 경로 — exe 배포판에서 **재빌드 없이** 재학습 가중치를
     바로 반영할 수 있게 한다(2026-08-03 — 재학습 반복 실기 편의).
 
@@ -76,6 +76,13 @@ def _resolve_classifier_path(config_path):
     exe와 **같은 폭**에 같은 파일명이 있으면 그걸 우선 쓴다 — 개발 PC에서
     scripts/train_hand_shape_classifier.py로 만든 .npz를 그 폴더에 복사만
     하면 다음 실행부터 바로 반영된다. 없으면(기본) 번들된 스냅샷을 쓴다.
+
+    hand_shape_classifier.npz(swipe 엔진 3모양)뿐 아니라 gesture_pose_classifier.npz
+    (pose_classifier 엔진 콤보)도 같은 원리라 realtime_loop.run_pipeline이
+    이 함수를 그대로 재사용한다(2026-08-31 — 이 함수가 hand_select 전용
+    이름(밑줄 접두)이던 시절엔 pose_classifier 쪽 로딩이 이 처리를 안 거쳐,
+    exe 배포판에서 gesture_pose_classifier.npz만 교체해도 반영 안 되는
+    불일치가 있었다).
     """
     if getattr(sys, "frozen", False):
         override_path = os.path.join(os.path.dirname(sys.executable),
@@ -141,6 +148,19 @@ def hand_shoulder_px(hand):
     return span_px / span_m * STANDARD_SHOULDER_M
 
 
+def hand_distance_m(hand, focal_length_px):
+    """카메라-손 거리 추정(미터) — reach_distance 게이트 전용(config 주석 참고).
+
+    hand_shoulder_px(거리에 반비례하는 가상 어깨너비 px)를 핀홀 모델로 역산:
+    distance_m = focal_length_px × STANDARD_SHOULDER_M ÷ hand_shoulder_px.
+    focal_length_px가 없거나(게이트 비활성) 손이 판별 불가면 None.
+    """
+    shoulder_px = hand_shoulder_px(hand)
+    if shoulder_px is None or shoulder_px <= 0.0 or not focal_length_px:
+        return None
+    return focal_length_px * STANDARD_SHOULDER_M / shoulder_px
+
+
 class HandSelector:
     """프레임의 손들 중 사용자 손 하나를 추적하고 판정 신호를 공급한다."""
 
@@ -155,6 +175,12 @@ class HandSelector:
         acquire_cfg = select_cfg.get("acquire") or {}
         self._acquire_move_shoulder = acquire_cfg.get("move_dist_shoulder", 0.25)
         self._acquire_window_sec = acquire_cfg.get("window_sec", 0.5)
+        # 카메라-손 거리 게이트(2026-08-27 신설 — config hand_select.reach_distance
+        # 주석 참고): focal_length_px 미설정이면 게이트 없음(종전 동작)
+        reach_distance_cfg = select_cfg.get("reach_distance") or {}
+        self._distance_gate_enabled = reach_distance_cfg.get("enabled", False)
+        self._max_reach_m = reach_distance_cfg.get("max_distance_m")
+        self._focal_length_px = reach_distance_cfg.get("focal_length_px")
         # ★2026-08-07 pose_classifier 엔진 전용 동작 분기 — 이 판(정지 자세
         # 판정)은 swipe(궤적 판정)와 손 추적 요구사항 자체가 달라서, 아래 두
         # 지점에서 엔진별로 갈린다(각 사용처 독스트링 참고):
@@ -177,9 +203,16 @@ class HandSelector:
         # 참고) — 3클래스(finger/fist/open) 재학습 이후엔 전부 분류기가 판정
         classifier_path = hand_cfg.get("classifier_weights_path")
         if classifier_path:
-            classifier_path = _resolve_classifier_path(classifier_path)
+            classifier_path = resolve_classifier_path(classifier_path)
             logger.info("손 모양 분류기 로딩: %s", classifier_path)
         self._shape_classifier = HandShapeClassifier(classifier_path) if classifier_path else None
+        # 정의 밖 손 모양 방어 4종(2026-08-21 신설 — config hand_select.hand_shape
+        # 주석 참고) — 전부 null(기본)이면 종전과 동일(HandShapeClassifier.classify
+        # 독스트링의 "네 검사 모두 기본값 None이면 항상 argmax 강제" 그대로)
+        self._shape_classifier_min_conf = hand_cfg.get("classifier_min_conf")
+        self._shape_classifier_max_dist_ratio = hand_cfg.get("classifier_max_dist_ratio")
+        self._shape_classifier_none_margin = hand_cfg.get("classifier_none_margin")
+        self._shape_classifier_none_neighbor_ratio = hand_cfg.get("classifier_none_neighbor_ratio")
         # 머리 앵커(2026-07-31 몸통판 — 얼굴 검출 교체, 사용자 결정): 포즈가 몸
         # 실루엣으로 잡은 머리 위치의 사람 손만 후보 — 마스크·모자 무관.
         # 섹션(head_anchor) 없으면 게이트 없음(종전)
@@ -220,8 +253,8 @@ class HandSelector:
         self._drop_expired_head_anchor(now_sec)
         if heads is not None:
             self._update_head_anchor(heads, now_sec)
-        self._hands = self._filter_hands_by_anchor(
-            hands if hands is not None else [])
+        self._hands = self._filter_hands_by_distance(hands if hands is not None else [])
+        self._hands = self._filter_hands_by_anchor(self._hands)
         self._update_tracked_hand(now_sec)
         if self._hands:
             self._last_any_hand_sec = now_sec
@@ -285,6 +318,20 @@ class HandSelector:
             self._head_anchor = None
             self._head_anchor_seen_sec = None
             self.anchor_head_box = None
+
+    def _filter_hands_by_distance(self, hands):
+        """카메라-손 거리(추정 미터)가 max_distance_m을 넘는 손을 제외한다.
+
+        head_anchor의 반경 게이트와 달리 추적 중인 손도 예외 없이 매 프레임
+        본다(config hand_select.reach_distance 주석 참고 — 실제로 물러난
+        손은 신호가 끊기는 게 맞다). 게이트 비활성(enabled: false 또는
+        focal_length_px 미설정)이면 손대지 않는다(종전 동작).
+        """
+        if not self._distance_gate_enabled or not self._max_reach_m or not self._focal_length_px:
+            return hands
+        return [hand for hand in hands
+               if (distance_m := hand_distance_m(hand, self._focal_length_px)) is None
+               or distance_m <= self._max_reach_m]
 
     def _filter_hands_by_anchor(self, hands):
         """앵커(가장 가까운 사람)의 팔 도달 반경 밖 손 제외 — 옆 사람 손 차단.
@@ -500,13 +547,16 @@ class HandSelector:
         분류기는 fist/finger 완전한 자세 판별(스와이프 방향)에는 쓰고, 탭
         클릭의 모드 확인은 항상 안정적인 기하 판정을 쓰게 분리한다.
 
-        분류기는 이진(fist/finger)이라 "불명"이 없다 — 항상 둘 중 하나로 확정
-        한다. open(손바닥)은 분류기가 그 클래스를 학습(classes에 포함)하기
-        전까지는 기하 판정 결과를 그대로 쓴다 — 폄 개수 임계값 규칙이라 이미
-        안정적이고, 이진 분류기에 억지로 끼워 넣으면 오히려 fist/finger 둘 중
-        하나로 오분류될 뿐이다. open 데이터를 모아 재학습하면(scripts/
-        train_hand_shape_classifier.py) classes에 "open"이 들어가고, 그
-        순간부터 이 함수가 자동으로 open 판정도 분류기에 맡긴다.
+        분류기가 "불명"을 돌려줄 수도 있다(2026-08-21 — 정의 밖 손 모양 방어
+        4종 config에서 켠 경우, CLASSIFIER_LABEL_TO_SHAPE.get(None)이 None을
+        돌려주는 것과 자연히 맞물린다). 그 전까지(config 미설정)는 항상 둘
+        중 하나로 확정한다. open(손바닥)은 분류기가 그 클래스를 학습(classes에
+        포함)하기 전까지는 기하 판정 결과를 그대로 쓴다 — 폄 개수 임계값
+        규칙이라 이미 안정적이고, 이진 분류기에 억지로 끼워 넣으면 오히려
+        fist/finger 둘 중 하나로 오분류될 뿐이다. open 데이터를 모아
+        재학습하면(scripts/train_hand_shape_classifier.py) classes에
+        "open"이 들어가고, 그 순간부터 이 함수가 자동으로 open 판정도
+        분류기에 맡긴다.
         """
         geometric = classify_hand_shape(world_landmarks, self._hand_extend_ratio,
                                         self._hand_min_valid_fingers,
@@ -515,7 +565,13 @@ class HandSelector:
             return geometric, geometric
         if geometric == SHAPE_OPEN and SHAPE_OPEN not in self._shape_classifier.classes:
             return geometric, geometric
-        predicted = self._shape_classifier.classify(world_landmarks)
+        predicted = self._shape_classifier.classify(
+            world_landmarks,
+            min_conf=self._shape_classifier_min_conf,
+            max_dist_ratio=self._shape_classifier_max_dist_ratio,
+            none_margin=self._shape_classifier_none_margin,
+            none_neighbor_ratio=self._shape_classifier_none_neighbor_ratio,
+        )
         return CLASSIFIER_LABEL_TO_SHAPE.get(predicted), geometric
 
     @property
@@ -588,6 +644,14 @@ class HandSelector:
             return None
         px_per_m = best_span_px / best_span_m
         return (px_per_m * STANDARD_SHOULDER_M) / self._frame_width_px
+
+    def tracked_hand_distance_m(self):
+        """추적 손의 추정 카메라 거리(미터) — reach_distance.focal_length_px 보정용
+        표시(visualize.draw_user_hands). focal_length_px 미설정이거나 추적 손이
+        없으면 None."""
+        if self._tracked_hand is None or not self._focal_length_px:
+            return None
+        return hand_distance_m(self._tracked_hand, self._focal_length_px)
 
     def shoulder_line_y_ratio(self):
         """어깨선 추정 — 앵커(머리) 기준 몸 비례로 복원 (2026-07-31 키오스크 실기).

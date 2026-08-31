@@ -142,7 +142,7 @@ def main():
     print("[다음 단계] venv_win\\Scripts\\python.exe main.py로 바로 반영됩니다.")
     print("           exe 배포판(dist\\gesture_kiosk\\)을 쓰는 중이면 이 .npz 파일을")
     print("           gesture_kiosk.exe와 같은 폭에 복사만 해도 반영됩니다 —")
-    print("           재빌드 불필요(hand_select._resolve_classifier_path 참고)")
+    print("           재빌드 불필요(hand_select.resolve_classifier_path 참고)")
 
 
 if __name__ == "__main__":

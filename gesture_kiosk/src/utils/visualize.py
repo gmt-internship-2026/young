@@ -43,6 +43,14 @@ def draw_user_hands(frame, hand_selector):
             frame, "H" + SHAPE_TAG.get(shape, ""), (x_px + 12, y_px + 5),
             cv2.FONT_HERSHEY_SIMPLEX, 0.6, TRACKED_COLOR, 2,
         )
+        # reach_distance.focal_length_px 보정용(2026-08-27 — config 주석 참고):
+        # 카메라 정확히 1m 앞에서 이 표시가 ~1.00m로 나오는지로 그 값을 검증한다
+        distance_m = hand_selector.tracked_hand_distance_m()
+        if distance_m is not None:
+            cv2.putText(
+                frame, f"{distance_m:.2f}m", (x_px + 12, y_px + 27),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, TRACKED_COLOR, 1,
+            )
     return frame
 
 

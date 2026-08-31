@@ -327,6 +327,55 @@ class HandScaleTest(unittest.TestCase):
         self.assertIsNone(selector.shoulder_line_y_ratio())
 
 
+class DistanceGateTest(unittest.TestCase):
+    """카메라-손 거리 게이트(reach_distance, 2026-08-27 신설) — 1m보다 멀면 후보 제외.
+
+    focal_length_px=1000으로 두면 기준 손(80px/0.08m → 가상 어깨 400px)의 추정
+    거리가 정확히 1000×0.4÷400=1.0m — 경계값 검증에 쓴다. scaled_hand로 화면
+    크기(px)만 바꿔 원하는 거리를 만든다(월드는 불변 — HandScaleTest와 동일 원리).
+    """
+
+    def _config(self, max_distance_m=1.0, focal_length_px=1000.0, enabled=True):
+        config = make_config()
+        config["hand_select"]["reach_distance"] = {
+            "enabled": enabled,
+            "max_distance_m": max_distance_m,
+            "focal_length_px": focal_length_px,
+        }
+        return config
+
+    def test_hand_at_exactly_1m_is_acquired(self):
+        # 기준 손 = 정확히 1.0m — 경계값은 포함(<=)
+        selector, clock = make_selector(self._config())
+        self.assertIsNotNone(feed(selector, clock, moving_hand_frames(500, 30, 6)))
+
+    def test_hand_beyond_1m_is_never_acquired(self):
+        # px_factor=0.5 → 가상 어깨 200px → 2.0m — 계속 움직여도 후보에 안 든다
+        selector, clock = make_selector(self._config())
+        frames = [[scaled_hand("right", "finger", (500 + 30 * i, 400), px_factor=0.5)]
+                  for i in range(6)]
+        self.assertIsNone(feed(selector, clock, frames))
+
+    def test_tracked_hand_loses_signal_once_it_backs_beyond_1m(self):
+        # head_anchor의 반경 예외와 달리, 실제로 물러나 거리 게이트를 넘으면
+        # 추적 중이던 손도 그대로 신호가 끊긴다(뗀 것으로 취급)
+        # 획득 이동 임계(어깨너비 배수)는 손 크기(px_factor)에 비례해 커지므로
+        # 프레임 간 이동폭도 같은 비율로 키워야 한다(작으면 이동 요건 미달,
+        # 크면 프레임 간 연속 반경을 벗어나 추적이 끊긴다)
+        selector, clock = make_selector(self._config())
+        frames = [[scaled_hand("right", "finger", (500 + 60 * i, 400), px_factor=2.0)]
+                  for i in range(6)]   # 0.5m에서 획득
+        self.assertIsNotNone(feed(selector, clock, frames))
+        selector.update([scaled_hand("right", "finger", (650, 400), px_factor=0.3)])  # ~3.3m
+        self.assertIsNone(selector.user_hand_signal())
+
+    def test_disabled_gate_does_not_filter(self):
+        selector, clock = make_selector(self._config(enabled=False))
+        frames = [[scaled_hand("right", "finger", (500 + 3 * i, 400), px_factor=0.1)]
+                  for i in range(8)]
+        self.assertIsNotNone(feed(selector, clock, frames))
+
+
 def make_head(center_x_px, center_y_px, width_px):
     return HeadDetection(center_x_px=center_x_px, center_y_px=center_y_px,
                          width_px=width_px, conf=1.0)

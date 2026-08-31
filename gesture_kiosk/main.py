@@ -1,18 +1,19 @@
 """gesture_kiosk 공식 진입점 — 실시간 엔진 구동 (2026-08-03 신설, 사용자 결정).
 
 델파이(회사 UI)가 **이 파일을 직접 실행**한다 — bat 경유 없이:
-    py main.py            # 카메라·계기판 창을 켠 채 시작(2026-08-11 사용자
-                          #   결정 — 기본값 전환: 종전엔 --debug를 줘야만 켜졌고
-                          #   콘솔에서 cam on을 쳐야 했다. 현장 점검 때마다 매번
-                          #   타이핑해야 하는 불편 제거 — 항상 켠 채 시작한다
-    py main.py --no-cam   # 창 없이 이벤트만(stdout) — 창이 필요 없는 배포 환경용
+    py main.py            # 창 없이 시작 — 카메라·계기판 창 없이 바로 제스처
+                          #   인식만 돈다(2026-08-31 사용자 결정 — 기본값 재전환:
+                          #   2026-08-11엔 현장 점검 편의로 "항상 켠 채 시작"이
+                          #   기본이었으나, 실사용/납품 환경에서는 창이 매번 뜨는
+                          #   쪽이 오히려 불필요해 다시 꺼진 채 시작으로 되돌림)
+    py main.py --cam      # 카메라·계기판 창을 켠 채 시작 — 현장 점검·튜닝용
 
 ★카메라 창 런타임 토글(2026-08-03 사용자 결정 — 재실행 없는 점검): 엔진이
 도는 중에 stdin에 한 줄 명령으로 카메라·계기판 창을 켜고 끈다:
     cam on   ↵    # 창 열기 (콘솔에서 직접 타이핑하거나, 델파이가 stdin 파이프로)
     cam off  ↵    # 창 닫기 (창에서 q/ESC도 동일)
     quit     ↵    # 엔진 종료 (Ctrl+C와 동일)
-기본이 켠 채 시작이라 cam on을 칠 일은 거의 없다 — 창을 끄고 싶을 때만 cam off.
+기본이 꺼진 채 시작이라 점검 중 필요할 때만 cam on(또는 시작 인자 --cam).
 
 ★카메라 전환(2026-08-04 신설 — 현장에서 장치 번호 즉석 확인): config 수정·
 재실행 없이 다음 장치 번호로 순환 전환한다(configs/config.yaml의
@@ -148,9 +149,9 @@ def run_window_loop(state, want_window):
 def main():
     parser = argparse.ArgumentParser(description="gesture_kiosk 실시간 엔진")
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
-    parser.add_argument("--no-cam", action="store_true",
-                        help="카메라·계기판 창 없이 시작 (기본은 켠 채 시작. 실행 중"
-                             " cam on/off로도 토글 가능)")
+    parser.add_argument("--cam", action="store_true",
+                        help="카메라·계기판 창을 켠 채 시작 (기본은 꺼진 채 시작 —"
+                             " 2026-08-31 사용자 결정. 실행 중 cam on/off로도 토글 가능)")
     args = parser.parse_args()
 
     disable_console_quick_edit()
@@ -163,7 +164,7 @@ def main():
     from src.pipeline.realtime_loop import run_pipeline
 
     state = run_pipeline(config)
-    window_state_text = "꺼진 채 시작(--no-cam)" if args.no_cam else "켠 채 시작"
+    window_state_text = "켠 채 시작(--cam)" if args.cam else "꺼진 채 시작"
     logger.info("엔진 구동 중 — 이벤트 stdout 한 줄씩 · 카메라 창 %s, cam off/on(+Enter)으로"
                " 토글 · 카메라 전환 c키 또는 cam next(+Enter) · 종료 Ctrl+C",
                window_state_text)
@@ -173,7 +174,7 @@ def main():
                      " 종료: quit 또는 Ctrl+C\n")
     sys.stderr.flush()
 
-    want_window = {"value": not args.no_cam}
+    want_window = {"value": args.cam}
     if sys.stdin is not None:   # pythonw 등 stdin 자체가 없는 실행 — 토글 없이 구동
         threading.Thread(target=watch_stdin_commands, args=(state, want_window),
                          daemon=True).start()

@@ -20,6 +20,61 @@
 - [ ] 3모양(open/finger/fist) 전부 분류기 판정인 상태로 실기 정확도 재확인
       (`scripts/eval_accuracy.py`) — 기하 단독 대비 비교. 데이터·재학습은
       끝났으나 카메라 앞 실측 검증은 아직
+- [ ] **밝기 자동 보정 실기 보정(2026-08-13 저조도 전용으로 신설, 2026-08-21
+      양방향 상시 보정으로 확장, 2026-08-26 실기 중단)** — `configs/config.yaml brightness`
+      (`preprocessor.py`), 어둡거나 역광으로 과다 노출된 환경 둘 다에서 손
+      검출률 저하 대응. 단위 테스트(`tests/test_preprocessor.py`)만 통과한
+      상태 — `target_luma`(0.45)·`luma_deadband`(0.05)·`gamma_step`(0.05)·
+      `gamma_min/max`(0.5~2.2)는 잠정값, 실제 Brio 100으로 조명을 낮추거나
+      역광을 재현한 현장에서 재조정 필요. 과하게 밝히면 손 윤곽 대비가
+      오히려 날아갈 수 있어(과다 감마) 극단값 확인할 것
+      → **2026-08-26 시연에서 실제로 발생**(사용자 보고: 손이 안 보일 만큼 과다
+      노출) — 어두운 배경 + 밝은 피부의 조합에서 전역 평균 기반 감마 보정이
+      피부 쪽을 gamma_max까지 밀어붙여 날려버림. 우선 `enabled: false`로 꺼둠
+      (config.yaml 주석 참고). 재활성화 전 필요: ①gamma_max를 1.3 안팎으로
+      크게 낮추기 ②전역 평균 대신 손 영역(ROI) 기준 측광으로 바꾸는 근본 수정 검토
+- [ ] **팔 도달 반경 축소(2026-08-26 실기 보고, 재진단)**: 여러 명이 있는 자리에서
+      시연 중 손 추적이 몇 차례 다른 사람에게 넘어갔다. 처음엔 가림(포즈 소실 →
+      앵커 재획득)으로 추정해 `anchor_grace_sec`을 1.0→3.0으로 늘렸으나, 사용자
+      확인 결과 조작자는 그 시간 내내 화면에 계속 잡혀 있었다 — 가림이 아니었음
+      (해당 값은 1.0으로 원복). 실제 원인은 화면을 비스듬히 보려고 4~5명이
+      조작자 근처(반경 0.75m 안)에 모여 있어 `reach_head_widths`의 경성 게이트가
+      그 사람들의 손을 애초에 걸러내지 못한 것 — 앵커는 안 바뀌어도 반경 안에만
+      들어오면 손 자체는 후보가 된다(`hand_select._filter_hands_by_anchor`).
+      5.0(0.75m)→2.5(0.375m)로 좁힘(config.yaml 주석 참고). 실기 재확인 필요:
+      ①옆 사람은 잘 걸러지는지 ②조작자 본인 손이 뻗을 때 잘리진 않는지(잘리면 ↑)
+- [x] **발화 규칙 6차 개편 실기 보고 반영 — 7차 개편(2026-08-20)**: 사용자가
+      실기에서 "none이 너무 민감해서 조금만 자세가 바뀌어도 none으로 인식,
+      제스처가 여러 번 인식됨"을 보고 — 6차 개편이 latch_frames(4프레임≈0.13초)를
+      그대로 재사용해 너무 쉽게 풀린 게 원인. 확정용 latch_frames와 해제용
+      `none_release_frames`(신설, 기본 15프레임≈0.5초)를 분리해 해결
+      (`pose_gesture_filter.py` 모듈 독스트링 7차 개편, `configs/config.yaml`
+      참고). 단위 테스트 갱신(`FireOnceForNonRepeatEventsTest`) 완료
+- [x] **8차 개편(2026-08-20)** — 7차 개편 후에도 실기에서 "여전히 너무 민감해
+      한번에 다라라락 올라와"(카메라 창 로그: select 연속 수십 건) 재보고.
+      진짜 원인은 문턱 크기가 아니라 confirmed_since_sec 미갱신 — none
+      스트릭으로 잠금이 풀려도 confirmed_label이 원래 라벨과 같으면 hold
+      타이머를 안 건드려, 손이 돌아오자마자 cooldown_sec 대기 없이 즉시
+      재발화됐다. none 스트릭 완성 시점에 confirmed_since_sec도 재장전하도록
+      수정(`_update_absence`, 모듈 독스트링 8차 개편 참고). 단위 테스트
+      추가(`test_none_streak_unlock_still_requires_fresh_cooldown_hold`,
+      `test_none_streak_unlock_does_not_cause_rapid_refire_burst`) — 카메라
+      앞 재확인 필요
+- [ ] **`none_release_frames`(2026-08-20 신설) 실기 재조정** — 시작값 15프레임
+      (≈0.5초)은 실측 전 잠정값. 카메라 앞에서 ①같은 제스처를 반복할 때 여러
+      번 잡히지 않는지(8차 개편으로 완화됐는지 재확인) ②자세를 정말 풀었을 때
+      체감상 너무 굼뜨게 풀리진 않는지(너무 길면 release_sec 1.5초에 근접해
+      6차 개편 취지가 무의미해짐) 양쪽 다 확인해 값 조정할 것
+- [ ] **카메라-손 거리 게이트 실기 보정(2026-08-27 신설, 사용자 요청 — "1m
+      이상 떨어진 손은 인식이 되면 안 돼")** — `configs/config.yaml
+      hand_select.reach_distance`(`hand_select.py hand_distance_m`). 원리는
+      단위 테스트(`tests/test_hand_select.py DistanceGateTest`)로 검증됐지만
+      `focal_length_px`(1325) 자체는 카메라 스펙(대각화각 58°) 역산 추정값이라
+      **실측 검증 전**이다. 카메라 정확히 1m 앞에 손을 두고 디버그 창의
+      추적 손 옆 거리 표시(`visualize.draw_user_hands`)가 ~1.00m로 나오는지
+      확인 — 벗어나면 config 주석대로 `focal_length_px`를 조정할 것(표시가
+      실제보다 크면 낮추고, 작으면 올린다). 확인 전까지 `max_distance_m`
+      경계(정확히 1m 근방)에서의 실제 동작은 보장 없음
 
 ## ✅ 완료 (2026-08-05~11 — feat/shape_ml: pose_gesture_filter 자세 콤보 판정 엔진)
 
